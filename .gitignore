@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+package-lock.json
+
+# Environment variables
+.env
+
+# Cookie files (contain authentication tokens)
+paradex-cookies-*.json
+*.json
+
+# Logs
+*.log
+npm-debug.log*
+
+# Screenshots
+screenshot-*.png
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Chrome user data
+/tmp/puppeteer-chrome-profile-*
+
+.env
+
+node_modules
