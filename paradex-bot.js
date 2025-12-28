@@ -15,21 +15,31 @@ puppeteer.use(StealthPlugin());
 const PARADEX_URL = "https://app.paradex.trade/trade/BTC-USD-PERP";
 const HEADLESS = process.argv.includes('--headless');
 
-// Multiple accounts configuration
-const ACCOUNTS = [
-  {
-    email: "htet@aylab.io",
-    cookiesPath: './paradex-cookies-account1.json',
-    profileDir: '/tmp/puppeteer-chrome-profile-1',
-    apiPort: 3001
-  },
-  {
-    email: "n2113477@gmail.com",
-    cookiesPath: './paradex-cookies-account2.json',
-    profileDir: '/tmp/puppeteer-chrome-profile-2',
-    apiPort: 3002
+// Multiple accounts configuration - read from environment variable
+const getAccountsFromEnv = () => {
+  const emailsEnv = process.env.ACCOUNT_EMAILS;
+
+  if (!emailsEnv) {
+    console.error('ERROR: ACCOUNT_EMAILS not found in .env file');
+    process.exit(1);
   }
-];
+
+  const emails = emailsEnv.split(',').map(e => e.trim()).filter(e => e);
+
+  if (emails.length === 0) {
+    console.error('ERROR: No valid emails found in ACCOUNT_EMAILS');
+    process.exit(1);
+  }
+
+  return emails.map((email, index) => ({
+    email: email,
+    cookiesPath: `./paradex-cookies-account${index + 1}.json`,
+    profileDir: `/tmp/puppeteer-chrome-profile-${index + 1}`,
+    apiPort: 3001 + index
+  }));
+};
+
+const ACCOUNTS = getAccountsFromEnv();
 // ----------------------------
 
 async function delay(ms) {
@@ -242,6 +252,69 @@ async function findByExactText(pg, text, tagNames = ['button', 'div', 'span']) {
   return null;
 }
 
+async function getCurrentMarketPrice(page) {
+  console.log("Fetching current market price...");
+
+  try {
+    // Try to get the current price from the page
+    const price = await page.evaluate(() => {
+      // Look for price displays - common patterns on trading interfaces
+      const priceSelectors = [
+        // Try to find the main price ticker
+        '[class*="price"]',
+        '[class*="ticker"]',
+        '[class*="mark-price"]',
+        '[class*="last-price"]',
+        '[data-testid*="price"]',
+      ];
+
+      // Check all possible price elements
+      for (const selector of priceSelectors) {
+        const elements = document.querySelectorAll(selector);
+        for (const el of elements) {
+          const text = el.textContent?.trim();
+          // Look for USD prices (format: $XX,XXX.XX or XX,XXX.XX)
+          const match = text?.match(/\$?([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{1,2})?)/);
+          if (match) {
+            const priceStr = match[1].replace(/,/g, '');
+            const price = parseFloat(priceStr);
+            // Validate it's a reasonable BTC price (between $1,000 and $500,000)
+            if (price >= 1000 && price <= 500000) {
+              return price;
+            }
+          }
+        }
+      }
+
+      // Fallback: look for any large number that looks like a BTC price
+      const allText = document.body.innerText;
+      const priceMatches = allText.match(/\$?([0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]{1,2})?)/g);
+      if (priceMatches) {
+        for (const match of priceMatches) {
+          const priceStr = match.replace(/[$,]/g, '');
+          const price = parseFloat(priceStr);
+          if (price >= 1000 && price <= 500000) {
+            return price;
+          }
+        }
+      }
+
+      return null;
+    });
+
+    if (price) {
+      console.log(`✓ Current market price: $${price.toLocaleString()}`);
+      return price;
+    } else {
+      console.log("⚠ Could not find market price on page");
+      return null;
+    }
+  } catch (error) {
+    console.error("Error fetching market price:", error.message);
+    return null;
+  }
+}
+
 async function closeAllPositions(page, percent = 100) {
   console.log(`\n=== Closing Position (${percent}%) ===`);
 
@@ -419,9 +492,185 @@ async function closeAllPositions(page, percent = 100) {
   }
 }
 
-async function executeTrade(page, { side, orderType, price, qty }) {
+async function setLeverage(page, leverage) {
+  console.log(`\n=== Setting Leverage to ${leverage}x ===`);
+  console.log(`Target leverage from config: ${leverage}`);
+
+  try {
+    await delay(1000);
+
+    // Step 1: Find and click the leverage display (e.g., "50x") in the trading panel to open modal
+    console.log("Looking for leverage button in trading panel...");
+    const leverageOpened = await page.evaluate(() => {
+      // Look in the right side trading panel for leverage display
+      const allElements = Array.from(document.querySelectorAll('button, div, span'));
+
+      for (const el of allElements) {
+        const text = el.textContent?.trim();
+        // Look for pattern like "50x" in the trading panel (top right area)
+        if (text && /^\d+x$/i.test(text)) {
+          // Check if it's in the trading panel area (right side)
+          const rect = el.getBoundingClientRect();
+          if (rect.x > 1000) { // Right side of screen
+            console.log(`Found leverage button: ${text} at position (${rect.x}, ${rect.y})`);
+            el.click();
+            return { success: true, found: text };
+          }
+        }
+      }
+      return { success: false };
+    });
+
+    if (!leverageOpened.success) {
+      console.log("⚠ Leverage button not found in trading panel");
+      return { success: false, error: "Leverage button not found" };
+    }
+
+    console.log(`✓ Clicked leverage button, waiting for modal...`);
+    await delay(2000); // Wait for "Adjust Leverage" modal to open
+
+    // Step 2: Find the input field in the modal and enter the leverage value
+    console.log(`Setting leverage to ${leverage} in the modal...`);
+
+    // Find the input field
+    const leverageInput = await page.evaluate(() => {
+      const inputs = document.querySelectorAll('input[type="text"], input[type="number"], input:not([type])');
+      for (const input of inputs) {
+        const value = input.value || '';
+        // Check if this is the leverage input (should have a number like "50")
+        if (/^\d+$/.test(value) && input.offsetParent !== null) {
+          console.log(`Found leverage input with current value: ${value}`);
+          return true;
+        }
+      }
+      return false;
+    });
+
+    if (!leverageInput) {
+      console.log(`⚠ Could not find leverage input field`);
+      return { success: false, error: "Leverage input field not found" };
+    }
+
+    // Get current value and clear it directly, then type new value
+    const leverageSet = await page.evaluate((targetLeverage) => {
+      const inputs = document.querySelectorAll('input[type="text"], input[type="number"], input:not([type])');
+
+      for (const input of inputs) {
+        const value = input.value || '';
+        if (/^\d+$/.test(value) && input.offsetParent !== null) {
+          console.log(`Found leverage input with current value: ${value}`);
+
+          // Focus the input
+          input.focus();
+
+          // Clear the value completely
+          const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+            window.HTMLInputElement.prototype,
+            'value'
+          ).set;
+          nativeInputValueSetter.call(input, '');
+
+          // Trigger input event to notify React/Vue
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+
+          console.log(`Cleared input, it now shows: "${input.value}"`);
+
+          // Now set the new value
+          nativeInputValueSetter.call(input, String(targetLeverage));
+
+          // Trigger events
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+
+          console.log(`Set new value to: ${input.value}`);
+
+          return { success: true, oldValue: value, newValue: input.value };
+        }
+      }
+      return { success: false, error: 'Input not found' };
+    }, leverage);
+
+    if (!leverageSet.success) {
+      console.log(`⚠ Could not set leverage value`);
+      return { success: false, error: leverageSet.error };
+    }
+
+    console.log(`✓ Changed leverage from ${leverageSet.oldValue} to ${leverageSet.newValue}`);
+    await delay(1000);
+
+    // Verify the value was set
+    const verifyValue = await page.evaluate(() => {
+      const inputs = document.querySelectorAll('input[type="text"], input[type="number"], input:not([type])');
+      for (const input of inputs) {
+        const value = input.value || '';
+        if (/^\d+$/.test(value) && input.offsetParent !== null) {
+          return value;
+        }
+      }
+      return null;
+    });
+
+    console.log(`✓ Leverage input now shows: ${verifyValue} (target was: ${leverage})`);
+
+    if (verifyValue !== String(leverage)) {
+      console.log(`⚠ Warning: Leverage value mismatch. Expected ${leverage}, got ${verifyValue}`);
+    }
+
+    await delay(1000);
+
+    // Step 3: Click the "Confirm" button
+    console.log("Clicking Confirm button...");
+    const confirmed = await page.evaluate(() => {
+      const buttons = Array.from(document.querySelectorAll('button'));
+      for (const btn of buttons) {
+        const text = btn.textContent?.trim();
+        if (text === 'Confirm' && btn.offsetParent !== null) {
+          console.log(`Found and clicking Confirm button`);
+          btn.click();
+          return { success: true };
+        }
+      }
+      return { success: false };
+    });
+
+    if (!confirmed.success) {
+      console.log("⚠ Confirm button not found");
+      return { success: false, error: "Confirm button not found" };
+    }
+
+    console.log(`✓ Leverage successfully set to ${leverage}x`);
+    await delay(1500); // Wait for modal to close
+
+    return { success: true, leverage: leverage };
+  } catch (error) {
+    console.error("Error setting leverage:", error.message);
+    return { success: false, error: error.message };
+  }
+}
+
+async function executeTrade(page, { side, orderType, price, qty, setLeverageFirst = false, leverage = null }) {
   console.log(`\n=== Executing Trade ===`);
-  console.log(`Side: ${side}, Type: ${orderType}, Price: ${price || 'market'}, Qty: ${qty}`);
+
+  // Set leverage first if requested
+  if (setLeverageFirst && leverage) {
+    const leverageResult = await setLeverage(page, leverage);
+    if (!leverageResult.success) {
+      console.log(`⚠ Failed to set leverage: ${leverageResult.error}`);
+      // Continue anyway - leverage setting might not be critical
+    }
+    await delay(1000);
+  }
+
+  // If limit order without price, fetch current market price
+  if (orderType === 'limit' && !price) {
+    price = await getCurrentMarketPrice(page);
+    if (!price) {
+      console.log("❌ Could not fetch market price for limit order");
+      return { success: false, error: "Could not fetch market price" };
+    }
+  }
+
+  console.log(`Side: ${side}, Type: ${orderType}, Price: ${price || 'market'}, Qty: ${qty}${leverage ? `, Leverage: ${leverage}x` : ''}`);
 
   // No need to reload - just wait a moment for any previous actions to complete
   await delay(2000);
@@ -678,7 +927,7 @@ function startApiServer(page, apiPort, email) {
 
   // Place trade
   apiApp.post('/trade', async (req, res) => {
-    const { side, orderType, price, qty } = req.body;
+    const { side, orderType, price, qty, leverage, setLeverageFirst } = req.body;
 
     if (!side || !['buy', 'sell'].includes(side)) {
       return res.status(400).json({ error: "Invalid side. Use 'buy' or 'sell'" });
@@ -686,15 +935,20 @@ function startApiServer(page, apiPort, email) {
     if (!orderType || !['market', 'limit'].includes(orderType)) {
       return res.status(400).json({ error: "Invalid orderType. Use 'market' or 'limit'" });
     }
-    if (orderType === 'limit' && !price) {
-      return res.status(400).json({ error: "Price required for limit orders" });
-    }
+    // Price is now optional for limit orders - will fetch current market price if not provided
     if (!qty || qty <= 0) {
       return res.status(400).json({ error: "Invalid qty. Must be positive number" });
     }
 
     try {
-      const result = await executeTrade(page, { side, orderType, price, qty });
+      const result = await executeTrade(page, {
+        side,
+        orderType,
+        price,
+        qty,
+        leverage,
+        setLeverageFirst: setLeverageFirst || false
+      });
       res.json(result);
     } catch (error) {
       res.status(500).json({ success: false, error: error.message });
@@ -735,10 +989,14 @@ function startApiServer(page, apiPort, email) {
     console.log(`  POST /close-all   - Close all positions`);
     console.log(`  GET  /screenshot  - Take screenshot\n`);
     console.log(`Examples:`);
-    console.log(`  # Place a market buy order`);
+    console.log(`  # Place a limit buy order at market price (price auto-fetched)`);
     console.log(`  curl -X POST http://localhost:${apiPort}/trade \\`);
     console.log(`    -H "Content-Type: application/json" \\`);
-    console.log(`    -d '{"side":"buy","orderType":"market","qty":0.001}'\n`);
+    console.log(`    -d '{"side":"buy","orderType":"limit","qty":0.001}'\n`);
+    console.log(`  # Place a limit order with 40x leverage`);
+    console.log(`  curl -X POST http://localhost:${apiPort}/trade \\`);
+    console.log(`    -H "Content-Type: application/json" \\`);
+    console.log(`    -d '{"side":"buy","orderType":"limit","qty":0.001,"leverage":40,"setLeverageFirst":true}'\n`);
     console.log(`  # Close 100% of position`);
     console.log(`  curl -X POST http://localhost:${apiPort}/close-all \\`);
     console.log(`    -H "Content-Type: application/json" \\`);
@@ -834,6 +1092,7 @@ const TRADE_CONFIG = {
   buyQty: parseFloat(process.env.BUY_QTY) || 0.0005,  // BTC quantity for BUY
   sellQty: parseFloat(process.env.SELL_QTY) || 0.0005,  // BTC quantity for SELL
   waitTime: parseInt(process.env.TRADE_TIME) || 60000,  // Time to wait before closing (milliseconds)
+  leverage: parseInt(process.env.LEVERAGE) || 20,  // Leverage multiplier
 };
 
 let isShuttingDown = false;
@@ -848,7 +1107,8 @@ async function automatedTradingLoop(account1Result, account2Result) {
   console.log(`Starting Automated Trading Loop`);
   console.log(`Account 1 (${email1}): BUY ${TRADE_CONFIG.buyQty} BTC`);
   console.log(`Account 2 (${email2}): SELL ${TRADE_CONFIG.sellQty} BTC`);
-  console.log(`Close after: ${TRADE_CONFIG.waitTime / 1000} seconds`);
+  console.log(`Leverage: ${TRADE_CONFIG.leverage}x`);
+  console.log(`Close after: Random time between 10s and 3min`);
   console.log(`========================================\n`);
 
   while (!isShuttingDown) {
@@ -875,18 +1135,24 @@ async function automatedTradingLoop(account1Result, account2Result) {
       // Small delay to ensure positions are fully closed
       await delay(2000);
 
-      // Step 1: Execute trades in parallel
+      // Step 1: Execute trades in parallel with limit orders at market price
       console.log(`\n[CYCLE ${cycleCount}] Opening new positions...`);
       const tradePromises = [
         executeTrade(page1, {
           side: 'buy',
-          orderType: 'market',
-          qty: TRADE_CONFIG.buyQty
+          orderType: 'limit',  // Changed to limit order
+          qty: TRADE_CONFIG.buyQty,
+          setLeverageFirst: true,  // Set leverage before trading
+          leverage: TRADE_CONFIG.leverage
+          // price will be fetched automatically from market
         }),
         executeTrade(page2, {
           side: 'sell',
-          orderType: 'market',
-          qty: TRADE_CONFIG.sellQty
+          orderType: 'limit',  // Changed to limit order
+          qty: TRADE_CONFIG.sellQty,
+          setLeverageFirst: true,  // Set leverage before trading
+          leverage: TRADE_CONFIG.leverage
+          // price will be fetched automatically from market
         })
       ];
 
@@ -917,12 +1183,16 @@ async function automatedTradingLoop(account1Result, account2Result) {
 
       console.log(`\n✓ [CYCLE ${cycleCount}] Both trades executed successfully!`);
 
-      // Step 2: Wait for specified time (only after both trades succeed)
-      console.log(`\n[CYCLE ${cycleCount}] Waiting ${TRADE_CONFIG.waitTime / 1000} seconds before closing...`);
+      // Step 2: Wait for random time between 10 seconds and 3 minutes (only after both trades succeed)
+      const minWaitTime = 10000; // 10 seconds
+      const maxWaitTime = 180000; // 3 minutes
+      const randomWaitTime = Math.floor(Math.random() * (maxWaitTime - minWaitTime + 1)) + minWaitTime;
+
+      console.log(`\n[CYCLE ${cycleCount}] Waiting ${randomWaitTime / 1000} seconds before closing...`);
 
       // Break wait into smaller chunks to allow faster shutdown
       const checkInterval = 1000; // Check every second
-      for (let i = 0; i < TRADE_CONFIG.waitTime / checkInterval; i++) {
+      for (let i = 0; i < randomWaitTime / checkInterval; i++) {
         if (isShuttingDown) {
           console.log(`\n[CYCLE ${cycleCount}] Shutdown detected during wait period`);
           break;
@@ -930,7 +1200,7 @@ async function automatedTradingLoop(account1Result, account2Result) {
         await delay(checkInterval);
 
         // Show countdown every 10 seconds
-        const remaining = TRADE_CONFIG.waitTime - (i + 1) * checkInterval;
+        const remaining = randomWaitTime - (i + 1) * checkInterval;
         if (remaining > 0 && remaining % 10000 === 0) {
           console.log(`[CYCLE ${cycleCount}] ${remaining / 1000}s remaining...`);
         }

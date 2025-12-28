@@ -22,7 +22,3 @@ Thumbs.db
 
 # Chrome user data
 /tmp/puppeteer-chrome-profile-*
-
-.env
-
-node_modules
