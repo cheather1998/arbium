@@ -13,6 +13,7 @@ puppeteer.use(StealthPlugin());
 
 // ---------- CONFIG ----------
 const PARADEX_URL = "https://app.paradex.trade/trade/BTC-USD-PERP";
+const PARADEX_REFERRAL_URL = "https://app.paradex.trade/r/instantcrypto";
 const HEADLESS = process.argv.includes('--headless');
 
 // Multiple accounts configuration - read from environment variable
@@ -31,12 +32,16 @@ const getAccountsFromEnv = () => {
     process.exit(1);
   }
 
-  return emails.map((email, index) => ({
-    email: email,
-    cookiesPath: `./paradex-cookies-account${index + 1}.json`,
-    profileDir: `/tmp/puppeteer-chrome-profile-${index + 1}`,
-    apiPort: 3001 + index
-  }));
+  return emails.map((email, index) => {
+    // Create a unique profile directory based on email hash to avoid conflicts
+    const emailHash = Buffer.from(email).toString('base64').replace(/[^a-zA-Z0-9]/g, '').substring(0, 10);
+    return {
+      email: email,
+      cookiesPath: `./paradex-cookies-account${index + 1}.json`,
+      profileDir: `/tmp/puppeteer-chrome-profile-${index + 1}-${emailHash}`,
+      apiPort: 3001 + index
+    };
+  });
 };
 
 const ACCOUNTS = getAccountsFromEnv();
@@ -72,14 +77,39 @@ async function findByText(page, text, tagNames = ['button', 'a', 'div', 'span'])
   return null;
 }
 
-async function saveCookies(page, cookiesPath) {
+async function saveCookies(page, cookiesPath, email) {
   const cookies = await page.cookies();
   fs.writeFileSync(cookiesPath, JSON.stringify(cookies, null, 2));
+
+  // Save email metadata alongside cookies
+  const metadataPath = cookiesPath.replace('.json', '-metadata.json');
+  fs.writeFileSync(metadataPath, JSON.stringify({ email, lastUpdated: new Date().toISOString() }, null, 2));
+
   console.log("Cookies saved to", cookiesPath);
 }
 
-async function loadCookies(page, cookiesPath) {
+async function loadCookies(page, cookiesPath, expectedEmail) {
   if (fs.existsSync(cookiesPath)) {
+    // Check metadata to see if cookies belong to a different account
+    const metadataPath = cookiesPath.replace('.json', '-metadata.json');
+    if (fs.existsSync(metadataPath)) {
+      try {
+        const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+        if (metadata.email && metadata.email !== expectedEmail) {
+          console.log(`[${expectedEmail}] Cookie email mismatch: cookie has ${metadata.email}, expected ${expectedEmail}`);
+          console.log(`[${expectedEmail}] Deleting old cookies for different account`);
+          fs.unlinkSync(cookiesPath);
+          fs.unlinkSync(metadataPath);
+          return false;
+        }
+      } catch (e) {
+        console.log(`[${expectedEmail}] Error reading metadata, treating as new account`);
+        fs.unlinkSync(cookiesPath);
+        if (fs.existsSync(metadataPath)) fs.unlinkSync(metadataPath);
+        return false;
+      }
+    }
+
     const cookies = JSON.parse(fs.readFileSync(cookiesPath));
     await page.setCookie(...cookies);
     console.log("Cookies loaded from", cookiesPath);
@@ -119,21 +149,47 @@ async function isLoggedIn(page) {
   return loggedInIndicators;
 }
 
-async function login(page, browser, email, cookiesPath) {
+async function login(page, browser, email, cookiesPath, isNewAccount = false) {
   console.log(`[${email}] Starting login process...`);
 
   try {
-    // Click Log in button
+    // For new accounts, navigate to referral URL first
+    if (isNewAccount) {
+      console.log(`[${email}] New account detected - using referral link`);
+      try {
+        await page.goto(PARADEX_REFERRAL_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await delay(3000);
+        console.log(`[${email}] Referral link applied: ${PARADEX_REFERRAL_URL}`);
+      } catch (error) {
+        console.log(`[${email}] Error loading referral link, continuing...`);
+      }
+    }
+
+    // Click Log in button (first time - on referral/landing page)
     const loginBtn = await findByText(page, 'Log in', ['button']);
     if (loginBtn) {
       await loginBtn.click();
-      console.log(`[${email}] Clicked Log in button`);
+      console.log(`[${email}] Clicked Log in button (first click)`);
+      await delay(3000); // Wait for page to navigate
     } else {
       console.log(`[${email}] No Log in button found - might already be logged in`);
       return true;
     }
 
-    await delay(3000); // Wait for modal to appear
+    // For referral links, we need to click Log in AGAIN on the dashboard
+    if (isNewAccount) {
+      console.log(`[${email}] Looking for Log in button on dashboard...`);
+      const loginBtn2 = await findByText(page, 'Log in', ['button']);
+      if (loginBtn2) {
+        await loginBtn2.click();
+        console.log(`[${email}] Clicked Log in button (second click - on dashboard)`);
+        await delay(3000); // Wait for modal to appear
+      } else {
+        console.log(`[${email}] Second Log in button not found, continuing...`);
+      }
+    }
+
+    await delay(2000); // Additional wait for modal to fully load
 
     // Click Email or Social
     const socialBtn = await findByText(page, 'Email or Social', ['button', 'div']);
@@ -235,7 +291,7 @@ async function login(page, browser, email, cookiesPath) {
   }
 
   await delay(3000);
-  await saveCookies(page, cookiesPath);
+  await saveCookies(page, cookiesPath, email);
   return true;
 }
 
@@ -319,20 +375,20 @@ async function closeAllPositions(page, percent = 100) {
   console.log(`\n=== Closing Position (${percent}%) ===`);
 
   // Wait a moment for any previous actions to complete
-  await delay(2000);
+  await delay(1000);
 
   // Click on Positions tab to see open positions
   const positionsTab = await findByExactText(page, 'Positions', ['button', 'div', 'span']);
   if (positionsTab) {
     await positionsTab.click();
     console.log("Clicked Positions tab");
-    await delay(3000); // Wait for positions to load
+    await delay(1500); // Reduced from 3000
   }
 
-  // Check if there are any open positions (retry a few times for loading)
+  // Check if there are any open positions (reduced retries)
   console.log("Checking for open positions...");
   let hasPositions = false;
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < 2; i++) { // Reduced from 3 to 2
     hasPositions = await page.evaluate(() => {
       const text = document.body.innerText;
       return text.includes('Current Position') || text.includes('Unrealized P&L');
@@ -343,9 +399,9 @@ async function closeAllPositions(page, percent = 100) {
       break;
     }
 
-    if (i < 2) {
-      console.log(`Attempt ${i + 1}/3: No positions found yet, waiting...`);
-      await delay(2000);
+    if (i < 1) { // Only wait on first attempt
+      console.log(`Attempt ${i + 1}/2: No positions found yet, waiting...`);
+      await delay(1000); // Reduced from 2000
     }
   }
 
@@ -381,7 +437,7 @@ async function closeAllPositions(page, percent = 100) {
   if (closeBtn) {
     await closeBtn.click();
     console.log("Clicked Close button");
-    await delay(2000);
+    await delay(1000); // Reduced from 2000
 
     // Select the percentage by clicking the percentage button in the modal
     console.log(`Setting close percentage to ${percent}%`);
@@ -430,7 +486,7 @@ async function closeAllPositions(page, percent = 100) {
     }
 
     console.log(`Clicked ${percentButtonClicked.clicked} button in modal`);
-    await delay(1500);
+    await delay(800); // Reduced from 1500
 
     // Now look for the close confirmation button
     // The button text should have changed to match the percentage
@@ -465,7 +521,7 @@ async function closeAllPositions(page, percent = 100) {
 
     if (closeConfirmBtn.success) {
       console.log(`Clicked button: "${closeConfirmBtn.text}"`);
-      await delay(2000);
+      await delay(1000); // Reduced from 2000
 
       const errorMsg = await page.evaluate(() => {
         const errors = document.querySelectorAll('[class*="error"], [class*="Error"]');
@@ -502,22 +558,60 @@ async function setLeverage(page, leverage) {
     // Step 1: Find and click the leverage display (e.g., "50x") in the trading panel to open modal
     console.log("Looking for leverage button in trading panel...");
     const leverageOpened = await page.evaluate(() => {
-      // Look in the right side trading panel for leverage display
-      const allElements = Array.from(document.querySelectorAll('button, div, span'));
+      // Look for leverage display with various strategies
+      const allElements = Array.from(document.querySelectorAll('button, div, span, a'));
 
+      // Strategy 1: Find elements with "x" pattern (like "50x")
+      let candidates = [];
       for (const el of allElements) {
         const text = el.textContent?.trim();
-        // Look for pattern like "50x" in the trading panel (top right area)
+        // Look for pattern like "50x", "20x", etc.
         if (text && /^\d+x$/i.test(text)) {
-          // Check if it's in the trading panel area (right side)
           const rect = el.getBoundingClientRect();
-          if (rect.x > 1000) { // Right side of screen
-            console.log(`Found leverage button: ${text} at position (${rect.x}, ${rect.y})`);
-            el.click();
-            return { success: true, found: text };
+          // Check if visible and has reasonable size
+          if (rect.width > 0 && rect.height > 0 && el.offsetParent !== null) {
+            candidates.push({
+              element: el,
+              text: text,
+              x: rect.x,
+              y: rect.y,
+              width: rect.width,
+              height: rect.height
+            });
           }
         }
       }
+
+      console.log(`Found ${candidates.length} leverage button candidates`);
+      candidates.forEach((c, i) => {
+        console.log(`  ${i + 1}. "${c.text}" at (${Math.round(c.x)}, ${Math.round(c.y)}) size: ${Math.round(c.width)}x${Math.round(c.height)}`);
+      });
+
+      // Strategy 2: Filter for trading panel area
+      // Look for elements that are in the upper-right area or near trading controls
+      let bestCandidate = null;
+
+      // First try: Look for leverage in the right half of the screen
+      for (const candidate of candidates) {
+        if (candidate.x > window.innerWidth / 2) {
+          bestCandidate = candidate;
+          console.log(`Selected candidate in right panel: "${candidate.text}"`);
+          break;
+        }
+      }
+
+      // Fallback: Just take the first visible one
+      if (!bestCandidate && candidates.length > 0) {
+        bestCandidate = candidates[0];
+        console.log(`Using first available candidate: "${bestCandidate.text}"`);
+      }
+
+      if (bestCandidate) {
+        console.log(`Clicking leverage button: ${bestCandidate.text}`);
+        bestCandidate.element.click();
+        return { success: true, found: bestCandidate.text };
+      }
+
       return { success: false };
     });
 
@@ -526,97 +620,130 @@ async function setLeverage(page, leverage) {
       return { success: false, error: "Leverage button not found" };
     }
 
-    console.log(`✓ Clicked leverage button, waiting for modal...`);
-    await delay(2000); // Wait for "Adjust Leverage" modal to open
+    console.log(`✓ Clicked leverage button: ${leverageOpened.found}, waiting for modal...`);
+    await delay(2500); // Wait for "Adjust Leverage" modal to open
 
     // Step 2: Find the input field in the modal and enter the leverage value
     console.log(`Setting leverage to ${leverage} in the modal...`);
 
-    // Find the input field
-    const leverageInput = await page.evaluate(() => {
+    // Find the leverage input field
+    const inputInfo = await page.evaluate(() => {
       const inputs = document.querySelectorAll('input[type="text"], input[type="number"], input:not([type])');
+
+      console.log(`Found ${inputs.length} input fields in modal`);
+
+      // Strategy: Find input with numeric value in visible modal
       for (const input of inputs) {
+        if (input.offsetParent === null) continue; // Skip hidden inputs
+
         const value = input.value || '';
-        // Check if this is the leverage input (should have a number like "50")
-        if (/^\d+$/.test(value) && input.offsetParent !== null) {
-          console.log(`Found leverage input with current value: ${value}`);
-          return true;
+        const placeholder = input.placeholder || '';
+
+        console.log(`Input: value="${value}", placeholder="${placeholder}"`);
+
+        // Check if this looks like a leverage input
+        if (/^\d+$/.test(value) || placeholder.toLowerCase().includes('leverage')) {
+          console.log(`Found leverage input with current value: "${value}"`);
+
+          // Mark the input with a unique attribute so we can find it again
+          input.setAttribute('data-leverage-input', 'true');
+          input.setAttribute('data-old-value', value);
+
+          return {
+            success: true,
+            oldValue: value
+          };
         }
       }
-      return false;
+
+      return { success: false, error: 'Leverage input not found in modal' };
     });
 
-    if (!leverageInput) {
-      console.log(`⚠ Could not find leverage input field`);
-      return { success: false, error: "Leverage input field not found" };
+    if (!inputInfo.success) {
+      console.log(`⚠ Could not find leverage input: ${inputInfo.error}`);
+      return { success: false, error: inputInfo.error };
     }
 
-    // Get current value and clear it directly, then type new value
-    const leverageSet = await page.evaluate((targetLeverage) => {
-      const inputs = document.querySelectorAll('input[type="text"], input[type="number"], input:not([type])');
+    // Now use Puppeteer to actually type into the input (for proper React state management)
+    const leverageInput = await page.$('input[data-leverage-input="true"]');
 
-      for (const input of inputs) {
-        const value = input.value || '';
-        if (/^\d+$/.test(value) && input.offsetParent !== null) {
-          console.log(`Found leverage input with current value: ${value}`);
+    if (!leverageInput) {
+      console.log(`⚠ Could not locate leverage input element`);
+      return { success: false, error: 'Could not locate leverage input element' };
+    }
 
-          // Focus the input
-          input.focus();
+    // Triple-click to select all and position cursor
+    await leverageInput.click({ clickCount: 3 });
+    await delay(200);
 
-          // Clear the value completely
-          const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
-            window.HTMLInputElement.prototype,
-            'value'
-          ).set;
-          nativeInputValueSetter.call(input, '');
+    // Get current value
+    let currentValue = await page.evaluate(() => {
+      const input = document.querySelector('input[data-leverage-input="true"]');
+      return input ? input.value : '';
+    });
 
-          // Trigger input event to notify React/Vue
-          input.dispatchEvent(new Event('input', { bubbles: true }));
+    console.log(`Current input value: "${currentValue}"`);
 
-          console.log(`Cleared input, it now shows: "${input.value}"`);
+    // Move cursor to end of input
+    await page.keyboard.press('End');
+    await delay(100);
 
-          // Now set the new value
-          nativeInputValueSetter.call(input, String(targetLeverage));
+    // Delete all characters with backspace
+    const deleteCount = currentValue.length;
+    console.log(`Deleting ${deleteCount} characters with backspace...`);
+    for (let i = 0; i < deleteCount; i++) {
+      await page.keyboard.press('Backspace');
+      await delay(30);
+    }
+    await delay(200);
 
-          // Trigger events
-          input.dispatchEvent(new Event('input', { bubbles: true }));
-          input.dispatchEvent(new Event('change', { bubbles: true }));
+    // Verify input is empty or has default "0"
+    currentValue = await page.evaluate(() => {
+      const input = document.querySelector('input[data-leverage-input="true"]');
+      return input ? input.value : '';
+    });
+    console.log(`After deleting: "${currentValue}"`);
 
-          console.log(`Set new value to: ${input.value}`);
+    // If there's still a "0", delete it too
+    if (currentValue === '0') {
+      await page.keyboard.press('Backspace');
+      await delay(100);
+    }
 
-          return { success: true, oldValue: value, newValue: input.value };
-        }
+    // Now type the new leverage value
+    const leverageStr = String(leverage);
+    console.log(`Typing leverage value: "${leverageStr}"`);
+    await page.keyboard.type(leverageStr, { delay: 100 });
+    await delay(300);
+
+    // Delete the trailing "0" if it appears
+    console.log(`Pressing Delete to remove trailing "0"...`);
+    await page.keyboard.press('Delete');
+    await delay(200);
+
+    // Verify the value was set
+    const leverageSet = await page.evaluate(() => {
+      const input = document.querySelector('input[data-leverage-input="true"]');
+      if (input) {
+        return {
+          success: true,
+          oldValue: input.getAttribute('data-old-value') || 'unknown',
+          newValue: input.value
+        };
       }
-      return { success: false, error: 'Input not found' };
-    }, leverage);
+      return { success: false, error: 'Input disappeared' };
+    });
 
     if (!leverageSet.success) {
-      console.log(`⚠ Could not set leverage value`);
+      console.log(`⚠ Could not set leverage value: ${leverageSet.error}`);
       return { success: false, error: leverageSet.error };
     }
 
     console.log(`✓ Changed leverage from ${leverageSet.oldValue} to ${leverageSet.newValue}`);
-    await delay(1000);
 
-    // Verify the value was set
-    const verifyValue = await page.evaluate(() => {
-      const inputs = document.querySelectorAll('input[type="text"], input[type="number"], input:not([type])');
-      for (const input of inputs) {
-        const value = input.value || '';
-        if (/^\d+$/.test(value) && input.offsetParent !== null) {
-          return value;
-        }
-      }
-      return null;
-    });
-
-    console.log(`✓ Leverage input now shows: ${verifyValue} (target was: ${leverage})`);
-
-    if (verifyValue !== String(leverage)) {
-      console.log(`⚠ Warning: Leverage value mismatch. Expected ${leverage}, got ${verifyValue}`);
-    }
-
-    await delay(1000);
+    // Wait for the UI to register the input change before clicking Confirm
+    console.log("Waiting for UI to register the leverage change...");
+    await delay(3000);
 
     // Step 3: Click the "Confirm" button
     console.log("Clicking Confirm button...");
@@ -638,8 +765,29 @@ async function setLeverage(page, leverage) {
       return { success: false, error: "Confirm button not found" };
     }
 
-    console.log(`✓ Leverage successfully set to ${leverage}x`);
-    await delay(1500); // Wait for modal to close
+    await delay(2000); // Wait for modal to close and settings to apply
+
+    // Verify the leverage was actually applied by checking the display button
+    console.log("Verifying leverage was applied...");
+    const finalLeverage = await page.evaluate(() => {
+      const allElements = Array.from(document.querySelectorAll('button, div, span, a'));
+      for (const el of allElements) {
+        const text = el.textContent?.trim();
+        if (text && /^\d+x$/i.test(text)) {
+          const rect = el.getBoundingClientRect();
+          if (rect.width > 0 && rect.height > 0 && el.offsetParent !== null) {
+            return text;
+          }
+        }
+      }
+      return null;
+    });
+
+    if (finalLeverage) {
+      console.log(`✓ Leverage successfully set to ${leverage}x (verified: ${finalLeverage})`);
+    } else {
+      console.log(`✓ Leverage set to ${leverage}x (verification skipped - display not found)`);
+    }
 
     return { success: true, leverage: leverage };
   } catch (error) {
@@ -651,7 +799,7 @@ async function setLeverage(page, leverage) {
 async function executeTrade(page, { side, orderType, price, qty, setLeverageFirst = false, leverage = null }) {
   console.log(`\n=== Executing Trade ===`);
 
-  // Set leverage first if requested
+  // Set leverage first if requested (legacy support for API calls)
   if (setLeverageFirst && leverage) {
     const leverageResult = await setLeverage(page, leverage);
     if (!leverageResult.success) {
@@ -670,10 +818,10 @@ async function executeTrade(page, { side, orderType, price, qty, setLeverageFirs
     }
   }
 
-  console.log(`Side: ${side}, Type: ${orderType}, Price: ${price || 'market'}, Qty: ${qty}${leverage ? `, Leverage: ${leverage}x` : ''}`);
+  console.log(`Side: ${side}, Type: ${orderType}, Price: ${price || 'market'}, Qty: ${qty}`);
 
   // No need to reload - just wait a moment for any previous actions to complete
-  await delay(2000);
+  await delay(1000); // Reduced from 2000
 
   // 1. Select Buy or Sell
   if (side === 'sell') {
@@ -1014,6 +1162,30 @@ async function launchAccount(accountConfig) {
   try {
     console.log(`\n[${email}] Launching browser instance...`);
 
+    // Clean up old profile directories for this account slot if email changed
+    // Look for old profile dirs with pattern /tmp/puppeteer-chrome-profile-{index}-*
+    const accountIndex = cookiesPath.match(/account(\d+)/)?.[1];
+    if (accountIndex) {
+      const profilePattern = `/tmp/puppeteer-chrome-profile-${accountIndex}-`;
+      try {
+        const tmpFiles = fs.readdirSync('/tmp');
+        tmpFiles.forEach(file => {
+          if (file.startsWith(`puppeteer-chrome-profile-${accountIndex}-`) &&
+              `/tmp/${file}` !== profileDir) {
+            const oldProfilePath = path.join('/tmp', file);
+            console.log(`[${email}] Cleaning up old profile directory: ${oldProfilePath}`);
+            try {
+              fs.rmSync(oldProfilePath, { recursive: true, force: true });
+            } catch (e) {
+              console.log(`[${email}] Could not delete old profile (may be in use): ${e.message}`);
+            }
+          }
+        });
+      } catch (e) {
+        // Ignore errors reading /tmp
+      }
+    }
+
     const browser = await puppeteer.launch({
       headless: HEADLESS,
       executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
@@ -1036,12 +1208,24 @@ async function launchAccount(accountConfig) {
 
     await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
-    // Try to load saved cookies
-    await loadCookies(page, cookiesPath);
+    // Try to load saved cookies - check if this is a new account
+    const hasExistingCookies = await loadCookies(page, cookiesPath, email);
+    const isNewAccount = !hasExistingCookies;
+
+    if (isNewAccount) {
+      console.log(`[${email}] New account detected - no existing cookies`);
+    }
 
     console.log(`[${email}] Opening Paradex...`);
+
+    // If new account, use referral URL; otherwise use regular trading URL
+    const targetUrl = isNewAccount ? PARADEX_REFERRAL_URL : PARADEX_URL;
+
     try {
-      await page.goto(PARADEX_URL, { waitUntil: 'domcontentloaded', timeout: 120000 });
+      await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 120000 });
+      if (isNewAccount) {
+        console.log(`[${email}] Loaded with referral link: ${PARADEX_REFERRAL_URL}`);
+      }
     } catch (error) {
       console.log(`[${email}] Page load timeout, attempting to continue...`);
     }
@@ -1052,9 +1236,23 @@ async function launchAccount(accountConfig) {
     console.log(`[${email}] Logged in:`, loggedIn);
 
     if (!loggedIn) {
-      await login(page, browser, email, cookiesPath);
+      await login(page, browser, email, cookiesPath, isNewAccount);
       await delay(3000);
       loggedIn = await isLoggedIn(page);
+    }
+
+    // If logged in and we were on referral page, navigate to trading page
+    if (loggedIn && isNewAccount) {
+      const currentUrl = page.url();
+      if (!currentUrl.includes('app.paradex.trade/trade')) {
+        console.log(`[${email}] Navigating to trading page after login...`);
+        try {
+          await page.goto(PARADEX_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
+          await delay(3000);
+        } catch (error) {
+          console.log(`[${email}] Navigation error, continuing...`);
+        }
+      }
     }
 
     if (loggedIn) {
@@ -1111,6 +1309,30 @@ async function automatedTradingLoop(account1Result, account2Result) {
   console.log(`Close after: Random time between 10s and 3min`);
   console.log(`========================================\n`);
 
+  // Set leverage ONCE at the beginning for both accounts
+  console.log(`\n🔧 Setting leverage for both accounts...`);
+  const leveragePromises = [
+    setLeverage(page1, TRADE_CONFIG.leverage),
+    setLeverage(page2, TRADE_CONFIG.leverage)
+  ];
+
+  const leverageResults = await Promise.all(leveragePromises);
+
+  if (leverageResults[0].success) {
+    console.log(`✓ [${email1}] Leverage set to ${TRADE_CONFIG.leverage}x`);
+  } else {
+    console.log(`⚠ [${email1}] Failed to set leverage: ${leverageResults[0].error}`);
+  }
+
+  if (leverageResults[1].success) {
+    console.log(`✓ [${email2}] Leverage set to ${TRADE_CONFIG.leverage}x`);
+  } else {
+    console.log(`⚠ [${email2}] Failed to set leverage: ${leverageResults[1].error}`);
+  }
+
+  console.log(`\n✓ Leverage configured. Starting trading cycles...\n`);
+  await delay(2000);
+
   while (!isShuttingDown) {
     cycleCount++;
     console.log(`\n>>> CYCLE ${cycleCount} - ${new Date().toLocaleTimeString()}`);
@@ -1140,19 +1362,15 @@ async function automatedTradingLoop(account1Result, account2Result) {
       const tradePromises = [
         executeTrade(page1, {
           side: 'buy',
-          orderType: 'limit',  // Changed to limit order
-          qty: TRADE_CONFIG.buyQty,
-          setLeverageFirst: true,  // Set leverage before trading
-          leverage: TRADE_CONFIG.leverage
-          // price will be fetched automatically from market
+          orderType: 'limit',
+          qty: TRADE_CONFIG.buyQty
+          // Leverage already set at the beginning, price will be fetched automatically
         }),
         executeTrade(page2, {
           side: 'sell',
-          orderType: 'limit',  // Changed to limit order
-          qty: TRADE_CONFIG.sellQty,
-          setLeverageFirst: true,  // Set leverage before trading
-          leverage: TRADE_CONFIG.leverage
-          // price will be fetched automatically from market
+          orderType: 'limit',
+          qty: TRADE_CONFIG.sellQty
+          // Leverage already set at the beginning, price will be fetched automatically
         })
       ];
 
@@ -1288,7 +1506,10 @@ async function main() {
   console.log(`Starting Paradex Multi-Account Bot`);
   console.log(`Headless mode: ${HEADLESS}`);
   console.log(`Number of accounts: ${ACCOUNTS.length}`);
+  console.log(`Referral code: instantcrypto (auto-applied for new accounts)`);
   console.log(`========================================\n`);
+  console.log(`💡 Tip: If you changed account emails, old cookies will be auto-deleted.`);
+  console.log(`    You can also manually delete paradex-cookies-*.json files to reset.\n`);
 
   // Launch all accounts in parallel
   const accountPromises = ACCOUNTS.map(account => launchAccount(account));
