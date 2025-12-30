@@ -1188,7 +1188,7 @@ async function launchAccount(accountConfig) {
 
     const browser = await puppeteer.launch({
       headless: HEADLESS,
-      executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      // executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
       userDataDir: profileDir,
       args: [
         '--start-maximized',
