@@ -373,6 +373,7 @@ async function getCurrentMarketPrice(page) {
 
 async function getCurrentUnrealizedPnL(page) {
   // This function reads the current profit/loss from the Paradex page
+  // Improved to detect losses even when displayed without minus sign (e.g., red color, parentheses)
   try {
     // First, click on "Positions" tab to see the P&L information
     const positionsTab = await findByExactText(page, "Positions", [
@@ -385,24 +386,139 @@ async function getCurrentUnrealizedPnL(page) {
       await delay(1500); // Wait for page to update
     }
 
-    // Now extract the P&L number from the page
+    // Now extract the P&L number from the page with improved loss detection
     const pnl = await page.evaluate(() => {
       const text = document.body.innerText;
+
+      // Helper function to check if color indicates a loss (red colors)
+      const isRedColor = (color) => {
+        if (!color) return false;
+        const lowerColor = color.toLowerCase();
+        return (
+          lowerColor.includes("rgb(255") ||
+          lowerColor.includes("rgb(220") ||
+          lowerColor.includes("rgb(239") ||
+          lowerColor.includes("#ff") ||
+          lowerColor.includes("#f00") ||
+          lowerColor.includes("#ef") ||
+          lowerColor.includes("red")
+        );
+      };
 
       // Strategy 1: Look for text containing "Unrealized P&L" and find the dollar amount nearby
       const allElements = Array.from(document.querySelectorAll("*"));
       for (const el of allElements) {
+        // Skip style, script, and other non-content elements
+        if (
+          el.tagName === "STYLE" ||
+          el.tagName === "SCRIPT" ||
+          el.tagName === "NOSCRIPT"
+        ) {
+          continue;
+        }
+
+        // Skip elements that are not visible
+        const computedStyle = window.getComputedStyle(el);
+        if (
+          computedStyle.display === "none" ||
+          computedStyle.visibility === "hidden"
+        ) {
+          continue;
+        }
+
         const elText = el.textContent || "";
+
+        // Skip if text looks like CSS or code (contains CSS selectors, brackets, etc.)
+        if (
+          elText.includes(":where(") ||
+          elText.includes("{color:") ||
+          elText.includes("background-color:") ||
+          elText.match(/^[a-z-]+:\s*[^;]+;/)
+        ) {
+          continue;
+        }
+
         if (elText.includes("Unrealized P&L") || elText.includes("P&L")) {
-          // Find dollar amounts like "$-123.45" or "-$123.45"
+          // Check if this element or nearby elements indicate a loss
+          const color = computedStyle.color;
+          const isRed = isRedColor(color);
+
+          // Look for dollar amounts with or without minus
           const match = elText.match(
             /[\$]?([-]?[0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{1,2})?)/
           );
+
+          // Also check for parentheses format (2) = loss
+          const parenMatch = elText.match(
+            /\(([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{1,2})?)\)/
+          );
+
           if (match) {
-            const value = parseFloat(match[1].replace(/,/g, ""));
+            let value = parseFloat(match[1].replace(/,/g, ""));
+            const originalValue = value;
+            let conversionReason = null;
+            const matchIndex = elText.indexOf(match[0]);
+
+            // If value is in parentheses, it's a loss (make it negative)
+            if (
+              parenMatch &&
+              Math.abs(value - parseFloat(parenMatch[1].replace(/,/g, ""))) <
+                0.01
+            ) {
+              value = -Math.abs(value);
+              conversionReason = "parentheses format";
+            }
+            // If displayed in red color, it's likely a loss
+            else if (isRed && value > 0) {
+              value = -Math.abs(value);
+              conversionReason = "red color detected";
+            }
+            // If the text contains "loss" or "negative" nearby (but not in CSS), make it negative
+            else if (value > 0) {
+              const lowerText = elText.toLowerCase();
+              const lossIndex = lowerText.indexOf("loss");
+              const negativeIndex = lowerText.indexOf("negative");
+
+              // Only convert if "loss" or "negative" appears near the number (within 50 chars)
+              if (
+                (lossIndex !== -1 && Math.abs(lossIndex - matchIndex) < 50) ||
+                (negativeIndex !== -1 &&
+                  Math.abs(negativeIndex - matchIndex) < 50)
+              ) {
+                value = -Math.abs(value);
+                conversionReason = "loss/negative text found near P&L value";
+              }
+            }
+            // Check parent elements for red color or loss indicators
+            if (value > 0) {
+              let parent = el.parentElement;
+              for (let i = 0; i < 5 && parent; i++) {
+                const parentStyle = window.getComputedStyle(parent);
+                const parentColor = parentStyle.color;
+                if (isRedColor(parentColor)) {
+                  value = -Math.abs(value);
+                  conversionReason = `parent element ${i + 1} has red color`;
+                  break;
+                }
+                parent = parent.parentElement;
+              }
+            }
+
             // Make sure it's a reasonable P&L value (between -$100,000 and $100,000)
             if (value >= -100000 && value <= 100000) {
-              return value;
+              // Return debug info along with value
+              return {
+                value: value,
+                debug: {
+                  originalValue: originalValue,
+                  finalValue: value,
+                  color: color,
+                  isRed: isRed,
+                  conversionReason: conversionReason,
+                  elementText: elText.substring(0, 200), // Show more context
+                  elementTag: el.tagName, // Add tag name for debugging
+                },
+              };
             }
           }
         }
@@ -426,20 +542,93 @@ async function getCurrentUnrealizedPnL(page) {
               nearbyText.includes("P&L") ||
               nearbyText.includes("Unrealized")
             ) {
-              return value;
+              return {
+                value: value,
+                debug: {
+                  originalValue: value,
+                  finalValue: value,
+                  color: "N/A (negative match)",
+                  isRed: false,
+                  conversionReason: "negative sign in text",
+                  elementText: nearbyText,
+                },
+              };
             }
           }
         }
       }
 
-      // Strategy 3: Look in the positions section for any dollar amount
+      // Strategy 3: Look for parentheses format (losses) near P&L text
+      const parenMatches = text.match(
+        /\(([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{1,2})?)\)/g
+      );
+      if (parenMatches) {
+        for (const match of parenMatches) {
+          const matchIndex = text.indexOf(match);
+          const nearbyText = text.substring(
+            Math.max(0, matchIndex - 50),
+            matchIndex + 50
+          );
+          if (
+            nearbyText.includes("P&L") ||
+            nearbyText.includes("Unrealized") ||
+            nearbyText.toLowerCase().includes("loss")
+          ) {
+            const originalValue = parseFloat(match.replace(/[(),]/g, ""));
+            const value = -Math.abs(originalValue);
+            if (value >= -100000) {
+              return {
+                value: value,
+                debug: {
+                  originalValue: originalValue,
+                  finalValue: value,
+                  color: "N/A (parentheses match)",
+                  isRed: false,
+                  conversionReason: "parentheses format",
+                  elementText: nearbyText,
+                },
+              };
+            }
+          }
+        }
+      }
+
+      // Strategy 4: Look in the positions section for any dollar amount
       const positionsSection = text.match(
         /Position[^]*?P&L[^]*?([\$]?[-]?[0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{1,2})?)/i
       );
       if (positionsSection) {
-        const value = parseFloat(positionsSection[1].replace(/[$,]/g, ""));
+        let value = parseFloat(positionsSection[1].replace(/[$,]/g, ""));
+        const originalValue = value;
+        let conversionReason = null;
+
+        // Check if nearby text suggests it's a loss
+        const sectionIndex = text.indexOf(positionsSection[0]);
+        const contextText = text.substring(
+          Math.max(0, sectionIndex - 100),
+          sectionIndex + 100
+        );
+        if (
+          (contextText.toLowerCase().includes("loss") ||
+            contextText.includes("(")) &&
+          value > 0
+        ) {
+          value = -Math.abs(value);
+          conversionReason = "loss text or parentheses in context";
+        }
+
         if (value >= -100000 && value <= 100000) {
-          return value;
+          return {
+            value: value,
+            debug: {
+              originalValue: originalValue,
+              finalValue: value,
+              color: "N/A (positions section)",
+              isRed: false,
+              conversionReason: conversionReason,
+              elementText: contextText.substring(0, 100),
+            },
+          };
         }
       }
 
@@ -447,8 +636,40 @@ async function getCurrentUnrealizedPnL(page) {
     });
 
     if (pnl !== null) {
-      console.log(`Current Unrealized P&L: $${pnl.toLocaleString()}`);
-      return pnl; // Return the P&L value (negative = loss, positive = profit)
+      // Handle both old format (number) and new format (object with debug)
+      let pnlValue, debugInfo;
+      if (typeof pnl === "object" && pnl.value !== undefined) {
+        pnlValue = pnl.value;
+        debugInfo = pnl.debug;
+      } else {
+        pnlValue = pnl;
+        debugInfo = null;
+      }
+
+      console.log(`Current Unrealized P&L: $${pnlValue.toLocaleString()}`);
+
+      // Log debug information if available
+      if (debugInfo) {
+        console.log(
+          `  [P&L Debug] Original Value: $${debugInfo.originalValue}`
+        );
+        console.log(`  [P&L Debug] Final Value: $${debugInfo.finalValue}`);
+        console.log(`  [P&L Debug] Color: ${debugInfo.color}`);
+        console.log(`  [P&L Debug] Is Red: ${debugInfo.isRed}`);
+        if (debugInfo.elementTag) {
+          console.log(`  [P&L Debug] Element Tag: ${debugInfo.elementTag}`);
+        }
+        if (debugInfo.conversionReason) {
+          console.log(
+            `  [P&L Debug] Converted to negative because: ${debugInfo.conversionReason}`
+          );
+        } else {
+          console.log(`  [P&L Debug] No conversion applied (value kept as-is)`);
+        }
+        console.log(`  [P&L Debug] Element Text: ${debugInfo.elementText}`);
+      }
+
+      return pnlValue; // Return the P&L value (negative = loss, positive = profit)
     } else {
       console.log("Could not find Unrealized P&L on page");
       return null;
@@ -474,18 +695,20 @@ async function closeAllPositions(page, percent = 100) {
   if (positionsTab) {
     await positionsTab.click();
     console.log("Clicked Positions tab");
-    await delay(1500); // Reduced from 3000
+    await delay(2000); // Increased wait time for positions to load
   }
 
-  // Check if there are any open positions (reduced retries)
+  // Check if there are any open positions
   console.log("Checking for open positions...");
   let hasPositions = false;
-  for (let i = 0; i < 2; i++) {
-    // Reduced from 3 to 2
+  for (let i = 0; i < 3; i++) {
     hasPositions = await page.evaluate(() => {
       const text = document.body.innerText;
       return (
-        text.includes("Current Position") || text.includes("Unrealized P&L")
+        text.includes("Current Position") ||
+        text.includes("Unrealized P&L") ||
+        text.includes("Position Size") ||
+        text.includes("Entry Price")
       );
     });
 
@@ -494,10 +717,9 @@ async function closeAllPositions(page, percent = 100) {
       break;
     }
 
-    if (i < 1) {
-      // Only wait on first attempt
-      console.log(`Attempt ${i + 1}/2: No positions found yet, waiting...`);
-      await delay(1000); // Reduced from 2000
+    if (i < 2) {
+      console.log(`Attempt ${i + 1}/3: No positions found yet, waiting...`);
+      await delay(1500);
     }
   }
 
@@ -506,21 +728,65 @@ async function closeAllPositions(page, percent = 100) {
     return { success: true, message: "No positions to close" };
   }
 
-  // Look for Close buttons and log what we find
+  // Wait a bit more for UI to fully render
+  await delay(1000);
+
+  // Look for Close buttons with multiple strategies
   const closeButtonsDebug = await page.evaluate(() => {
-    const buttons = Array.from(
-      document.querySelectorAll('button, div[role="button"]')
+    const allButtons = Array.from(
+      document.querySelectorAll(
+        'button, div[role="button"], a[role="button"], [class*="button"]'
+      )
     );
-    return buttons
-      .filter((btn) => {
-        const text = btn.textContent?.trim().toLowerCase();
-        return text && (text.includes("close") || text === "x");
-      })
-      .map((btn) => ({
-        text: btn.textContent?.trim(),
-        visible: btn.offsetParent !== null,
-        className: btn.className,
-      }));
+
+    const candidates = [];
+
+    for (const btn of allButtons) {
+      const text = btn.textContent?.trim().toLowerCase();
+      const isVisible = btn.offsetParent !== null;
+
+      // Strategy 1: Text contains "close"
+      if (text && (text.includes("close") || text === "x")) {
+        candidates.push({
+          text: btn.textContent?.trim(),
+          visible: isVisible,
+          className: btn.className,
+          strategy: "text-match",
+        });
+      }
+
+      // Strategy 2: Button near position-related text
+      if (isVisible) {
+        const parentText = btn.parentElement?.textContent?.toLowerCase() || "";
+        if (
+          parentText.includes("position") &&
+          (text?.includes("close") ||
+            text?.includes("exit") ||
+            text?.includes("sell") ||
+            text?.includes("buy"))
+        ) {
+          candidates.push({
+            text: btn.textContent?.trim(),
+            visible: isVisible,
+            className: btn.className,
+            strategy: "context-match",
+          });
+        }
+      }
+
+      // Strategy 3: Look for buttons with aria-label containing "close"
+      const ariaLabel = btn.getAttribute("aria-label")?.toLowerCase() || "";
+      if (ariaLabel.includes("close") || ariaLabel.includes("exit")) {
+        candidates.push({
+          text: btn.textContent?.trim() || ariaLabel,
+          visible: isVisible,
+          className: btn.className,
+          strategy: "aria-label",
+        });
+      }
+    }
+
+    return candidates;
   });
 
   console.log(
@@ -528,17 +794,79 @@ async function closeAllPositions(page, percent = 100) {
     JSON.stringify(closeButtonsDebug, null, 2)
   );
 
-  if (closeButtonsDebug.length === 0) {
-    console.log("No close buttons found");
+  // Try multiple strategies to find and click close button
+  let closeBtn = null;
+  let closeBtnClicked = false;
+
+  // Strategy 1: Find by text "Close" using existing function
+  closeBtn = await findByText(page, "Close", ["button", "div", "a"]);
+
+  // Strategy 2: If not found, try to find by evaluating the page and click directly
+  if (!closeBtn) {
+    const clicked = await page.evaluate(() => {
+      const buttons = Array.from(
+        document.querySelectorAll(
+          'button, div[role="button"], a[role="button"]'
+        )
+      );
+      for (const btn of buttons) {
+        const text = btn.textContent?.trim().toLowerCase();
+        const isVisible = btn.offsetParent !== null;
+        if (isVisible && text && (text.includes("close") || text === "x")) {
+          btn.click();
+          return true;
+        }
+      }
+      return false;
+    });
+
+    if (clicked) {
+      closeBtnClicked = true;
+      console.log("Clicked Close button (via evaluate)");
+    }
+  }
+
+  // Strategy 3: Try finding by aria-label and click directly
+  if (!closeBtn && !closeBtnClicked) {
+    const clicked = await page.evaluate(() => {
+      const buttons = Array.from(
+        document.querySelectorAll(
+          'button, div[role="button"], a[role="button"]'
+        )
+      );
+      for (const btn of buttons) {
+        const ariaLabel = btn.getAttribute("aria-label")?.toLowerCase() || "";
+        const isVisible = btn.offsetParent !== null;
+        if (
+          isVisible &&
+          (ariaLabel.includes("close") || ariaLabel.includes("exit"))
+        ) {
+          btn.click();
+          return true;
+        }
+      }
+      return false;
+    });
+
+    if (clicked) {
+      closeBtnClicked = true;
+      console.log("Clicked Close button (via aria-label)");
+    }
+  }
+
+  if (!closeBtn && !closeBtnClicked && closeButtonsDebug.length === 0) {
+    console.log("No close buttons found after multiple strategies");
     return { success: false, error: "No close buttons found in positions" };
   }
 
-  // Click the first Close button
-  const closeBtn = await findByText(page, "Close", ["button", "div"]);
-  if (closeBtn) {
+  if (closeBtn && !closeBtnClicked) {
     await closeBtn.click();
     console.log("Clicked Close button");
-    await delay(1000); // Reduced from 2000
+  }
+
+  // Wait for modal to appear (whether clicked via element or evaluate)
+  if (closeBtn || closeBtnClicked) {
+    await delay(2000); // Wait for modal to fully load
 
     // Select the percentage by clicking the percentage button in the modal
     console.log(`Setting close percentage to ${percent}%`);
@@ -1511,7 +1839,7 @@ async function automatedTradingLoop(account1Result, account2Result) {
   console.log(`\n🔧 Setting leverage for both accounts...`);
   const leveragePromises = [
     setLeverage(page1, TRADE_CONFIG.leverage),
-    setLeverage(page2, TRADE_CONFIG.leverage)
+    setLeverage(page2, TRADE_CONFIG.leverage),
   ];
 
   const leverageResults = await Promise.all(leveragePromises);
@@ -1519,13 +1847,17 @@ async function automatedTradingLoop(account1Result, account2Result) {
   if (leverageResults[0].success) {
     console.log(`✓ [${email1}] Leverage set to ${TRADE_CONFIG.leverage}x`);
   } else {
-    console.log(`⚠ [${email1}] Failed to set leverage: ${leverageResults[0].error}`);
+    console.log(
+      `⚠ [${email1}] Failed to set leverage: ${leverageResults[0].error}`
+    );
   }
 
   if (leverageResults[1].success) {
     console.log(`✓ [${email2}] Leverage set to ${TRADE_CONFIG.leverage}x`);
   } else {
-    console.log(`⚠ [${email2}] Failed to set leverage: ${leverageResults[1].error}`);
+    console.log(
+      `⚠ [${email2}] Failed to set leverage: ${leverageResults[1].error}`
+    );
   }
 
   console.log(`\n✓ Leverage configured. Starting trading cycles...\n`);
@@ -1533,14 +1865,16 @@ async function automatedTradingLoop(account1Result, account2Result) {
 
   while (!isShuttingDown) {
     cycleCount++;
-    console.log(`\n>>> CYCLE ${cycleCount} - ${new Date().toLocaleTimeString()}`);
+    console.log(
+      `\n>>> CYCLE ${cycleCount} - ${new Date().toLocaleTimeString()}`
+    );
 
     try {
       // Step 0: Close any existing positions FIRST
       console.log(`\n[CYCLE ${cycleCount}] Checking for existing positions...`);
       const initialClosePromises = [
         closeAllPositions(page1, 100),
-        closeAllPositions(page2, 100)
+        closeAllPositions(page2, 100),
       ];
 
       const initialCloseResults = await Promise.all(initialClosePromises);
@@ -1559,17 +1893,17 @@ async function automatedTradingLoop(account1Result, account2Result) {
       console.log(`\n[CYCLE ${cycleCount}] Opening new positions...`);
       const tradePromises = [
         executeTrade(page1, {
-          side: 'buy',
-          orderType: 'limit',
-          qty: TRADE_CONFIG.buyQty
+          side: "buy",
+          orderType: "limit",
+          qty: TRADE_CONFIG.buyQty,
           // Leverage already set at the beginning, price will be fetched automatically
         }),
         executeTrade(page2, {
-          side: 'sell',
-          orderType: 'limit',
-          qty: TRADE_CONFIG.sellQty
+          side: "sell",
+          orderType: "limit",
+          qty: TRADE_CONFIG.sellQty,
           // Leverage already set at the beginning, price will be fetched automatically
-        })
+        }),
       ];
 
       const tradeResults = await Promise.all(tradePromises);
@@ -1592,19 +1926,29 @@ async function automatedTradingLoop(account1Result, account2Result) {
 
       // Only proceed to wait and close if BOTH trades succeeded
       if (!trade1Success || !trade2Success) {
-        console.log(`\n✗ [CYCLE ${cycleCount}] One or both trades failed. Skipping wait and retrying in 5 seconds...`);
+        console.log(
+          `\n✗ [CYCLE ${cycleCount}] One or both trades failed. Skipping wait and retrying in 5 seconds...`
+        );
         await delay(5000);
         continue; // Skip to next cycle
       }
 
-      console.log(`\n✓ [CYCLE ${cycleCount}] Both trades executed successfully!`);
+      console.log(
+        `\n✓ [CYCLE ${cycleCount}] Both trades executed successfully!`
+      );
 
       // Step 2: Wait for random time between 10 seconds and 3 minutes (only after both trades succeed)
       const minWaitTime = 10000; // 10 seconds
       const maxWaitTime = 180000; // 3 minutes
-      const randomWaitTime = Math.floor(Math.random() * (maxWaitTime - minWaitTime + 1)) + minWaitTime;
+      const randomWaitTime =
+        Math.floor(Math.random() * (maxWaitTime - minWaitTime + 1)) +
+        minWaitTime;
 
-      console.log(`\n[CYCLE ${cycleCount}] Waiting ${randomWaitTime / 1000} seconds before closing...`);
+      console.log(
+        `\n[CYCLE ${cycleCount}] Waiting ${
+          randomWaitTime / 1000
+        } seconds before closing...`
+      );
       if (TRADE_CONFIG.stopLoss) {
         console.log(
           `[CYCLE ${cycleCount}] Stop loss enabled: $${TRADE_CONFIG.stopLoss} (will monitor P&L)`
@@ -1630,16 +1974,34 @@ async function automatedTradingLoop(account1Result, account2Result) {
             const pnl1 = await getCurrentUnrealizedPnL(page1);
             const pnl2 = await getCurrentUnrealizedPnL(page2);
 
+            const stopLossThreshold = -Math.abs(TRADE_CONFIG.stopLoss);
+
+            // Debug logging every 5 checks (every 10 seconds) to see what's being compared
+            if (i > 0 && i % 5 === 0) {
+              console.log(
+                `[CYCLE ${cycleCount}] Stop Loss Check - ${email1}: $${
+                  pnl1 !== null ? pnl1.toLocaleString() : "N/A"
+                }, ${email2}: $${
+                  pnl2 !== null ? pnl2.toLocaleString() : "N/A"
+                }, Threshold: $${stopLossThreshold.toLocaleString()}`
+              );
+            }
+
             // Check if Account 1 has exceeded stop loss
-            // pnl1 < -Math.abs(TRADE_CONFIG.stopLoss) means loss is worse than stop loss
-            // Example: if stopLoss=50, we check if pnl1 < -50
-            if (pnl1 !== null && pnl1 < -Math.abs(TRADE_CONFIG.stopLoss)) {
+            // Changed from < to <= so it triggers at exactly the stop loss amount
+            // Example: if stopLoss=1.5, we check if pnl1 <= -1.5
+            if (pnl1 !== null && pnl1 <= stopLossThreshold) {
               console.log(
                 `\n🚨 [CYCLE ${cycleCount}] STOP LOSS TRIGGERED for ${email1}!`
               );
               console.log(
-                `   Current P&L: $${pnl1.toLocaleString()}, Stop Loss: $${
+                `   Current P&L: $${pnl1.toLocaleString()}, Stop Loss: -$${
                   TRADE_CONFIG.stopLoss
+                }`
+              );
+              console.log(
+                `   Condition: ${pnl1} <= ${stopLossThreshold} = ${
+                  pnl1 <= stopLossThreshold
                 }`
               );
               console.log(`   Closing positions immediately...`);
@@ -1655,13 +2017,19 @@ async function automatedTradingLoop(account1Result, account2Result) {
             }
 
             // Check if Account 2 has exceeded stop loss
-            if (pnl2 !== null && pnl2 < -Math.abs(TRADE_CONFIG.stopLoss)) {
+            // Changed from < to <= so it triggers at exactly the stop loss amount
+            if (pnl2 !== null && pnl2 <= stopLossThreshold) {
               console.log(
                 `\n🚨 [CYCLE ${cycleCount}] STOP LOSS TRIGGERED for ${email2}!`
               );
               console.log(
-                `   Current P&L: $${pnl2.toLocaleString()}, Stop Loss: $${
+                `   Current P&L: $${pnl2.toLocaleString()}, Stop Loss: -$${
                   TRADE_CONFIG.stopLoss
+                }`
+              );
+              console.log(
+                `   Condition: ${pnl2} <= ${stopLossThreshold} = ${
+                  pnl2 <= stopLossThreshold
                 }`
               );
               console.log(`   Closing positions immediately...`);
@@ -1712,7 +2080,7 @@ async function automatedTradingLoop(account1Result, account2Result) {
       console.log(`\n[CYCLE ${cycleCount}] Closing positions...`);
       const closePromises = [
         closeAllPositions(page1, 100),
-        closeAllPositions(page2, 100)
+        closeAllPositions(page2, 100),
       ];
 
       const closeResults = await Promise.all(closePromises);
@@ -1723,20 +2091,32 @@ async function automatedTradingLoop(account1Result, account2Result) {
       if (close1Success) {
         console.log(`✓ [${email1}] Position closed successfully`);
       } else {
-        console.log(`✗ [${email1}] Close failed: ${closeResults[0].error || closeResults[0].message}`);
+        console.log(
+          `✗ [${email1}] Close failed: ${
+            closeResults[0].error || closeResults[0].message
+          }`
+        );
       }
 
       if (close2Success) {
         console.log(`✓ [${email2}] Position closed successfully`);
       } else {
-        console.log(`✗ [${email2}] Close failed: ${closeResults[1].error || closeResults[1].message}`);
+        console.log(
+          `✗ [${email2}] Close failed: ${
+            closeResults[1].error || closeResults[1].message
+          }`
+        );
       }
 
       // Check if both positions closed successfully
       if (close1Success && close2Success) {
-        console.log(`\n✓ [CYCLE ${cycleCount}] Completed successfully at ${new Date().toLocaleTimeString()}`);
+        console.log(
+          `\n✓ [CYCLE ${cycleCount}] Completed successfully at ${new Date().toLocaleTimeString()}`
+        );
       } else {
-        console.log(`\n⚠ [CYCLE ${cycleCount}] Completed with some errors at ${new Date().toLocaleTimeString()}`);
+        console.log(
+          `\n⚠ [CYCLE ${cycleCount}] Completed with some errors at ${new Date().toLocaleTimeString()}`
+        );
       }
 
       // Small delay before next cycle
@@ -1744,7 +2124,6 @@ async function automatedTradingLoop(account1Result, account2Result) {
         console.log(`\nStarting next cycle in 3 seconds...`);
         await delay(3000);
       }
-
     } catch (error) {
       console.error(`\n✗ [CYCLE ${cycleCount}] Error:`, error.message);
       console.log(`Waiting 5 seconds before retry...`);
