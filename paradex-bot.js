@@ -371,6 +371,94 @@ async function getCurrentMarketPrice(page) {
   }
 }
 
+async function getCurrentUnrealizedPnL(page) {
+  // This function reads the current profit/loss from the Paradex page
+  try {
+    // First, click on "Positions" tab to see the P&L information
+    const positionsTab = await findByExactText(page, "Positions", [
+      "button",
+      "div",
+      "span",
+    ]);
+    if (positionsTab) {
+      await positionsTab.click();
+      await delay(1500); // Wait for page to update
+    }
+
+    // Now extract the P&L number from the page
+    const pnl = await page.evaluate(() => {
+      const text = document.body.innerText;
+
+      // Strategy 1: Look for text containing "Unrealized P&L" and find the dollar amount nearby
+      const allElements = Array.from(document.querySelectorAll("*"));
+      for (const el of allElements) {
+        const elText = el.textContent || "";
+        if (elText.includes("Unrealized P&L") || elText.includes("P&L")) {
+          // Find dollar amounts like "$-123.45" or "-$123.45"
+          const match = elText.match(
+            /[\$]?([-]?[0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{1,2})?)/
+          );
+          if (match) {
+            const value = parseFloat(match[1].replace(/,/g, ""));
+            // Make sure it's a reasonable P&L value (between -$100,000 and $100,000)
+            if (value >= -100000 && value <= 100000) {
+              return value;
+            }
+          }
+        }
+      }
+
+      // Strategy 2: Look for negative dollar amounts (losses) near "P&L" text
+      const negativeMatches = text.match(
+        /[\$]?([-][0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{1,2})?)/g
+      );
+      if (negativeMatches) {
+        for (const match of negativeMatches) {
+          const value = parseFloat(match.replace(/[$,]/g, ""));
+          if (value < 0 && value >= -100000) {
+            // Check if this number is near "P&L" text
+            const matchIndex = text.indexOf(match);
+            const nearbyText = text.substring(
+              Math.max(0, matchIndex - 50),
+              matchIndex + 50
+            );
+            if (
+              nearbyText.includes("P&L") ||
+              nearbyText.includes("Unrealized")
+            ) {
+              return value;
+            }
+          }
+        }
+      }
+
+      // Strategy 3: Look in the positions section for any dollar amount
+      const positionsSection = text.match(
+        /Position[^]*?P&L[^]*?([\$]?[-]?[0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{1,2})?)/i
+      );
+      if (positionsSection) {
+        const value = parseFloat(positionsSection[1].replace(/[$,]/g, ""));
+        if (value >= -100000 && value <= 100000) {
+          return value;
+        }
+      }
+
+      return null; // Couldn't find P&L
+    });
+
+    if (pnl !== null) {
+      console.log(`Current Unrealized P&L: $${pnl.toLocaleString()}`);
+      return pnl; // Return the P&L value (negative = loss, positive = profit)
+    } else {
+      console.log("Could not find Unrealized P&L on page");
+      return null;
+    }
+  } catch (error) {
+    console.error("Error fetching P&L:", error.message);
+    return null;
+  }
+}
+
 async function closeAllPositions(page, percent = 100) {
   console.log(`\n=== Closing Position (${percent}%) ===`);
 
@@ -378,7 +466,11 @@ async function closeAllPositions(page, percent = 100) {
   await delay(1000);
 
   // Click on Positions tab to see open positions
-  const positionsTab = await findByExactText(page, 'Positions', ['button', 'div', 'span']);
+  const positionsTab = await findByExactText(page, "Positions", [
+    "button",
+    "div",
+    "span",
+  ]);
   if (positionsTab) {
     await positionsTab.click();
     console.log("Clicked Positions tab");
@@ -388,10 +480,13 @@ async function closeAllPositions(page, percent = 100) {
   // Check if there are any open positions (reduced retries)
   console.log("Checking for open positions...");
   let hasPositions = false;
-  for (let i = 0; i < 2; i++) { // Reduced from 3 to 2
+  for (let i = 0; i < 2; i++) {
+    // Reduced from 3 to 2
     hasPositions = await page.evaluate(() => {
       const text = document.body.innerText;
-      return text.includes('Current Position') || text.includes('Unrealized P&L');
+      return (
+        text.includes("Current Position") || text.includes("Unrealized P&L")
+      );
     });
 
     if (hasPositions) {
@@ -399,7 +494,8 @@ async function closeAllPositions(page, percent = 100) {
       break;
     }
 
-    if (i < 1) { // Only wait on first attempt
+    if (i < 1) {
+      // Only wait on first attempt
       console.log(`Attempt ${i + 1}/2: No positions found yet, waiting...`);
       await delay(1000); // Reduced from 2000
     }
@@ -412,20 +508,25 @@ async function closeAllPositions(page, percent = 100) {
 
   // Look for Close buttons and log what we find
   const closeButtonsDebug = await page.evaluate(() => {
-    const buttons = Array.from(document.querySelectorAll('button, div[role="button"]'));
+    const buttons = Array.from(
+      document.querySelectorAll('button, div[role="button"]')
+    );
     return buttons
-      .filter(btn => {
+      .filter((btn) => {
         const text = btn.textContent?.trim().toLowerCase();
-        return text && (text.includes('close') || text === 'x');
+        return text && (text.includes("close") || text === "x");
       })
-      .map(btn => ({
+      .map((btn) => ({
         text: btn.textContent?.trim(),
         visible: btn.offsetParent !== null,
-        className: btn.className
+        className: btn.className,
       }));
   });
 
-  console.log(`Found ${closeButtonsDebug.length} close-related buttons:`, JSON.stringify(closeButtonsDebug, null, 2));
+  console.log(
+    `Found ${closeButtonsDebug.length} close-related buttons:`,
+    JSON.stringify(closeButtonsDebug, null, 2)
+  );
 
   if (closeButtonsDebug.length === 0) {
     console.log("No close buttons found");
@@ -433,7 +534,7 @@ async function closeAllPositions(page, percent = 100) {
   }
 
   // Click the first Close button
-  const closeBtn = await findByText(page, 'Close', ['button', 'div']);
+  const closeBtn = await findByText(page, "Close", ["button", "div"]);
   if (closeBtn) {
     await closeBtn.click();
     console.log("Clicked Close button");
@@ -445,7 +546,7 @@ async function closeAllPositions(page, percent = 100) {
     // Find and click the percentage button in the modal
     // These buttons are INSIDE the modal, below "Position Value (Closing)"
     const percentButtonClicked = await page.evaluate((targetPercent) => {
-      const buttons = Array.from(document.querySelectorAll('button'));
+      const buttons = Array.from(document.querySelectorAll("button"));
 
       // Find buttons that are just the percentage (like "50%", "25%", etc)
       // AND are inside a modal (check for modal-related parent)
@@ -460,9 +561,11 @@ async function closeAllPositions(page, percent = 100) {
 
           // Check up to 10 levels up for modal indicators
           for (let i = 0; i < 10 && parent; i++) {
-            const parentText = parent.textContent || '';
-            if (parentText.includes('Close All Positions') ||
-                parentText.includes('Position Value (Closing)')) {
+            const parentText = parent.textContent || "";
+            if (
+              parentText.includes("Close All Positions") ||
+              parentText.includes("Position Value (Closing)")
+            ) {
               isInModal = true;
               break;
             }
@@ -477,7 +580,10 @@ async function closeAllPositions(page, percent = 100) {
         }
       }
 
-      return { success: false, error: `${targetPercent}% button not found in modal` };
+      return {
+        success: false,
+        error: `${targetPercent}% button not found in modal`,
+      };
     }, percent);
 
     if (!percentButtonClicked.success) {
@@ -493,11 +599,11 @@ async function closeAllPositions(page, percent = 100) {
     console.log(`Looking for close confirmation button...`);
 
     const closeConfirmBtn = await page.evaluate((targetPercent) => {
-      const buttons = Array.from(document.querySelectorAll('button'));
+      const buttons = Array.from(document.querySelectorAll("button"));
 
       // Log all buttons for debugging
-      console.log('All buttons in modal:');
-      buttons.forEach(btn => {
+      console.log("All buttons in modal:");
+      buttons.forEach((btn) => {
         const text = btn.textContent?.trim();
         if (text) console.log(`  - "${text}"`);
       });
@@ -505,10 +611,12 @@ async function closeAllPositions(page, percent = 100) {
       // Look for button with text like "Close 50% of All Positions"
       for (const btn of buttons) {
         const text = btn.textContent?.trim();
-        if (text &&
-            text.toLowerCase().includes('close') &&
-            text.includes('%') &&
-            text.toLowerCase().includes('position')) {
+        if (
+          text &&
+          text.toLowerCase().includes("close") &&
+          text.includes("%") &&
+          text.toLowerCase().includes("position")
+        ) {
           // Found the button, click it
           console.log(`Found and clicking: "${text}"`);
           btn.click();
@@ -524,7 +632,9 @@ async function closeAllPositions(page, percent = 100) {
       await delay(1000); // Reduced from 2000
 
       const errorMsg = await page.evaluate(() => {
-        const errors = document.querySelectorAll('[class*="error"], [class*="Error"]');
+        const errors = document.querySelectorAll(
+          '[class*="error"], [class*="Error"]'
+        );
         for (const err of errors) {
           if (err.textContent) return err.textContent;
         }
@@ -559,7 +669,9 @@ async function setLeverage(page, leverage) {
     console.log("Looking for leverage button in trading panel...");
     const leverageOpened = await page.evaluate(() => {
       // Look for leverage display with various strategies
-      const allElements = Array.from(document.querySelectorAll('button, div, span, a'));
+      const allElements = Array.from(
+        document.querySelectorAll("button, div, span, a")
+      );
 
       // Strategy 1: Find elements with "x" pattern (like "50x")
       let candidates = [];
@@ -576,7 +688,7 @@ async function setLeverage(page, leverage) {
               x: rect.x,
               y: rect.y,
               width: rect.width,
-              height: rect.height
+              height: rect.height,
             });
           }
         }
@@ -584,7 +696,11 @@ async function setLeverage(page, leverage) {
 
       console.log(`Found ${candidates.length} leverage button candidates`);
       candidates.forEach((c, i) => {
-        console.log(`  ${i + 1}. "${c.text}" at (${Math.round(c.x)}, ${Math.round(c.y)}) size: ${Math.round(c.width)}x${Math.round(c.height)}`);
+        console.log(
+          `  ${i + 1}. "${c.text}" at (${Math.round(c.x)}, ${Math.round(
+            c.y
+          )}) size: ${Math.round(c.width)}x${Math.round(c.height)}`
+        );
       });
 
       // Strategy 2: Filter for trading panel area
@@ -620,7 +736,9 @@ async function setLeverage(page, leverage) {
       return { success: false, error: "Leverage button not found" };
     }
 
-    console.log(`✓ Clicked leverage button: ${leverageOpened.found}, waiting for modal...`);
+    console.log(
+      `✓ Clicked leverage button: ${leverageOpened.found}, waiting for modal...`
+    );
     await delay(2500); // Wait for "Adjust Leverage" modal to open
 
     // Step 2: Find the input field in the modal and enter the leverage value
@@ -628,7 +746,9 @@ async function setLeverage(page, leverage) {
 
     // Find the leverage input field
     const inputInfo = await page.evaluate(() => {
-      const inputs = document.querySelectorAll('input[type="text"], input[type="number"], input:not([type])');
+      const inputs = document.querySelectorAll(
+        'input[type="text"], input[type="number"], input:not([type])'
+      );
 
       console.log(`Found ${inputs.length} input fields in modal`);
 
@@ -636,27 +756,30 @@ async function setLeverage(page, leverage) {
       for (const input of inputs) {
         if (input.offsetParent === null) continue; // Skip hidden inputs
 
-        const value = input.value || '';
-        const placeholder = input.placeholder || '';
+        const value = input.value || "";
+        const placeholder = input.placeholder || "";
 
         console.log(`Input: value="${value}", placeholder="${placeholder}"`);
 
         // Check if this looks like a leverage input
-        if (/^\d+$/.test(value) || placeholder.toLowerCase().includes('leverage')) {
+        if (
+          /^\d+$/.test(value) ||
+          placeholder.toLowerCase().includes("leverage")
+        ) {
           console.log(`Found leverage input with current value: "${value}"`);
 
           // Mark the input with a unique attribute so we can find it again
-          input.setAttribute('data-leverage-input', 'true');
-          input.setAttribute('data-old-value', value);
+          input.setAttribute("data-leverage-input", "true");
+          input.setAttribute("data-old-value", value);
 
           return {
             success: true,
-            oldValue: value
+            oldValue: value,
           };
         }
       }
 
-      return { success: false, error: 'Leverage input not found in modal' };
+      return { success: false, error: "Leverage input not found in modal" };
     });
 
     if (!inputInfo.success) {
@@ -669,7 +792,10 @@ async function setLeverage(page, leverage) {
 
     if (!leverageInput) {
       console.log(`⚠ Could not locate leverage input element`);
-      return { success: false, error: 'Could not locate leverage input element' };
+      return {
+        success: false,
+        error: "Could not locate leverage input element",
+      };
     }
 
     // Triple-click to select all and position cursor
@@ -679,20 +805,20 @@ async function setLeverage(page, leverage) {
     // Get current value
     let currentValue = await page.evaluate(() => {
       const input = document.querySelector('input[data-leverage-input="true"]');
-      return input ? input.value : '';
+      return input ? input.value : "";
     });
 
     console.log(`Current input value: "${currentValue}"`);
 
     // Move cursor to end of input
-    await page.keyboard.press('End');
+    await page.keyboard.press("End");
     await delay(100);
 
     // Delete all characters with backspace
     const deleteCount = currentValue.length;
     console.log(`Deleting ${deleteCount} characters with backspace...`);
     for (let i = 0; i < deleteCount; i++) {
-      await page.keyboard.press('Backspace');
+      await page.keyboard.press("Backspace");
       await delay(30);
     }
     await delay(200);
@@ -700,13 +826,13 @@ async function setLeverage(page, leverage) {
     // Verify input is empty or has default "0"
     currentValue = await page.evaluate(() => {
       const input = document.querySelector('input[data-leverage-input="true"]');
-      return input ? input.value : '';
+      return input ? input.value : "";
     });
     console.log(`After deleting: "${currentValue}"`);
 
     // If there's still a "0", delete it too
-    if (currentValue === '0') {
-      await page.keyboard.press('Backspace');
+    if (currentValue === "0") {
+      await page.keyboard.press("Backspace");
       await delay(100);
     }
 
@@ -718,7 +844,7 @@ async function setLeverage(page, leverage) {
 
     // Delete the trailing "0" if it appears
     console.log(`Pressing Delete to remove trailing "0"...`);
-    await page.keyboard.press('Delete');
+    await page.keyboard.press("Delete");
     await delay(200);
 
     // Verify the value was set
@@ -727,11 +853,11 @@ async function setLeverage(page, leverage) {
       if (input) {
         return {
           success: true,
-          oldValue: input.getAttribute('data-old-value') || 'unknown',
-          newValue: input.value
+          oldValue: input.getAttribute("data-old-value") || "unknown",
+          newValue: input.value,
         };
       }
-      return { success: false, error: 'Input disappeared' };
+      return { success: false, error: "Input disappeared" };
     });
 
     if (!leverageSet.success) {
@@ -739,7 +865,9 @@ async function setLeverage(page, leverage) {
       return { success: false, error: leverageSet.error };
     }
 
-    console.log(`✓ Changed leverage from ${leverageSet.oldValue} to ${leverageSet.newValue}`);
+    console.log(
+      `✓ Changed leverage from ${leverageSet.oldValue} to ${leverageSet.newValue}`
+    );
 
     // Wait for the UI to register the input change before clicking Confirm
     console.log("Waiting for UI to register the leverage change...");
@@ -748,10 +876,10 @@ async function setLeverage(page, leverage) {
     // Step 3: Click the "Confirm" button
     console.log("Clicking Confirm button...");
     const confirmed = await page.evaluate(() => {
-      const buttons = Array.from(document.querySelectorAll('button'));
+      const buttons = Array.from(document.querySelectorAll("button"));
       for (const btn of buttons) {
         const text = btn.textContent?.trim();
-        if (text === 'Confirm' && btn.offsetParent !== null) {
+        if (text === "Confirm" && btn.offsetParent !== null) {
           console.log(`Found and clicking Confirm button`);
           btn.click();
           return { success: true };
@@ -770,7 +898,9 @@ async function setLeverage(page, leverage) {
     // Verify the leverage was actually applied by checking the display button
     console.log("Verifying leverage was applied...");
     const finalLeverage = await page.evaluate(() => {
-      const allElements = Array.from(document.querySelectorAll('button, div, span, a'));
+      const allElements = Array.from(
+        document.querySelectorAll("button, div, span, a")
+      );
       for (const el of allElements) {
         const text = el.textContent?.trim();
         if (text && /^\d+x$/i.test(text)) {
@@ -784,9 +914,13 @@ async function setLeverage(page, leverage) {
     });
 
     if (finalLeverage) {
-      console.log(`✓ Leverage successfully set to ${leverage}x (verified: ${finalLeverage})`);
+      console.log(
+        `✓ Leverage successfully set to ${leverage}x (verified: ${finalLeverage})`
+      );
     } else {
-      console.log(`✓ Leverage set to ${leverage}x (verification skipped - display not found)`);
+      console.log(
+        `✓ Leverage set to ${leverage}x (verification skipped - display not found)`
+      );
     }
 
     return { success: true, leverage: leverage };
@@ -796,7 +930,10 @@ async function setLeverage(page, leverage) {
   }
 }
 
-async function executeTrade(page, { side, orderType, price, qty, setLeverageFirst = false, leverage = null }) {
+async function executeTrade(
+  page,
+  { side, orderType, price, qty, setLeverageFirst = false, leverage = null }
+) {
   console.log(`\n=== Executing Trade ===`);
 
   // Set leverage first if requested (legacy support for API calls)
@@ -810,7 +947,7 @@ async function executeTrade(page, { side, orderType, price, qty, setLeverageFirs
   }
 
   // If limit order without price, fetch current market price
-  if (orderType === 'limit' && !price) {
+  if (orderType === "limit" && !price) {
     price = await getCurrentMarketPrice(page);
     if (!price) {
       console.log("❌ Could not fetch market price for limit order");
@@ -818,21 +955,25 @@ async function executeTrade(page, { side, orderType, price, qty, setLeverageFirs
     }
   }
 
-  console.log(`Side: ${side}, Type: ${orderType}, Price: ${price || 'market'}, Qty: ${qty}`);
+  console.log(
+    `Side: ${side}, Type: ${orderType}, Price: ${
+      price || "market"
+    }, Qty: ${qty}`
+  );
 
   // No need to reload - just wait a moment for any previous actions to complete
   await delay(1000); // Reduced from 2000
 
   // 1. Select Buy or Sell
-  if (side === 'sell') {
-    const sellBtn = await findByExactText(page, 'Sell', ['button', 'div']);
+  if (side === "sell") {
+    const sellBtn = await findByExactText(page, "Sell", ["button", "div"]);
     if (sellBtn) {
       await sellBtn.click();
       console.log("Selected SELL");
       await delay(500);
     }
   } else {
-    const buyBtn = await findByExactText(page, 'Buy', ['button', 'div']);
+    const buyBtn = await findByExactText(page, "Buy", ["button", "div"]);
     if (buyBtn) {
       await buyBtn.click();
       console.log("Selected BUY");
@@ -841,15 +982,15 @@ async function executeTrade(page, { side, orderType, price, qty, setLeverageFirs
   }
 
   // 2. Select Market or Limit order type
-  if (orderType === 'limit') {
-    const limitBtn = await findByExactText(page, 'Limit', ['button', 'div']);
+  if (orderType === "limit") {
+    const limitBtn = await findByExactText(page, "Limit", ["button", "div"]);
     if (limitBtn) {
       await limitBtn.click();
       console.log("Selected LIMIT order");
       await delay(500);
     }
   } else {
-    const marketBtn = await findByExactText(page, 'Market', ['button', 'div']);
+    const marketBtn = await findByExactText(page, "Market", ["button", "div"]);
     if (marketBtn) {
       await marketBtn.click();
       console.log("Selected MARKET order");
@@ -873,17 +1014,17 @@ async function executeTrade(page, { side, orderType, price, qty, setLeverageFirs
     // Look for inputs in the right panel (trading panel is on the right side)
     if (rect.x < 1100) continue;
 
-    const inputInfo = await page.evaluate(el => {
+    const inputInfo = await page.evaluate((el) => {
       // Get all text content around this input
       let parent = el.parentElement;
-      let parentText = '';
-      let labelText = '';
+      let parentText = "";
+      let labelText = "";
 
       // Check for label
-      const labels = document.querySelectorAll('label');
+      const labels = document.querySelectorAll("label");
       for (const label of labels) {
         if (label.control === el || label.contains(el)) {
-          labelText = label.textContent?.trim() || '';
+          labelText = label.textContent?.trim() || "";
         }
       }
 
@@ -897,59 +1038,67 @@ async function executeTrade(page, { side, orderType, price, qty, setLeverageFirs
       }
 
       return {
-        placeholder: el.placeholder || '',
-        value: el.value || '',
-        id: el.id || '',
-        name: el.name || '',
+        placeholder: el.placeholder || "",
+        value: el.value || "",
+        id: el.id || "",
+        name: el.name || "",
         parentText: parentText,
-        labelText: labelText
+        labelText: labelText,
       };
     }, input);
 
     console.log(`Input at (${Math.round(rect.x)}, ${Math.round(rect.y)})`);
-    console.log(`  ID: "${inputInfo.id}", Name: "${inputInfo.name}", Placeholder: "${inputInfo.placeholder}"`);
-    console.log(`  Label: "${inputInfo.labelText}", Parent: "${inputInfo.parentText.substring(0, 60)}"`);
+    console.log(
+      `  ID: "${inputInfo.id}", Name: "${inputInfo.name}", Placeholder: "${inputInfo.placeholder}"`
+    );
+    console.log(
+      `  Label: "${
+        inputInfo.labelText
+      }", Parent: "${inputInfo.parentText.substring(0, 60)}"`
+    );
     console.log(`  Current value: "${inputInfo.value}"`);
 
     // Check if this is the Size input
-    const isSizeInput = inputInfo.parentText.includes('Size') ||
-                        inputInfo.labelText.includes('Size') ||
-                        inputInfo.placeholder.includes('Size') ||
-                        inputInfo.id.includes('size') ||
-                        inputInfo.name.includes('size');
+    const isSizeInput =
+      inputInfo.parentText.includes("Size") ||
+      inputInfo.labelText.includes("Size") ||
+      inputInfo.placeholder.includes("Size") ||
+      inputInfo.id.includes("size") ||
+      inputInfo.name.includes("size");
 
     // Check if this is the Price input
-    const isPriceInput = inputInfo.parentText.includes('Price') ||
-                         inputInfo.labelText.includes('Price') ||
-                         inputInfo.placeholder.includes('Price') ||
-                         inputInfo.id.includes('price') ||
-                         inputInfo.name.includes('price');
+    const isPriceInput =
+      inputInfo.parentText.includes("Price") ||
+      inputInfo.labelText.includes("Price") ||
+      inputInfo.placeholder.includes("Price") ||
+      inputInfo.id.includes("price") ||
+      inputInfo.name.includes("price");
 
     if (isSizeInput && !sizeInput) {
       sizeInput = input;
       console.log("✓ Found size input!");
-    } else if (isPriceInput && !priceInput && orderType === 'limit') {
+    } else if (isPriceInput && !priceInput && orderType === "limit") {
       priceInput = input;
       console.log("✓ Found price input!");
     }
   }
 
   // Enter price (for limit orders)
-  if (orderType === 'limit' && price) {
+  if (orderType === "limit" && price) {
     if (priceInput) {
       await priceInput.click({ clickCount: 3 });
       await delay(100);
-      await page.keyboard.press('Backspace');
+      await page.keyboard.press("Backspace");
       await priceInput.type(String(price), { delay: 30 });
       console.log(`Entered price: ${price}`);
     } else {
-      const allInputs = await page.$$('input');
+      const allInputs = await page.$$("input");
       for (const inp of allInputs) {
         const rect = await inp.boundingBox();
         if (rect && rect.x > 1000 && rect.y > 150 && rect.y < 300) {
           await inp.click({ clickCount: 3 });
           await delay(100);
-          await page.keyboard.press('Backspace');
+          await page.keyboard.press("Backspace");
           await inp.type(String(price), { delay: 30 });
           console.log(`Entered price: ${price} (fallback)`);
           break;
@@ -972,9 +1121,9 @@ async function executeTrade(page, { side, orderType, price, qty, setLeverageFirs
   await delay(300);
 
   // Select all existing text (using Meta/Command on Mac)
-  await page.keyboard.down('Meta');
-  await page.keyboard.press('KeyA');
-  await page.keyboard.up('Meta');
+  await page.keyboard.down("Meta");
+  await page.keyboard.press("KeyA");
+  await page.keyboard.up("Meta");
   await delay(100);
 
   // Type the new value
@@ -982,11 +1131,15 @@ async function executeTrade(page, { side, orderType, price, qty, setLeverageFirs
   await delay(500);
 
   // Verify the value was set
-  let actualValue = await page.evaluate(el => el.value, sizeInput);
+  let actualValue = await page.evaluate((el) => el.value, sizeInput);
   console.log(`Size input value after first attempt: "${actualValue}"`);
 
   // If value wasn't set properly, try alternative method
-  if (!actualValue || actualValue === '' || Math.abs(parseFloat(actualValue) - parseFloat(qty)) > 0.0001) {
+  if (
+    !actualValue ||
+    actualValue === "" ||
+    Math.abs(parseFloat(actualValue) - parseFloat(qty)) > 0.0001
+  ) {
     console.log("First attempt failed, trying alternative method...");
 
     // Focus the input
@@ -994,10 +1147,10 @@ async function executeTrade(page, { side, orderType, price, qty, setLeverageFirs
     await delay(200);
 
     // Clear using JavaScript
-    await page.evaluate(el => {
-      el.value = '';
-      el.dispatchEvent(new Event('input', { bubbles: true }));
-      el.dispatchEvent(new Event('change', { bubbles: true }));
+    await page.evaluate((el) => {
+      el.value = "";
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
     }, sizeInput);
     await delay(200);
 
@@ -1005,28 +1158,36 @@ async function executeTrade(page, { side, orderType, price, qty, setLeverageFirs
     await sizeInput.type(String(qty), { delay: 100 });
     await delay(500);
 
-    actualValue = await page.evaluate(el => el.value, sizeInput);
+    actualValue = await page.evaluate((el) => el.value, sizeInput);
     console.log(`Size input value after second attempt: "${actualValue}"`);
   }
 
   // If still not set, try direct value assignment
-  if (!actualValue || actualValue === '' || Math.abs(parseFloat(actualValue) - parseFloat(qty)) > 0.0001) {
+  if (
+    !actualValue ||
+    actualValue === "" ||
+    Math.abs(parseFloat(actualValue) - parseFloat(qty)) > 0.0001
+  ) {
     console.log("Second attempt failed, using direct assignment...");
 
-    await page.evaluate((el, value) => {
-      el.value = value;
-      el.dispatchEvent(new Event('input', { bubbles: true }));
-      el.dispatchEvent(new Event('change', { bubbles: true }));
-      el.dispatchEvent(new Event('blur', { bubbles: true }));
-    }, sizeInput, String(qty));
+    await page.evaluate(
+      (el, value) => {
+        el.value = value;
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+        el.dispatchEvent(new Event("blur", { bubbles: true }));
+      },
+      sizeInput,
+      String(qty)
+    );
     await delay(500);
 
-    actualValue = await page.evaluate(el => el.value, sizeInput);
+    actualValue = await page.evaluate((el) => el.value, sizeInput);
     console.log(`Size input value after direct assignment: "${actualValue}"`);
   }
 
   // Final verification
-  if (!actualValue || actualValue === '') {
+  if (!actualValue || actualValue === "") {
     console.log("❌ Failed to set size value!");
     return { success: false, error: "Failed to enter size value" };
   }
@@ -1034,8 +1195,8 @@ async function executeTrade(page, { side, orderType, price, qty, setLeverageFirs
   console.log(`✓ Successfully set size to: ${actualValue}`);
   await delay(1000);
   // 4. Click Confirm button
-  const confirmText = side === 'buy' ? 'Confirm Buy' : 'Confirm Sell';
-  const confirmBtn = await findByText(page, confirmText, ['button']);
+  const confirmText = side === "buy" ? "Confirm Buy" : "Confirm Sell";
+  const confirmBtn = await findByText(page, confirmText, ["button"]);
 
   if (confirmBtn) {
     await confirmBtn.click();
@@ -1043,7 +1204,9 @@ async function executeTrade(page, { side, orderType, price, qty, setLeverageFirs
     await delay(2000);
 
     const errorMsg = await page.evaluate(() => {
-      const errors = document.querySelectorAll('[class*="error"], [class*="Error"]');
+      const errors = document.querySelectorAll(
+        '[class*="error"], [class*="Error"]'
+      );
       for (const err of errors) {
         if (err.textContent) return err.textContent;
       }
@@ -1069,23 +1232,30 @@ function startApiServer(page, apiPort, email) {
   apiApp.use(express.json());
 
   // Health check
-  apiApp.get('/health', (req, res) => {
-    res.json({ status: 'ok', ready: isReady, account: email });
+  apiApp.get("/health", (req, res) => {
+    res.json({ status: "ok", ready: isReady, account: email });
   });
 
   // Place trade
-  apiApp.post('/trade', async (req, res) => {
-    const { side, orderType, price, qty, leverage, setLeverageFirst } = req.body;
+  apiApp.post("/trade", async (req, res) => {
+    const { side, orderType, price, qty, leverage, setLeverageFirst } =
+      req.body;
 
-    if (!side || !['buy', 'sell'].includes(side)) {
-      return res.status(400).json({ error: "Invalid side. Use 'buy' or 'sell'" });
+    if (!side || !["buy", "sell"].includes(side)) {
+      return res
+        .status(400)
+        .json({ error: "Invalid side. Use 'buy' or 'sell'" });
     }
-    if (!orderType || !['market', 'limit'].includes(orderType)) {
-      return res.status(400).json({ error: "Invalid orderType. Use 'market' or 'limit'" });
+    if (!orderType || !["market", "limit"].includes(orderType)) {
+      return res
+        .status(400)
+        .json({ error: "Invalid orderType. Use 'market' or 'limit'" });
     }
     // Price is now optional for limit orders - will fetch current market price if not provided
     if (!qty || qty <= 0) {
-      return res.status(400).json({ error: "Invalid qty. Must be positive number" });
+      return res
+        .status(400)
+        .json({ error: "Invalid qty. Must be positive number" });
     }
 
     try {
@@ -1095,7 +1265,7 @@ function startApiServer(page, apiPort, email) {
         price,
         qty,
         leverage,
-        setLeverageFirst: setLeverageFirst || false
+        setLeverageFirst: setLeverageFirst || false,
       });
       res.json(result);
     } catch (error) {
@@ -1104,12 +1274,14 @@ function startApiServer(page, apiPort, email) {
   });
 
   // Close all positions
-  apiApp.post('/close-all', async (req, res) => {
+  apiApp.post("/close-all", async (req, res) => {
     const { percent = 100 } = req.body;
 
     // Validate percent
     if (percent < 0 || percent > 100) {
-      return res.status(400).json({ error: "Percent must be between 0 and 100" });
+      return res
+        .status(400)
+        .json({ error: "Percent must be between 0 and 100" });
     }
 
     try {
@@ -1121,7 +1293,7 @@ function startApiServer(page, apiPort, email) {
   });
 
   // Screenshot endpoint
-  apiApp.get('/screenshot', async (req, res) => {
+  apiApp.get("/screenshot", async (req, res) => {
     const filename = `screenshot-${email}-${Date.now()}.png`;
     await page.screenshot({ path: filename });
     res.json({ success: true, file: filename });
@@ -1137,14 +1309,18 @@ function startApiServer(page, apiPort, email) {
     console.log(`  POST /close-all   - Close all positions`);
     console.log(`  GET  /screenshot  - Take screenshot\n`);
     console.log(`Examples:`);
-    console.log(`  # Place a limit buy order at market price (price auto-fetched)`);
+    console.log(
+      `  # Place a limit buy order at market price (price auto-fetched)`
+    );
     console.log(`  curl -X POST http://localhost:${apiPort}/trade \\`);
     console.log(`    -H "Content-Type: application/json" \\`);
     console.log(`    -d '{"side":"buy","orderType":"limit","qty":0.001}'\n`);
     console.log(`  # Place a limit order with 40x leverage`);
     console.log(`  curl -X POST http://localhost:${apiPort}/trade \\`);
     console.log(`    -H "Content-Type: application/json" \\`);
-    console.log(`    -d '{"side":"buy","orderType":"limit","qty":0.001,"leverage":40,"setLeverageFirst":true}'\n`);
+    console.log(
+      `    -d '{"side":"buy","orderType":"limit","qty":0.001,"leverage":40,"setLeverageFirst":true}'\n`
+    );
     console.log(`  # Close 100% of position`);
     console.log(`  curl -X POST http://localhost:${apiPort}/close-all \\`);
     console.log(`    -H "Content-Type: application/json" \\`);
@@ -1168,16 +1344,22 @@ async function launchAccount(accountConfig) {
     if (accountIndex) {
       const profilePattern = `/tmp/puppeteer-chrome-profile-${accountIndex}-`;
       try {
-        const tmpFiles = fs.readdirSync('/tmp');
-        tmpFiles.forEach(file => {
-          if (file.startsWith(`puppeteer-chrome-profile-${accountIndex}-`) &&
-              `/tmp/${file}` !== profileDir) {
-            const oldProfilePath = path.join('/tmp', file);
-            console.log(`[${email}] Cleaning up old profile directory: ${oldProfilePath}`);
+        const tmpFiles = fs.readdirSync("/tmp");
+        tmpFiles.forEach((file) => {
+          if (
+            file.startsWith(`puppeteer-chrome-profile-${accountIndex}-`) &&
+            `/tmp/${file}` !== profileDir
+          ) {
+            const oldProfilePath = path.join("/tmp", file);
+            console.log(
+              `[${email}] Cleaning up old profile directory: ${oldProfilePath}`
+            );
             try {
               fs.rmSync(oldProfilePath, { recursive: true, force: true });
             } catch (e) {
-              console.log(`[${email}] Could not delete old profile (may be in use): ${e.message}`);
+              console.log(
+                `[${email}] Could not delete old profile (may be in use): ${e.message}`
+              );
             }
           }
         });
@@ -1191,11 +1373,11 @@ async function launchAccount(accountConfig) {
       // executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
       userDataDir: profileDir,
       args: [
-        '--start-maximized',
-        '--disable-blink-features=AutomationControlled',
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--window-size=1920,1080',
+        "--start-maximized",
+        "--disable-blink-features=AutomationControlled",
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--window-size=1920,1080",
       ],
       defaultViewport: HEADLESS ? { width: 1920, height: 1080 } : null,
     });
@@ -1206,7 +1388,9 @@ async function launchAccount(accountConfig) {
     page.setDefaultNavigationTimeout(60000);
     page.setDefaultTimeout(60000);
 
-    await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    await page.setUserAgent(
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    );
 
     // Try to load saved cookies - check if this is a new account
     const hasExistingCookies = await loadCookies(page, cookiesPath, email);
@@ -1222,9 +1406,14 @@ async function launchAccount(accountConfig) {
     const targetUrl = isNewAccount ? PARADEX_REFERRAL_URL : PARADEX_URL;
 
     try {
-      await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 120000 });
+      await page.goto(targetUrl, {
+        waitUntil: "domcontentloaded",
+        timeout: 120000,
+      });
       if (isNewAccount) {
-        console.log(`[${email}] Loaded with referral link: ${PARADEX_REFERRAL_URL}`);
+        console.log(
+          `[${email}] Loaded with referral link: ${PARADEX_REFERRAL_URL}`
+        );
       }
     } catch (error) {
       console.log(`[${email}] Page load timeout, attempting to continue...`);
@@ -1244,10 +1433,13 @@ async function launchAccount(accountConfig) {
     // If logged in and we were on referral page, navigate to trading page
     if (loggedIn && isNewAccount) {
       const currentUrl = page.url();
-      if (!currentUrl.includes('app.paradex.trade/trade')) {
+      if (!currentUrl.includes("app.paradex.trade/trade")) {
         console.log(`[${email}] Navigating to trading page after login...`);
         try {
-          await page.goto(PARADEX_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
+          await page.goto(PARADEX_URL, {
+            waitUntil: "domcontentloaded",
+            timeout: 30000,
+          });
           await delay(3000);
         } catch (error) {
           console.log(`[${email}] Navigation error, continuing...`);
@@ -1260,10 +1452,15 @@ async function launchAccount(accountConfig) {
 
       // Ensure we're on the trading page (not redirected to status page)
       const currentUrl = page.url();
-      if (!currentUrl.includes('app.paradex.trade/trade')) {
-        console.log(`[${email}] Redirected to ${currentUrl}, navigating back to trading page...`);
+      if (!currentUrl.includes("app.paradex.trade/trade")) {
+        console.log(
+          `[${email}] Redirected to ${currentUrl}, navigating back to trading page...`
+        );
         try {
-          await page.goto(PARADEX_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
+          await page.goto(PARADEX_URL, {
+            waitUntil: "domcontentloaded",
+            timeout: 30000,
+          });
           await delay(3000);
         } catch (error) {
           console.log(`[${email}] Navigation error, continuing...`);
@@ -1287,10 +1484,11 @@ async function launchAccount(accountConfig) {
 
 // Trading configuration from environment variables
 const TRADE_CONFIG = {
-  buyQty: parseFloat(process.env.BUY_QTY) || 0.0005,  // BTC quantity for BUY
-  sellQty: parseFloat(process.env.SELL_QTY) || 0.0005,  // BTC quantity for SELL
-  waitTime: parseInt(process.env.TRADE_TIME) || 60000,  // Time to wait before closing (milliseconds)
-  leverage: parseInt(process.env.LEVERAGE) || 20,  // Leverage multiplier
+  buyQty: parseFloat(process.env.BUY_QTY) || 0.0005, // BTC quantity for BUY
+  sellQty: parseFloat(process.env.SELL_QTY) || 0.0005, // BTC quantity for SELL
+  waitTime: parseInt(process.env.TRADE_TIME) || 60000, // Time to wait before closing (milliseconds)
+  leverage: parseInt(process.env.LEVERAGE) || 20, // Leverage multiplier
+  stopLoss: parseFloat(process.env.STOP_LOSS) || null, // Maximum loss in USD (null = disabled)
 };
 
 let isShuttingDown = false;
@@ -1407,20 +1605,101 @@ async function automatedTradingLoop(account1Result, account2Result) {
       const randomWaitTime = Math.floor(Math.random() * (maxWaitTime - minWaitTime + 1)) + minWaitTime;
 
       console.log(`\n[CYCLE ${cycleCount}] Waiting ${randomWaitTime / 1000} seconds before closing...`);
+      if (TRADE_CONFIG.stopLoss) {
+        console.log(
+          `[CYCLE ${cycleCount}] Stop loss enabled: $${TRADE_CONFIG.stopLoss} (will monitor P&L)`
+        );
+      }
 
-      // Break wait into smaller chunks to allow faster shutdown
-      const checkInterval = 1000; // Check every second
-      for (let i = 0; i < randomWaitTime / checkInterval; i++) {
+      // Break wait into smaller chunks to allow faster shutdown and stop-loss checking
+      const checkInterval = 2000; // Check every 2 seconds (changed from 1000 to allow P&L checks)
+      const totalChecks = Math.ceil(randomWaitTime / checkInterval);
+
+      for (let i = 0; i < totalChecks; i++) {
         if (isShuttingDown) {
-          console.log(`\n[CYCLE ${cycleCount}] Shutdown detected during wait period`);
+          console.log(
+            `\n[CYCLE ${cycleCount}] Shutdown detected during wait period`
+          );
           break;
         }
+
+        // Check stop loss if enabled
+        if (TRADE_CONFIG.stopLoss) {
+          try {
+            // Get current P&L for both accounts
+            const pnl1 = await getCurrentUnrealizedPnL(page1);
+            const pnl2 = await getCurrentUnrealizedPnL(page2);
+
+            // Check if Account 1 has exceeded stop loss
+            // pnl1 < -Math.abs(TRADE_CONFIG.stopLoss) means loss is worse than stop loss
+            // Example: if stopLoss=50, we check if pnl1 < -50
+            if (pnl1 !== null && pnl1 < -Math.abs(TRADE_CONFIG.stopLoss)) {
+              console.log(
+                `\n🚨 [CYCLE ${cycleCount}] STOP LOSS TRIGGERED for ${email1}!`
+              );
+              console.log(
+                `   Current P&L: $${pnl1.toLocaleString()}, Stop Loss: $${
+                  TRADE_CONFIG.stopLoss
+                }`
+              );
+              console.log(`   Closing positions immediately...`);
+
+              // Close both accounts' positions to maintain balance
+              await closeAllPositions(page1, 100);
+              await closeAllPositions(page2, 100);
+
+              console.log(
+                `✓ [CYCLE ${cycleCount}] Positions closed due to stop loss`
+              );
+              break; // Exit the wait loop immediately
+            }
+
+            // Check if Account 2 has exceeded stop loss
+            if (pnl2 !== null && pnl2 < -Math.abs(TRADE_CONFIG.stopLoss)) {
+              console.log(
+                `\n🚨 [CYCLE ${cycleCount}] STOP LOSS TRIGGERED for ${email2}!`
+              );
+              console.log(
+                `   Current P&L: $${pnl2.toLocaleString()}, Stop Loss: $${
+                  TRADE_CONFIG.stopLoss
+                }`
+              );
+              console.log(`   Closing positions immediately...`);
+
+              // Close both accounts' positions to maintain balance
+              await closeAllPositions(page1, 100);
+              await closeAllPositions(page2, 100);
+
+              console.log(
+                `✓ [CYCLE ${cycleCount}] Positions closed due to stop loss`
+              );
+              break; // Exit the wait loop immediately
+            }
+
+            // Log P&L status every 10 checks (every 20 seconds) so you can see what's happening
+            if (i > 0 && i % 10 === 0) {
+              console.log(
+                `[CYCLE ${cycleCount}] P&L Check - ${email1}: $${
+                  pnl1 !== null ? pnl1.toLocaleString() : "N/A"
+                }, ${email2}: $${pnl2 !== null ? pnl2.toLocaleString() : "N/A"}`
+              );
+            }
+          } catch (error) {
+            // If P&L check fails, don't break the loop - just log and continue
+            console.log(
+              `[CYCLE ${cycleCount}] Error checking P&L: ${error.message}`
+            );
+          }
+        }
+
         await delay(checkInterval);
 
         // Show countdown every 10 seconds
         const remaining = randomWaitTime - (i + 1) * checkInterval;
         if (remaining > 0 && remaining % 10000 === 0) {
-          console.log(`[CYCLE ${cycleCount}] ${remaining / 1000}s remaining...`);
+          console.log(
+            `[CYCLE ${cycleCount}] ${remaining / 1000}s remaining...`
+          );
         }
       }
 

@@ -48,6 +48,11 @@ SELL_QTY=0.0005
 
 # Time to wait before closing positions (in milliseconds)
 TRADE_TIME=60000
+
+# Maximum loss in USD before positions are automatically closed
+# Set to 0 or leave empty to disable stop loss
+# Example: STOP_LOSS=50 means close positions if loss exceeds $50
+STOP_LOSS=30
 ```
 
 ## Account Configuration
