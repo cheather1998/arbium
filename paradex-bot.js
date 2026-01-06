@@ -2374,25 +2374,20 @@ async function launchAccount(accountConfig) {
         
         // Close any popups first (like leverage popup)
         await page.evaluate(() => {
-          // Press Escape to close any modals
           document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-          // Try to find and close modal/popup elements
-          const modals = document.querySelectorAll('[role="dialog"], .modal, [class*="Modal"]');
-          modals.forEach(modal => {
+          document.querySelectorAll('[role="dialog"], .modal, [class*="Modal"]').forEach(modal => {
             const closeBtn = modal.querySelector('button, [aria-label*="close" i]');
             if (closeBtn) closeBtn.click();
           });
         });
-        await delay(300);
+        await delay(200);
         
-        // Find and click TP/SL checkbox using mouse coordinates
+        // Find and click TP/SL checkbox
         const tpslInfo = await page.evaluate(() => {
-          // Find label with "TP/SL" text
           const labels = Array.from(document.querySelectorAll('label'));
           for (const label of labels) {
             const labelText = label.textContent?.trim() || '';
             if (labelText.includes('TP/SL') || labelText.includes('TP & SL')) {
-              // Find associated checkbox or button
               const checkbox = label.control || label.querySelector('input[type="checkbox"]');
               if (checkbox && checkbox.offsetParent !== null) {
                 const rect = checkbox.getBoundingClientRect();
@@ -2403,68 +2398,41 @@ async function launchAccount(accountConfig) {
                   y: rect.top + rect.height / 2
                 };
               }
-              // Try label itself
               const rect = label.getBoundingClientRect();
-              return { 
-                found: true, 
-                alreadyChecked: false,
-                x: rect.left + rect.width / 2,
-                y: rect.top + rect.height / 2
-              };
+              return { found: true, alreadyChecked: false, x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
             }
           }
           return { found: false };
         });
         
-        let tpslFound = { found: false };
-        if (tpslInfo.found) {
-          if (tpslInfo.alreadyChecked) {
-            console.log(`✓ TP/SL checkbox already checked`);
-            tpslFound = { found: true, alreadyChecked: true };
-          } else {
-            // Click using mouse coordinates (more reliable)
-            try {
-              await page.mouse.move(tpslInfo.x, tpslInfo.y);
-              await delay(100);
-              await page.mouse.click(tpslInfo.x, tpslInfo.y, { delay: 50 });
-              console.log(`✓ TP/SL checkbox clicked at coordinates (${tpslInfo.x}, ${tpslInfo.y})`);
-              tpslFound = { found: true, alreadyChecked: false };
-            } catch (e) {
-              console.log(`⚠ Mouse click failed, trying JavaScript click: ${e.message}`);
-              // Fallback to JavaScript click
-              const jsClick = await page.evaluate(() => {
-                const labels = Array.from(document.querySelectorAll('label'));
-                for (const label of labels) {
-                  const labelText = label.textContent?.trim() || '';
-                  if (labelText.includes('TP/SL') || labelText.includes('TP & SL')) {
-                    const checkbox = label.control || label.querySelector('input[type="checkbox"]');
-                    if (checkbox) {
-                      checkbox.click();
-                      return true;
-                    }
-                    label.click();
-                    return true;
-                  }
+        if (tpslInfo.found && !tpslInfo.alreadyChecked) {
+          try {
+            await page.mouse.move(tpslInfo.x, tpslInfo.y);
+            await page.mouse.click(tpslInfo.x, tpslInfo.y, { delay: 50 });
+            console.log(`✓ TP/SL checkbox clicked`);
+          } catch (e) {
+            // Fallback to JavaScript click
+            await page.evaluate(() => {
+              const labels = Array.from(document.querySelectorAll('label'));
+              for (const label of labels) {
+                const labelText = label.textContent?.trim() || '';
+                if (labelText.includes('TP/SL') || labelText.includes('TP & SL')) {
+                  (label.control || label.querySelector('input[type="checkbox"]') || label).click();
+                  return;
                 }
-                return false;
-              });
-              if (jsClick) {
-                console.log(`✓ TP/SL checkbox clicked via JavaScript`);
-                tpslFound = { found: true, alreadyChecked: false };
               }
-            }
+            });
+            console.log(`✓ TP/SL checkbox clicked (fallback)`);
           }
+        } else if (tpslInfo.found) {
+          console.log(`✓ TP/SL checkbox already checked`);
         }
         
-        if (tpslFound.found) {
-          console.log(`✓ TP/SL checkbox ${tpslFound.alreadyChecked ? 'already checked' : 'clicked'}`);
+        // Set stop loss value if configured
+        const stopLossValue = parseFloat(process.env.STOP_LOSS);
+        if (stopLossValue && stopLossValue > 0 && tpslInfo.found) {
           await delay(1500); // Wait for inputs to appear
-          
-          // Set stop loss value if configured
-          const stopLossValue = parseFloat(process.env.STOP_LOSS);
-          if (stopLossValue && stopLossValue > 0) {
-            console.log(`Setting stop loss to $${stopLossValue}...`);
-            await delay(500); // Wait a bit more for inputs to fully render
+          console.log(`Setting stop loss to $${stopLossValue}...`);
             
             // Find and set stop loss input - be very specific to avoid Price input
             const stopLossInput = await page.evaluate((value) => {
@@ -2595,129 +2563,40 @@ async function launchAccount(accountConfig) {
             }, stopLossValue);
             
             if (stopLossInput.found) {
-              // Always use keyboard typing (most reliable for making value visible)
-              console.log(`Found stop loss input, typing value: ${stopLossValue}...`);
               const inputElement = await page.$(stopLossInput.selector);
-              
               if (inputElement) {
-                // Get coordinates for more reliable clicking
+                // Click and type value
                 const inputBox = await inputElement.boundingBox();
                 if (inputBox) {
-                  // Click at the center of the input field
-                  await page.mouse.move(inputBox.x + inputBox.width / 2, inputBox.y + inputBox.height / 2);
-                  await delay(100);
                   await page.mouse.click(inputBox.x + inputBox.width / 2, inputBox.y + inputBox.height / 2);
                 } else {
-                  // Fallback to element click
-                  await inputElement.click({ clickCount: 1 });
+                  await inputElement.click();
                 }
                 
-                await delay(300);
+                await delay(200);
                 
-                // Select all existing text
+                // Select all, clear, and type
                 await page.keyboard.down('Control');
                 await page.keyboard.press('a');
                 await page.keyboard.up('Control');
-                await delay(100);
-                
-                // Clear the field
                 await page.keyboard.press('Backspace');
-                await delay(100);
+                await delay(50);
                 
-                // Type the value character by character (this makes it visible)
                 const valueStr = String(stopLossValue);
-                console.log(`Typing: "${valueStr}" character by character...`);
-                for (let i = 0; i < valueStr.length; i++) {
-                  await page.keyboard.type(valueStr[i], { delay: 80 });
-                }
-                
-                await delay(400);
-                
-                // Press Tab or click outside to trigger change event
+                await page.keyboard.type(valueStr, { delay: 50 });
+                await delay(300);
                 await page.keyboard.press('Tab');
-                await delay(200);
                 
-                // Verify the value is visible
-                const actualValue = await page.evaluate((selector) => {
-                  const input = document.querySelector(selector);
-                  if (!input) return '';
-                  
-                  // Check both value and textContent (for React components)
-                  const value = input.value || '';
-                  const textContent = input.textContent || '';
-                  const displayValue = value || textContent;
-                  
-                  // Also check if the input's parent shows the value
-                  let parentValue = '';
-                  let parent = input.parentElement;
-                  for (let i = 0; i < 3 && parent; i++) {
-                    if (parent.textContent && parent.textContent.trim()) {
-                      parentValue = parent.textContent.trim();
-                      break;
-                    }
-                    parent = parent.parentElement;
-                  }
-                  
-                  return displayValue || parentValue;
-                }, stopLossInput.selector);
-                
-                if (actualValue && (actualValue.includes(String(stopLossValue)) || Math.abs(parseFloat(actualValue) - stopLossValue) < 0.01)) {
-                  console.log(`✓ Stop loss value visible in input: "${actualValue}"`);
-                } else {
-                  // Try React onValueChange as additional trigger
-                  console.log(`Value not visible, trying React onValueChange...`);
-                  await page.evaluate((selector, value) => {
-                    const input = document.querySelector(selector);
-                    if (!input) return false;
-                    
-                    const reactKey = Object.keys(input).find(key => 
-                      key.startsWith('__reactFiber') || key.startsWith('__reactInternalInstance')
-                    );
-                    
-                    if (reactKey) {
-                      let fiber = input[reactKey];
-                      let depth = 0;
-                      while (fiber && depth < 15) {
-                        if (fiber.memoizedProps && fiber.memoizedProps.onValueChange) {
-                          try {
-                            fiber.memoizedProps.onValueChange(
-                              { value: String(value), formattedValue: String(value), floatValue: value },
-                              { source: 'api' }
-                            );
-                            return true;
-                          } catch (e) {
-                            // Continue
-                          }
-                        }
-                        fiber = fiber.return || fiber._owner;
-                        depth++;
-                      }
-                    }
-                    return false;
-                  }, stopLossInput.selector, stopLossValue);
-                  
-                  await delay(300);
-                  
-                  // Check again
-                  const finalValue = await page.evaluate((selector) => {
-                    const input = document.querySelector(selector);
-                    return input ? (input.value || input.textContent || '') : '';
-                  }, stopLossInput.selector);
-                  
-                  if (finalValue) {
-                    console.log(`✓ Stop loss set to: "${finalValue}"`);
-                  } else {
-                    console.log(`⚠ Stop loss value typed but not visible. Value may be set internally.`);
-                  }
-                }
+                console.log(`✓ Stop loss set to $${stopLossValue}`);
               } else {
                 console.log(`⚠ Could not locate stop loss input element`);
               }
             } else {
               console.log(`⚠ Stop loss input not found`);
             }
-          }
-        } else {
+        }
+        
+        if (!tpslInfo.found) {
           console.log(`⚠ TP/SL checkbox not found`);
         }
       } catch (error) {
