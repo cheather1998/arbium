@@ -2367,6 +2367,363 @@ async function launchAccount(accountConfig) {
         }
       }
 
+      // Setup TP/SL checkbox and stop loss on page load
+      console.log(`\n[${email}] Setting up TP/SL on page load...`);
+      try {
+        await delay(2000); // Wait for page to fully load
+        
+        // Close any popups first (like leverage popup)
+        await page.evaluate(() => {
+          // Press Escape to close any modals
+          document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+          // Try to find and close modal/popup elements
+          const modals = document.querySelectorAll('[role="dialog"], .modal, [class*="Modal"]');
+          modals.forEach(modal => {
+            const closeBtn = modal.querySelector('button, [aria-label*="close" i]');
+            if (closeBtn) closeBtn.click();
+          });
+        });
+        await delay(300);
+        
+        // Find and click TP/SL checkbox using mouse coordinates
+        const tpslInfo = await page.evaluate(() => {
+          // Find label with "TP/SL" text
+          const labels = Array.from(document.querySelectorAll('label'));
+          for (const label of labels) {
+            const labelText = label.textContent?.trim() || '';
+            if (labelText.includes('TP/SL') || labelText.includes('TP & SL')) {
+              // Find associated checkbox or button
+              const checkbox = label.control || label.querySelector('input[type="checkbox"]');
+              if (checkbox && checkbox.offsetParent !== null) {
+                const rect = checkbox.getBoundingClientRect();
+                return { 
+                  found: true, 
+                  alreadyChecked: checkbox.checked,
+                  x: rect.left + rect.width / 2,
+                  y: rect.top + rect.height / 2
+                };
+              }
+              // Try label itself
+              const rect = label.getBoundingClientRect();
+              return { 
+                found: true, 
+                alreadyChecked: false,
+                x: rect.left + rect.width / 2,
+                y: rect.top + rect.height / 2
+              };
+            }
+          }
+          return { found: false };
+        });
+        
+        let tpslFound = { found: false };
+        if (tpslInfo.found) {
+          if (tpslInfo.alreadyChecked) {
+            console.log(`✓ TP/SL checkbox already checked`);
+            tpslFound = { found: true, alreadyChecked: true };
+          } else {
+            // Click using mouse coordinates (more reliable)
+            try {
+              await page.mouse.move(tpslInfo.x, tpslInfo.y);
+              await delay(100);
+              await page.mouse.click(tpslInfo.x, tpslInfo.y, { delay: 50 });
+              console.log(`✓ TP/SL checkbox clicked at coordinates (${tpslInfo.x}, ${tpslInfo.y})`);
+              tpslFound = { found: true, alreadyChecked: false };
+            } catch (e) {
+              console.log(`⚠ Mouse click failed, trying JavaScript click: ${e.message}`);
+              // Fallback to JavaScript click
+              const jsClick = await page.evaluate(() => {
+                const labels = Array.from(document.querySelectorAll('label'));
+                for (const label of labels) {
+                  const labelText = label.textContent?.trim() || '';
+                  if (labelText.includes('TP/SL') || labelText.includes('TP & SL')) {
+                    const checkbox = label.control || label.querySelector('input[type="checkbox"]');
+                    if (checkbox) {
+                      checkbox.click();
+                      return true;
+                    }
+                    label.click();
+                    return true;
+                  }
+                }
+                return false;
+              });
+              if (jsClick) {
+                console.log(`✓ TP/SL checkbox clicked via JavaScript`);
+                tpslFound = { found: true, alreadyChecked: false };
+              }
+            }
+          }
+        }
+        
+        if (tpslFound.found) {
+          console.log(`✓ TP/SL checkbox ${tpslFound.alreadyChecked ? 'already checked' : 'clicked'}`);
+          await delay(1500); // Wait for inputs to appear
+          
+          // Set stop loss value if configured
+          const stopLossValue = parseFloat(process.env.STOP_LOSS);
+          if (stopLossValue && stopLossValue > 0) {
+            console.log(`Setting stop loss to $${stopLossValue}...`);
+            await delay(500); // Wait a bit more for inputs to fully render
+            
+            // Find and set stop loss input - be very specific to avoid Price input
+            const stopLossInput = await page.evaluate((value) => {
+              // Strategy 1: Find label with EXACT "Stop Loss" text (not "Price" or "Size")
+              const labels = Array.from(document.querySelectorAll('label'));
+              for (const label of labels) {
+                const labelText = label.textContent?.trim() || '';
+                // Must be exactly "Stop Loss" (case insensitive) and NOT contain "Price" or "Size"
+                if ((labelText === 'Stop Loss' || labelText.toLowerCase() === 'stop loss') &&
+                    !labelText.toLowerCase().includes('price') &&
+                    !labelText.toLowerCase().includes('size') &&
+                    !labelText.toLowerCase().includes('quantity')) {
+                  
+                  // Find associated input - try multiple ways
+                  let input = label.control;
+                  if (!input) {
+                    const labelFor = label.getAttribute('for');
+                    if (labelFor) input = document.getElementById(labelFor);
+                  }
+                  if (!input) {
+                    input = label.querySelector('input[type="text"], input[type="number"], input:not([type])');
+                  }
+                  if (!input) {
+                    // Check siblings - but make sure it's not Price or Size
+                    let sibling = label.nextElementSibling;
+                    let checkCount = 0;
+                    while (sibling && checkCount < 5) {
+                      if (sibling.tagName === 'INPUT') {
+                        // Verify this input is not Price or Size
+                        const siblingContext = sibling.parentElement?.textContent?.toLowerCase() || '';
+                        if (!siblingContext.includes('price') && !siblingContext.includes('size') && !siblingContext.includes('quantity')) {
+                          input = sibling;
+                          break;
+                        }
+                      } else {
+                        const candidate = sibling.querySelector('input[type="text"], input[type="number"], input:not([type])');
+                        if (candidate) {
+                          const candidateContext = candidate.parentElement?.textContent?.toLowerCase() || '';
+                          if (!candidateContext.includes('price') && !candidateContext.includes('size') && !candidateContext.includes('quantity')) {
+                            input = candidate;
+                            break;
+                          }
+                        }
+                      }
+                      sibling = sibling.nextElementSibling;
+                      checkCount++;
+                    }
+                  }
+                  
+                  // Verify the input is actually in a "Stop Loss" context
+                  if (input && input.offsetParent !== null) {
+                    let parent = input.parentElement;
+                    let hasStopLossContext = false;
+                    for (let i = 0; i < 5 && parent; i++) {
+                      const parentText = parent.textContent?.toLowerCase() || '';
+                      if (parentText.includes('stop loss') && !parentText.includes('price') && !parentText.includes('size')) {
+                        hasStopLossContext = true;
+                        break;
+                      }
+                      parent = parent.parentElement;
+                    }
+                    
+                    if (hasStopLossContext) {
+                      input.setAttribute('data-stop-loss-input', 'true');
+                      return { found: true, selector: 'input[data-stop-loss-input="true"]' };
+                    }
+                  }
+                }
+              }
+              
+              // Strategy 2: Find input by position - must be below "Take Profit" and in TP/SL section
+              const allInputs = Array.from(document.querySelectorAll('input[type="text"], input[type="number"], input:not([type])'));
+              let takeProfitInput = null;
+              
+              // First find Take Profit input
+              for (const inp of allInputs) {
+                if (inp.offsetParent === null) continue;
+                let parent = inp.parentElement;
+                for (let i = 0; i < 7 && parent; i++) {
+                  const parentText = parent.textContent?.toLowerCase() || '';
+                  if (parentText.includes('take profit') && !parentText.includes('price') && !parentText.includes('size')) {
+                    takeProfitInput = inp;
+                    break;
+                  }
+                  parent = parent.parentElement;
+                }
+                if (takeProfitInput) break;
+              }
+              
+              // If we found Take Profit, find the input directly below it (should be Stop Loss)
+              if (takeProfitInput) {
+                const tpRect = takeProfitInput.getBoundingClientRect();
+                for (const inp of allInputs) {
+                  if (inp === takeProfitInput || inp.offsetParent === null) continue;
+                  
+                  // Check it's not Price or Size
+                  let parent = inp.parentElement;
+                  let isPriceOrSize = false;
+                  for (let i = 0; i < 3 && parent; i++) {
+                    const parentText = parent.textContent?.toLowerCase() || '';
+                    if (parentText.includes('price') || parentText.includes('size') || parentText.includes('quantity')) {
+                      isPriceOrSize = true;
+                      break;
+                    }
+                    parent = parent.parentElement;
+                  }
+                  
+                  if (isPriceOrSize) continue;
+                  
+                  const inpRect = inp.getBoundingClientRect();
+                  // Check if this input is below Take Profit and in same column
+                  if (inpRect.y > tpRect.y && Math.abs(inpRect.x - tpRect.x) < 50) {
+                    // Verify it has "Stop Loss" context
+                    parent = inp.parentElement;
+                    for (let i = 0; i < 5 && parent; i++) {
+                      const parentText = parent.textContent?.toLowerCase() || '';
+                      if (parentText.includes('stop loss') && !parentText.includes('price') && !parentText.includes('size')) {
+                        inp.setAttribute('data-stop-loss-input', 'true');
+                        return { found: true, selector: 'input[data-stop-loss-input="true"]' };
+                      }
+                      parent = parent.parentElement;
+                    }
+                  }
+                }
+              }
+              
+              return { found: false };
+            }, stopLossValue);
+            
+            if (stopLossInput.found) {
+              // Always use keyboard typing (most reliable for making value visible)
+              console.log(`Found stop loss input, typing value: ${stopLossValue}...`);
+              const inputElement = await page.$(stopLossInput.selector);
+              
+              if (inputElement) {
+                // Get coordinates for more reliable clicking
+                const inputBox = await inputElement.boundingBox();
+                if (inputBox) {
+                  // Click at the center of the input field
+                  await page.mouse.move(inputBox.x + inputBox.width / 2, inputBox.y + inputBox.height / 2);
+                  await delay(100);
+                  await page.mouse.click(inputBox.x + inputBox.width / 2, inputBox.y + inputBox.height / 2);
+                } else {
+                  // Fallback to element click
+                  await inputElement.click({ clickCount: 1 });
+                }
+                
+                await delay(300);
+                
+                // Select all existing text
+                await page.keyboard.down('Control');
+                await page.keyboard.press('a');
+                await page.keyboard.up('Control');
+                await delay(100);
+                
+                // Clear the field
+                await page.keyboard.press('Backspace');
+                await delay(100);
+                
+                // Type the value character by character (this makes it visible)
+                const valueStr = String(stopLossValue);
+                console.log(`Typing: "${valueStr}" character by character...`);
+                for (let i = 0; i < valueStr.length; i++) {
+                  await page.keyboard.type(valueStr[i], { delay: 80 });
+                }
+                
+                await delay(400);
+                
+                // Press Tab or click outside to trigger change event
+                await page.keyboard.press('Tab');
+                await delay(200);
+                
+                // Verify the value is visible
+                const actualValue = await page.evaluate((selector) => {
+                  const input = document.querySelector(selector);
+                  if (!input) return '';
+                  
+                  // Check both value and textContent (for React components)
+                  const value = input.value || '';
+                  const textContent = input.textContent || '';
+                  const displayValue = value || textContent;
+                  
+                  // Also check if the input's parent shows the value
+                  let parentValue = '';
+                  let parent = input.parentElement;
+                  for (let i = 0; i < 3 && parent; i++) {
+                    if (parent.textContent && parent.textContent.trim()) {
+                      parentValue = parent.textContent.trim();
+                      break;
+                    }
+                    parent = parent.parentElement;
+                  }
+                  
+                  return displayValue || parentValue;
+                }, stopLossInput.selector);
+                
+                if (actualValue && (actualValue.includes(String(stopLossValue)) || Math.abs(parseFloat(actualValue) - stopLossValue) < 0.01)) {
+                  console.log(`✓ Stop loss value visible in input: "${actualValue}"`);
+                } else {
+                  // Try React onValueChange as additional trigger
+                  console.log(`Value not visible, trying React onValueChange...`);
+                  await page.evaluate((selector, value) => {
+                    const input = document.querySelector(selector);
+                    if (!input) return false;
+                    
+                    const reactKey = Object.keys(input).find(key => 
+                      key.startsWith('__reactFiber') || key.startsWith('__reactInternalInstance')
+                    );
+                    
+                    if (reactKey) {
+                      let fiber = input[reactKey];
+                      let depth = 0;
+                      while (fiber && depth < 15) {
+                        if (fiber.memoizedProps && fiber.memoizedProps.onValueChange) {
+                          try {
+                            fiber.memoizedProps.onValueChange(
+                              { value: String(value), formattedValue: String(value), floatValue: value },
+                              { source: 'api' }
+                            );
+                            return true;
+                          } catch (e) {
+                            // Continue
+                          }
+                        }
+                        fiber = fiber.return || fiber._owner;
+                        depth++;
+                      }
+                    }
+                    return false;
+                  }, stopLossInput.selector, stopLossValue);
+                  
+                  await delay(300);
+                  
+                  // Check again
+                  const finalValue = await page.evaluate((selector) => {
+                    const input = document.querySelector(selector);
+                    return input ? (input.value || input.textContent || '') : '';
+                  }, stopLossInput.selector);
+                  
+                  if (finalValue) {
+                    console.log(`✓ Stop loss set to: "${finalValue}"`);
+                  } else {
+                    console.log(`⚠ Stop loss value typed but not visible. Value may be set internally.`);
+                  }
+                }
+              } else {
+                console.log(`⚠ Could not locate stop loss input element`);
+              }
+            } else {
+              console.log(`⚠ Stop loss input not found`);
+            }
+          }
+        } else {
+          console.log(`⚠ TP/SL checkbox not found`);
+        }
+      } catch (error) {
+        console.log(`[${email}] Error setting up TP/SL: ${error.message} (continuing anyway)`);
+      }
+
       // Start the API server for this account
       startApiServer(page, apiPort, email);
 
