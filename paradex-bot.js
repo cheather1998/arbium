@@ -2095,7 +2095,7 @@ async function executeTrade(
  * Monitors for clicks on button with aria-label="Add tpsl order"
  */
 async function setupTpSlAddButtonListener(page, email) {
-  console.log(`[${email}] Setting up TP/SL add button click listener...`);
+  console.log(`[${email}] Setting up TP/SL add button click listener and auto-click...`);
 
   // Set up click listener on current page
   const setupOnPage = async () => {
@@ -2103,6 +2103,11 @@ async function setupTpSlAddButtonListener(page, email) {
       // Remove existing listener to avoid duplicates
       if (window._tpslClickHandler) {
         document.removeEventListener('click', window._tpslClickHandler, true);
+      }
+      
+      // Remove existing observer to avoid duplicates
+      if (window._tpslObserver) {
+        window._tpslObserver.disconnect();
       }
 
       // Create click handler
@@ -2131,6 +2136,75 @@ async function setupTpSlAddButtonListener(page, email) {
       // Attach listener with capture phase
       document.addEventListener('click', window._tpslClickHandler, true);
       console.log('[TP/SL Listener] Click listener attached to document');
+      
+      // Track clicked buttons to avoid re-clicking
+      window._tpslClickedButtons = window._tpslClickedButtons || new Set();
+      
+      // Function to find and auto-click TP/SL button
+      const findAndClickTpSlButton = () => {
+        const buttons = Array.from(document.querySelectorAll('button'));
+        for (const button of buttons) {
+          const ariaLabel = button.getAttribute('aria-label') || '';
+          if (ariaLabel && (ariaLabel.includes('Add tpsl') || ariaLabel.includes('add tpsl'))) {
+            // Check if button is visible
+            const style = window.getComputedStyle(button);
+            const isVisible = button.offsetParent !== null &&
+                            style.display !== 'none' &&
+                            style.visibility !== 'hidden' &&
+                            !button.disabled;
+            
+            if (isVisible) {
+              // Create unique identifier for this button instance
+              const buttonId = `${ariaLabel}-${button.offsetTop}-${button.offsetLeft}`;
+              
+              // Check if we've already clicked this button instance
+              if (!window._tpslClickedButtons.has(buttonId)) {
+                console.log('[TP/SL Auto-Click] Button found and visible, auto-clicking...', ariaLabel);
+                window._tpslClickedButtons.add(buttonId);
+                
+                // Click the button
+                button.click();
+                console.log('[TP/SL Add Button Clicked]', ariaLabel);
+                
+                // Clean up old button IDs after 10 seconds (in case button moves)
+                setTimeout(() => {
+                  window._tpslClickedButtons.delete(buttonId);
+                }, 10000);
+                
+                return true;
+              }
+            }
+          }
+        }
+        return false;
+      };
+      
+      // Initial check for existing button
+      findAndClickTpSlButton();
+      
+      // Set up MutationObserver to watch for button appearance
+      window._tpslObserver = new MutationObserver((mutations) => {
+        // Check if button appeared
+        findAndClickTpSlButton();
+      });
+      
+      // Start observing
+      window._tpslObserver.observe(document.body, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['style', 'class', 'aria-label']
+      });
+      
+      console.log('[TP/SL Listener] MutationObserver set up for auto-click');
+      
+      // Also check periodically (as backup)
+      if (window._tpslCheckInterval) {
+        clearInterval(window._tpslCheckInterval);
+      }
+      window._tpslCheckInterval = setInterval(() => {
+        findAndClickTpSlButton();
+      }, 2000); // Check every 2 seconds
     });
   };
 
@@ -2200,7 +2274,75 @@ async function setupTpSlAddButtonListener(page, email) {
   }
 
   console.log(`[${email}] ✓ TP/SL add button listener set up`);
+  console.log(`[${email}] ✓ Auto-click enabled - button will be clicked automatically when it appears`);
   console.log(`[${email}] Debug: All button clicks with 'tpsl' or 'Add' will be logged`);
+  
+  // Also check for button immediately and periodically from Node.js side (backup)
+  const checkAndClickButton = async () => {
+    try {
+      const buttonInfo = await page.evaluate(() => {
+        const buttons = Array.from(document.querySelectorAll('button'));
+        for (const button of buttons) {
+          const ariaLabel = button.getAttribute('aria-label') || '';
+          if (ariaLabel && (ariaLabel.includes('Add tpsl') || ariaLabel.includes('add tpsl'))) {
+            const style = window.getComputedStyle(button);
+            const isVisible = button.offsetParent !== null &&
+                            style.display !== 'none' &&
+                            style.visibility !== 'hidden' &&
+                            !button.disabled;
+            
+            if (isVisible) {
+              return { found: true, ariaLabel };
+            }
+          }
+        }
+        return { found: false };
+      });
+      
+      if (buttonInfo.found) {
+        console.log(`[${email}] 🔍 TP/SL button detected, clicking automatically...`);
+        const clicked = await page.evaluate((ariaLabel) => {
+          const buttons = Array.from(document.querySelectorAll('button'));
+          for (const button of buttons) {
+            if (button.getAttribute('aria-label') === ariaLabel) {
+              const style = window.getComputedStyle(button);
+              const isVisible = button.offsetParent !== null &&
+                              style.display !== 'none' &&
+                              style.visibility !== 'hidden' &&
+                              !button.disabled;
+              if (isVisible) {
+                button.click();
+                return true;
+              }
+            }
+          }
+          return false;
+        }, buttonInfo.ariaLabel);
+        
+        if (clicked) {
+          console.log(`[${email}] ✓ TP/SL button auto-clicked from Node.js side`);
+          // Trigger handler after a short delay
+          await delay(500);
+          await handleTpSlAddButtonClick(page, email);
+        }
+      }
+    } catch (error) {
+      // Silently handle errors (button might not exist yet)
+    }
+  };
+  
+  // Check immediately
+  await checkAndClickButton();
+  
+  // Check periodically (every 3 seconds) as backup
+  const checkInterval = setInterval(async () => {
+    await checkAndClickButton();
+  }, 3000);
+  
+  // Store interval ID so it can be cleared if needed
+  if (!page._tpslCheckInterval) {
+    page._tpslCheckInterval = checkInterval;
+  }
 }
 
 // Handler lock to prevent multiple executions
