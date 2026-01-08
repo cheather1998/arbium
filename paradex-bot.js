@@ -2090,6 +2090,1115 @@ async function executeTrade(
   }
 }
 
+/**
+ * Sets up click listener for TP/SL add button
+ * Monitors for clicks on button with aria-label="Add tpsl order"
+ */
+async function setupTpSlAddButtonListener(page, email) {
+  console.log(`[${email}] Setting up TP/SL add button click listener...`);
+
+  // Set up click listener on current page
+  const setupOnPage = async () => {
+    await page.evaluate(() => {
+      // Remove existing listener to avoid duplicates
+      if (window._tpslClickHandler) {
+        document.removeEventListener('click', window._tpslClickHandler, true);
+      }
+
+      // Create click handler
+      window._tpslClickHandler = (event) => {
+        const button = event.target.closest('button');
+        if (button) {
+          const ariaLabel = button.getAttribute('aria-label') || '';
+          const buttonText = button.textContent?.trim() || '';
+          
+          // Debug: log all button clicks (remove this later)
+          if (ariaLabel.toLowerCase().includes('tpsl') || buttonText.includes('Add')) {
+            console.log('[Button Click Debug ---]', {
+              ariaLabel: ariaLabel,
+              text: buttonText,
+              tag: button.tagName
+            });
+          }
+          
+          // Check if this is our target button
+          if (ariaLabel && (ariaLabel.includes('Add tpsl') || ariaLabel.includes('add tpsl'))) {
+            console.log('[TP/SL Add Button Clicked]', ariaLabel);
+          }
+        }
+      };
+
+      // Attach listener with capture phase
+      document.addEventListener('click', window._tpslClickHandler, true);
+      console.log('[TP/SL Listener] Click listener attached to document');
+    });
+  };
+
+  // Set up on new documents
+  await page.evaluateOnNewDocument(() => {
+    document.addEventListener('click', (event) => {
+      const button = event.target.closest('button');
+      if (button) {
+        const ariaLabel = button.getAttribute('aria-label') || '';
+        if (ariaLabel && (ariaLabel.includes('Add tpsl') || ariaLabel.includes('add tpsl'))) {
+          console.log('[TP/SL Add Button Clicked]', ariaLabel);
+        }
+      }
+    }, true);
+  });
+
+  // Set up on current page
+  await delay(2000);
+  await setupOnPage();
+
+  // Re-setup after navigation
+  page.on('framenavigated', async () => {
+    await delay(1000);
+    await setupOnPage();
+  });
+
+  // Listen for ALL console messages for debugging
+  page.on('console', async (msg) => {
+    const text = msg.text();
+    
+    // Log all console messages for debugging (you can remove this later)
+    if (text.includes('Button Click') || text.includes('TP/SL') || text.includes('Listener')) {
+      console.log(`[${email}] [Browser Console] ${text}`);
+    }
+    
+    if (text.includes('[TP/SL Add Button Clicked]')) {
+      console.log(`\n${'='.repeat(60)}`);
+      console.log(`[${email}] 🎯 TP/SL ADD BUTTON CLICKED!`);
+      console.log(`${'='.repeat(60)}`);
+      console.log(`Message: ${text}`);
+      console.log(`${'='.repeat(60)}\n`);
+      // Perform your action here
+      await handleTpSlAddButtonClick(page, email);
+    }
+  });
+
+  // Test: Check if button exists on page
+  await delay(1000);
+  const buttonExists = await page.evaluate(() => {
+    const buttons = Array.from(document.querySelectorAll('button'));
+    const tpslButtons = buttons.filter(btn => {
+      const ariaLabel = btn.getAttribute('aria-label') || '';
+      return ariaLabel.includes('Add tpsl') || ariaLabel.includes('add tpsl');
+    });
+    return {
+      found: tpslButtons.length > 0,
+      count: tpslButtons.length,
+      ariaLabels: tpslButtons.map(btn => btn.getAttribute('aria-label'))
+    };
+  });
+  
+  if (buttonExists.found) {
+    console.log(`[${email}] ✓ Found ${buttonExists.count} TP/SL button(s) on page`);
+    console.log(`[${email}] Button aria-labels:`, buttonExists.ariaLabels);
+  } else {
+    console.log(`[${email}] ⚠ TP/SL button not found on current page (may appear later)`);
+  }
+
+  console.log(`[${email}] ✓ TP/SL add button listener set up`);
+  console.log(`[${email}] Debug: All button clicks with 'tpsl' or 'Add' will be logged`);
+}
+
+// Handler lock to prevent multiple executions
+const handlerLocks = new Map();
+
+/**
+ * Handler function - perform actions when TP/SL add button is clicked
+ * Fills the modal with TP/SL values from environment variables
+ */
+// Helper function to check if TP/SL modal is still open
+async function isTpSlModalOpen(page) {
+  return await page.evaluate(() => {
+    const modals = Array.from(document.querySelectorAll('[class*="modal"], [role="dialog"]'));
+    for (const modal of modals) {
+      const style = window.getComputedStyle(modal);
+      const isVisible = modal.offsetParent !== null && 
+                       style.display !== 'none' && 
+                       style.visibility !== 'hidden';
+      if (isVisible) {
+        const text = modal.textContent || '';
+        if (text.includes('TP/SL') || text.includes('Take Profit') || text.includes('Stop Loss')) {
+          return true;
+        }
+      }
+    }
+    return false;
+  });
+}
+
+async function handleTpSlAddButtonClick(page, email) {
+  // Prevent multiple executions
+  const lockKey = `${email}-tpsl-handler`;
+  if (handlerLocks.get(lockKey)) {
+    console.log(`[${email}] Handler already running, skipping...`);
+    return;
+  }
+  handlerLocks.set(lockKey, true);
+  
+  try {
+    console.log(`[${email}] Handling TP/SL modal - filling values...`);
+    
+    // Get TP/SL percentage values from environment variables
+    const takeProfitPercent = parseFloat(process.env.TAKE_PROFIT) || 0.1;
+    const stopLossPercent = parseFloat(process.env.STOP_LOSS) || 0.1;
+    
+    if (!takeProfitPercent && !stopLossPercent) {
+      console.log(`[${email}] ⚠ No TP/SL values configured in env (TAKE_PROFIT, STOP_LOSS)`);
+      return;
+    }
+    
+    console.log(`[${email}] TP/SL Values: TP=${takeProfitPercent}%, SL=${stopLossPercent}%`);
+  
+  // Wait for modal to appear - check specifically for TP/SL modal
+  console.log(`[${email}] Waiting for TP/SL modal to appear...`);
+  let modal = null;
+  for (let i = 0; i < 10; i++) {
+    const modalCheck = await page.evaluate(() => {
+      const modals = Array.from(document.querySelectorAll('[class*="modal"], [role="dialog"], [class*="Modal"], [class*="Dialog"]'));
+      for (const m of modals) {
+        const style = window.getComputedStyle(m);
+        const isVisible = m.offsetParent !== null && 
+                         style.display !== 'none' && 
+                         style.visibility !== 'hidden';
+        if (isVisible) {
+          const text = m.textContent || '';
+          if (text.includes('TP/SL') || text.includes('Take Profit') || text.includes('Stop Loss') || text.includes('Edit TP/SL')) {
+            return true;
+          }
+        }
+      }
+      return false;
+    });
+    
+    if (modalCheck) {
+      modal = await page.$('[class*="modal"], [role="dialog"]');
+      console.log(`[${email}] ✓ TP/SL modal appeared (attempt ${i + 1})`);
+      break;
+    }
+    await delay(300); // Faster checks
+  }
+  
+  if (!modal) {
+    console.log(`[${email}] ⚠ TP/SL modal did not appear`);
+    handlerLocks.set(lockKey, false);
+    return;
+  }
+  
+  await delay(500); // Reduced wait for modal content to load
+  
+  // Check if modal is still open
+  if (!(await isTpSlModalOpen(page))) {
+    console.log(`[${email}] ⚠ TP/SL modal closed before filling, exiting...`);
+    handlerLocks.set(lockKey, false);
+    return;
+  }
+  
+  // Fill Take Profit percentage if configured
+  if (takeProfitPercent) {
+    console.log(`[${email}] Filling Take Profit percentage: ${takeProfitPercent}%`);
+    
+    // Find the input selector first
+    const tpInputSelector = await page.evaluate((percent) => {
+      // Find TP/SL modal specifically
+      const modals = Array.from(document.querySelectorAll('[class*="modal"], [role="dialog"]'));
+      let modal = null;
+      for (const m of modals) {
+        const style = window.getComputedStyle(m);
+        const isVisible = m.offsetParent !== null && 
+                         style.display !== 'none' && 
+                         style.visibility !== 'hidden';
+        if (isVisible) {
+          const text = m.textContent || '';
+          if (text.includes('TP/SL') || text.includes('Take Profit') || text.includes('Stop Loss')) {
+            modal = m;
+            break;
+          }
+        }
+      }
+      
+      if (!modal) return false;
+      
+      // Find all inputs in modal
+      const inputs = Array.from(modal.querySelectorAll('input'));
+      
+      // Find input with "Profit" and "%" in nearby text
+      for (const input of inputs) {
+        const parentText = input.parentElement?.textContent || '';
+        const nearbyText = parentText + ' ' + (input.previousElementSibling?.textContent || '') + ' ' + (input.nextElementSibling?.textContent || '');
+        
+        // Look for input near "Profit" label with "%" dropdown
+        if (nearbyText.includes('Profit') && nearbyText.includes('%') && !nearbyText.includes('USD')) {
+          // This is the percentage input - simulate real typing for React
+          input.focus();
+          input.click();
+          
+          // Select all existing text and delete it
+          input.select();
+          input.setSelectionRange(0, input.value.length);
+          
+          // Delete existing value by simulating backspace
+          const currentValue = input.value;
+          for (let i = 0; i < currentValue.length; i++) {
+            input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', bubbles: true, cancelable: true }));
+            input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Backspace', bubbles: true, cancelable: true }));
+          }
+          
+          // Type the new value character by character (like a real user)
+          const valueStr = String(percent);
+          for (let i = 0; i < valueStr.length; i++) {
+            const char = valueStr[i];
+            input.dispatchEvent(new KeyboardEvent('keydown', { key: char, bubbles: true, cancelable: true }));
+            input.dispatchEvent(new KeyboardEvent('keypress', { key: char, bubbles: true, cancelable: true }));
+            // Update value
+            input.value = input.value + char;
+            input.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+            input.dispatchEvent(new KeyboardEvent('keyup', { key: char, bubbles: true, cancelable: true }));
+          }
+          
+          // Trigger change and blur events
+          input.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+          input.dispatchEvent(new Event('blur', { bubbles: true, cancelable: true }));
+          
+          // Return a unique selector for this input
+          // Create a temporary data attribute to identify it
+          input.setAttribute('data-temp-tp-input', 'true');
+          return 'input[data-temp-tp-input="true"]';
+        }
+      }
+      return null;
+    }, takeProfitPercent);
+    
+    let tpFilled = false;
+    if (tpInputSelector) {
+      try {
+        // Use Puppeteer's type method which works with React-controlled inputs
+        await page.click(tpInputSelector, { clickCount: 3 }); // Triple click to select all
+        await page.type(tpInputSelector, String(takeProfitPercent), { delay: 50 }); // Type with delay like a human
+        await delay(300); // Wait for React to process
+        console.log(`[${email}] ✓ Take Profit percentage filled using Puppeteer type`);
+        tpFilled = true;
+      } catch (error) {
+        console.log(`[${email}] ⚠ Error typing Take Profit value:`, error.message);
+      }
+    } else {
+      console.log(`[${email}] ⚠ Could not find Take Profit percentage input`);
+    }
+    
+    if (tpFilled) {
+      console.log(`[${email}] ✓ Take Profit percentage filled`);
+      
+      // Verify the value was set
+      const verifyValue = await page.evaluate(() => {
+        const modals = Array.from(document.querySelectorAll('[class*="modal"], [role="dialog"]'));
+        let modal = null;
+        for (const m of modals) {
+          const style = window.getComputedStyle(m);
+          const isVisible = m.offsetParent !== null && 
+                           style.display !== 'none' && 
+                           style.visibility !== 'hidden';
+          if (isVisible) {
+            const text = m.textContent || '';
+            if (text.includes('TP/SL') || text.includes('Take Profit') || text.includes('Stop Loss')) {
+              modal = m;
+              break;
+            }
+          }
+        }
+        if (!modal) return null;
+        const inputs = Array.from(modal.querySelectorAll('input'));
+        for (const input of inputs) {
+          const nearbyText = input.parentElement?.textContent || '';
+          if (nearbyText.includes('Profit') && nearbyText.includes('%') && !nearbyText.includes('USD')) {
+            return input.value;
+          }
+        }
+        return null;
+      });
+      console.log(`[${email}] Verified Take Profit % value: "${verifyValue}"`);
+      
+      // If value is empty, wait a bit and try again
+      if (!verifyValue || verifyValue === '') {
+        console.log(`[${email}] ⚠ Take Profit value not set, waiting and retrying...`);
+        await delay(1000);
+        // Try setting it again with a different approach
+        await page.evaluate((percent) => {
+          const modals = Array.from(document.querySelectorAll('[class*="modal"], [role="dialog"]'));
+          let modal = null;
+          for (const m of modals) {
+            const style = window.getComputedStyle(m);
+            const isVisible = m.offsetParent !== null && 
+                             style.display !== 'none' && 
+                             style.visibility !== 'hidden';
+            if (isVisible) {
+              const text = m.textContent || '';
+              if (text.includes('TP/SL') || text.includes('Take Profit') || text.includes('Stop Loss')) {
+                modal = m;
+                break;
+              }
+            }
+          }
+          if (!modal) return false;
+          const inputs = Array.from(modal.querySelectorAll('input'));
+          for (const input of inputs) {
+            const nearbyText = input.parentElement?.textContent || '';
+            if (nearbyText.includes('Profit') && nearbyText.includes('%') && !nearbyText.includes('USD')) {
+              // Try using native value setter
+              Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, String(percent));
+              input.dispatchEvent(new Event('input', { bubbles: true }));
+              input.dispatchEvent(new Event('change', { bubbles: true }));
+              return true;
+            }
+          }
+          return false;
+        }, takeProfitPercent);
+      }
+    } else {
+      console.log(`[${email}] ⚠ Could not find Take Profit percentage input`);
+    }
+    
+    await delay(500); // Reduced wait for USD value to auto-calculate
+  }
+  
+  // Check if modal is still open before filling Stop Loss
+  if (!(await isTpSlModalOpen(page))) {
+    console.log(`[${email}] ⚠ TP/SL modal closed before filling Stop Loss`);
+    handlerLocks.set(lockKey, false);
+    return;
+  }
+  
+  // Fill Stop Loss percentage if configured
+  if (stopLossPercent) {
+    console.log(`[${email}] Filling Stop Loss percentage: ${stopLossPercent}%`);
+    
+    // Find the input element using evaluateHandle
+    const slInputHandle = await page.evaluateHandle(() => {
+      // Find TP/SL modal specifically
+      const modals = Array.from(document.querySelectorAll('[class*="modal"], [role="dialog"]'));
+      let modal = null;
+      for (const m of modals) {
+        const style = window.getComputedStyle(m);
+        const isVisible = m.offsetParent !== null && 
+                         style.display !== 'none' && 
+                         style.visibility !== 'hidden';
+        if (isVisible) {
+          const text = m.textContent || '';
+          if (text.includes('TP/SL') || text.includes('Take Profit') || text.includes('Stop Loss')) {
+            modal = m;
+            break;
+          }
+        }
+      }
+      
+      if (!modal) return null;
+      
+      // Find all inputs in modal
+      const inputs = Array.from(modal.querySelectorAll('input'));
+      
+      // Find input with "Loss" and "%" in nearby text
+      for (const input of inputs) {
+        const parentText = input.parentElement?.textContent || '';
+        const nearbyText = parentText + ' ' + (input.previousElementSibling?.textContent || '') + ' ' + (input.nextElementSibling?.textContent || '');
+        
+        // Look for input near "Loss" label with "%" dropdown
+        if (nearbyText.includes('Loss') && nearbyText.includes('%') && !nearbyText.includes('USD')) {
+          return input;
+        }
+      }
+      return null;
+    });
+    
+    let slFilled = false;
+    if (slInputHandle && slInputHandle.asElement()) {
+      try {
+        const inputElement = slInputHandle.asElement();
+        // Use Puppeteer's type method which works with React-controlled inputs
+        await inputElement.click({ clickCount: 3 }); // Triple click to select all
+        await page.keyboard.press('Backspace'); // Clear selected text
+        await inputElement.type(String(stopLossPercent), { delay: 50 }); // Type with delay like a human
+        await page.keyboard.press('Tab'); // Trigger blur to calculate USD
+        await delay(300); // Reduced wait
+        console.log(`[${email}] ✓ Stop Loss percentage filled using Puppeteer type`);
+        slFilled = true;
+        
+        // Check if modal is still open
+        if (!(await isTpSlModalOpen(page))) {
+          console.log(`[${email}] ⚠ TP/SL modal closed after filling Stop Loss, exiting...`);
+          handlerLocks.set(lockKey, false);
+          return;
+        }
+      } catch (error) {
+        console.log(`[${email}] ⚠ Error typing Stop Loss value:`, error.message);
+      }
+    } else {
+      console.log(`[${email}] ⚠ Could not find Stop Loss percentage input`);
+    }
+    
+    if (slFilled) {
+      console.log(`[${email}] ✓ Stop Loss percentage filled`);
+      
+      // Verify both values are still set after setting Stop Loss
+      await delay(200); // Reduced wait
+      
+      // Check if modal is still open
+      if (!(await isTpSlModalOpen(page))) {
+        console.log(`[${email}] ⚠ TP/SL modal closed during verification, exiting...`);
+        handlerLocks.set(lockKey, false);
+        return;
+      }
+      
+      const verifyBoth = await page.evaluate(() => {
+        const modals = Array.from(document.querySelectorAll('[class*="modal"], [role="dialog"]'));
+        let modal = null;
+        for (const m of modals) {
+          const style = window.getComputedStyle(m);
+          const isVisible = m.offsetParent !== null && 
+                           style.display !== 'none' && 
+                           style.visibility !== 'hidden';
+          if (isVisible) {
+            const text = m.textContent || '';
+            if (text.includes('TP/SL') || text.includes('Take Profit') || text.includes('Stop Loss')) {
+              modal = m;
+              break;
+            }
+          }
+        }
+        if (!modal) return { tp: null, sl: null };
+        const inputs = Array.from(modal.querySelectorAll('input'));
+        let tpValue = null;
+        let slValue = null;
+        for (const input of inputs) {
+          const nearbyText = input.parentElement?.textContent || '';
+          if (nearbyText.includes('Profit') && nearbyText.includes('%') && !nearbyText.includes('USD')) {
+            tpValue = input.value;
+          }
+          if (nearbyText.includes('Loss') && nearbyText.includes('%') && !nearbyText.includes('USD')) {
+            slValue = input.value;
+          }
+        }
+        return { tp: tpValue, sl: slValue };
+      });
+      console.log(`[${email}] Verified values after Stop Loss - TP: "${verifyBoth.tp}", SL: "${verifyBoth.sl}"`);
+      
+      // If Take Profit was cleared, re-set it
+      if (!verifyBoth.tp || verifyBoth.tp === '' || !verifyBoth.tp.includes(String(takeProfitPercent))) {
+        console.log(`[${email}] ⚠ Take Profit value was cleared when setting Stop Loss, re-setting it...`);
+        // Re-find the Take Profit input handle
+        const tpInputHandleRetry = await page.evaluateHandle(() => {
+          const modals = Array.from(document.querySelectorAll('[class*="modal"], [role="dialog"]'));
+          let modal = null;
+          for (const m of modals) {
+            const style = window.getComputedStyle(m);
+            const isVisible = m.offsetParent !== null && 
+                             style.display !== 'none' && 
+                             style.visibility !== 'hidden';
+            if (isVisible) {
+              const text = m.textContent || '';
+              if (text.includes('TP/SL') || text.includes('Take Profit') || text.includes('Stop Loss')) {
+                modal = m;
+                break;
+              }
+            }
+          }
+          if (!modal) return null;
+          const inputs = Array.from(modal.querySelectorAll('input'));
+          for (const input of inputs) {
+            const nearbyText = input.parentElement?.textContent || '';
+            if (nearbyText.includes('Profit') && nearbyText.includes('%') && !nearbyText.includes('USD')) {
+              return input;
+            }
+          }
+          return null;
+        });
+        
+        if (tpInputHandleRetry && tpInputHandleRetry.asElement()) {
+          try {
+            const inputElement = tpInputHandleRetry.asElement();
+            await inputElement.click({ clickCount: 3 });
+            await page.keyboard.press('Backspace');
+            await inputElement.type(String(takeProfitPercent), { delay: 50 });
+            await delay(500);
+            console.log(`[${email}] ✓ Take Profit re-set after Stop Loss`);
+          } catch (error) {
+            console.log(`[${email}] ⚠ Error re-setting Take Profit:`, error.message);
+          }
+        }
+      }
+      
+      // If Stop Loss value is empty, wait a bit and try again
+      if (!verifyBoth.sl || verifyBoth.sl === '') {
+        console.log(`[${email}] ⚠ Stop Loss value not set, waiting and retrying...`);
+        await delay(1000);
+        // Try setting it again with a different approach
+        if (slInputHandle && slInputHandle.asElement()) {
+          try {
+            const inputElement = slInputHandle.asElement();
+            await inputElement.click({ clickCount: 3 });
+            await page.keyboard.press('Backspace');
+            await inputElement.type(String(stopLossPercent), { delay: 50 });
+            await delay(500);
+            console.log(`[${email}] ✓ Stop Loss re-set`);
+          } catch (error) {
+            console.log(`[${email}] ⚠ Error re-setting Stop Loss:`, error.message);
+          }
+        }
+      }
+    } else {
+      console.log(`[${email}] ⚠ Could not find Stop Loss percentage input`);
+      // Debug: log available inputs
+      const debugInputs = await page.evaluate(() => {
+        const modals = Array.from(document.querySelectorAll('[class*="modal"], [role="dialog"]'));
+        let modal = null;
+        for (const m of modals) {
+          const style = window.getComputedStyle(m);
+          const isVisible = m.offsetParent !== null && 
+                           style.display !== 'none' && 
+                           style.visibility !== 'hidden';
+          if (isVisible) {
+            const text = m.textContent || '';
+            if (text.includes('TP/SL') || text.includes('Take Profit') || text.includes('Stop Loss')) {
+              modal = m;
+              break;
+            }
+          }
+        }
+        if (!modal) return [];
+        const inputs = Array.from(modal.querySelectorAll('input'));
+        return inputs.map(input => ({
+          value: input.value,
+          nearby: input.parentElement?.textContent?.substring(0, 80) || ''
+        }));
+      });
+      console.log(`[${email}] Debug - Available inputs:`, JSON.stringify(debugInputs, null, 2));
+    }
+    
+    await delay(500); // Reduced wait for USD value to auto-calculate
+  }
+  
+  // Check if modal is still open before waiting for USD
+  if (!(await isTpSlModalOpen(page))) {
+    console.log(`[${email}] ⚠ TP/SL modal closed before USD calculation, exiting...`);
+    handlerLocks.set(lockKey, false);
+    return;
+  }
+  
+  // Wait for USD values to be calculated - wait for BOTH TP and SL USD values
+  console.log(`[${email}] Waiting for USD values to be calculated...`);
+  await delay(1000); // Reduced initial wait
+  
+  // Check if BOTH USD values are calculated, wait more if needed
+  let bothUsdCalculated = false;
+  for (let i = 0; i < 20; i++) { // More retries
+    const debugInfo = await page.evaluate(() => {
+      // Find TP/SL modal
+      const modals = Array.from(document.querySelectorAll('[class*="modal"], [role="dialog"]'));
+      let modal = null;
+      for (const m of modals) {
+        const style = window.getComputedStyle(m);
+        const isVisible = m.offsetParent !== null && 
+                         style.display !== 'none' && 
+                         style.visibility !== 'hidden';
+        if (isVisible) {
+          const text = m.textContent || '';
+          if (text.includes('TP/SL') || text.includes('Take Profit') || text.includes('Stop Loss')) {
+            modal = m;
+            break;
+          }
+        }
+      }
+      
+      if (!modal) return { tpCalculated: false, slCalculated: false, inputs: [] };
+      
+      const inputs = Array.from(modal.querySelectorAll('input'));
+      const inputInfo = inputs.map(input => ({
+        value: input.value,
+        placeholder: input.placeholder,
+        type: input.type,
+        nearbyText: input.parentElement?.textContent?.substring(0, 100) || ''
+      }));
+      
+      // Check for Take Profit USD value
+      let tpUsdFound = false;
+      let slUsdFound = false;
+      
+      for (const input of inputs) {
+        const value = input.value || '';
+        const parentText = input.parentElement?.textContent || '';
+        const cleanValue = value.replace(/[$,]/g, '');
+        const numValue = parseFloat(cleanValue);
+        
+        // Check if this is a USD input (has decimals, is a number > 0.01)
+        if (!isNaN(numValue) && numValue > 0.01 && cleanValue.includes('.')) {
+          // Check if it's Take Profit USD (has "Take Profit" and "USD" nearby, not "%")
+          if (parentText.includes('Take Profit') && parentText.includes('USD') && !parentText.includes('Profit%')) {
+            tpUsdFound = true;
+          }
+          // Check if it's Stop Loss USD (has "Stop Loss" and "USD" nearby, not "%")
+          if (parentText.includes('Stop Loss') && parentText.includes('USD') && !parentText.includes('Loss%')) {
+            slUsdFound = true;
+          }
+        }
+      }
+      
+      return { 
+        tpCalculated: tpUsdFound, 
+        slCalculated: slUsdFound,
+        bothCalculated: tpUsdFound && slUsdFound,
+        inputs: inputInfo 
+      };
+    });
+    
+    if (debugInfo.bothCalculated) {
+      bothUsdCalculated = true;
+      console.log(`[${email}] ✓ Both USD values calculated (attempt ${i + 1})`);
+      break;
+    }
+    
+    if (i === 3 || i === 7 || i === 12) {
+      // Log debug info periodically
+      console.log(`[${email}] Debug (attempt ${i + 1}) - TP: ${debugInfo.tpCalculated}, SL: ${debugInfo.slCalculated}`);
+      if (i === 7) {
+        console.log(`[${email}] Debug - Input values:`, JSON.stringify(debugInfo.inputs, null, 2));
+      }
+    }
+    
+    await delay(500);
+  }
+  
+  if (!bothUsdCalculated) {
+    console.log(`[${email}] ⚠ Not all USD values calculated yet, proceeding anyway...`);
+  }
+  
+  // Check if TP/SL modal is still open (might be closed by leverage modal)
+  if (!(await isTpSlModalOpen(page))) {
+    console.log(`[${email}] ⚠ TP/SL modal closed (possibly by other bot feature), skipping USD update`);
+    handlerLocks.set(lockKey, false);
+    return;
+  }
+  
+  // Remove decimals from Take Profit and Stop Loss USD value inputs
+  console.log(`[${email}] Removing decimals from TP/SL USD value inputs...`);
+  const result = await page.evaluate(() => {
+    // Find TP/SL modal specifically (not leverage modal)
+    const modals = Array.from(document.querySelectorAll('[class*="modal"], [role="dialog"]'));
+    let modal = null;
+    for (const m of modals) {
+      const style = window.getComputedStyle(m);
+      const isVisible = m.offsetParent !== null && 
+                       style.display !== 'none' && 
+                       style.visibility !== 'hidden';
+      if (isVisible) {
+        const text = m.textContent || '';
+        if (text.includes('TP/SL') || text.includes('Take Profit') || text.includes('Stop Loss')) {
+          modal = m;
+          break;
+        }
+      }
+    }
+    
+    if (!modal) return { updated: 0, found: [], error: 'TP/SL modal not found' };
+    
+    let updated = 0;
+    const found = [];
+    
+    // Find Take Profit USD value input
+    const allElements = Array.from(modal.querySelectorAll('*'));
+    let tpSection = null;
+    let slSection = null;
+    
+    // Find Take Profit section
+    for (const el of allElements) {
+      const text = el.textContent || '';
+      if (text.includes('Take Profit') && el.offsetParent !== null && !tpSection) {
+        tpSection = el;
+      }
+      if (text.includes('Stop Loss') && el.offsetParent !== null && !slSection) {
+        slSection = el;
+      }
+    }
+    
+    // Process Take Profit USD input - find input near "USD" button/dropdown
+    if (tpSection) {
+      let container = tpSection;
+      for (let i = 0; i < 8; i++) {
+        if (!container || !container.parentElement) break;
+        container = container.parentElement;
+      }
+      
+      if (!container) {
+        return { updated: 0, found: [], error: 'Take Profit container not found' };
+      }
+      
+      // Find "USD" text/label
+      const allElements = Array.from(container.querySelectorAll('*'));
+      let usdLabel = null;
+      for (const el of allElements) {
+        const text = el.textContent?.trim() || '';
+        if (text === 'USD' && el.offsetParent !== null) {
+          usdLabel = el;
+          break;
+        }
+      }
+      
+      if (usdLabel) {
+        // Find input near USD label
+        let inputContainer = usdLabel;
+        for (let i = 0; i < 5; i++) {
+          inputContainer = inputContainer.parentElement;
+          if (!inputContainer) break;
+        }
+        
+        const inputs = Array.from(inputContainer.querySelectorAll('input'));
+        for (const input of inputs) {
+          const value = input.value || '';
+          const parentText = input.parentElement?.textContent || '';
+          
+          // This is the USD input (has USD nearby, not %)
+          if (parentText.includes('USD') && !parentText.includes('Profit%') && !parentText.includes('Loss%')) {
+            const cleanValue = value.replace(/[$,]/g, '');
+            const numValue = parseFloat(cleanValue);
+            // Check if it has decimals and is a reasonable USD amount
+            if (!isNaN(numValue) && numValue > 0.01 && cleanValue.includes('.')) {
+              found.push({ type: 'Take Profit', original: value, numValue });
+              const intValue = Math.floor(numValue); // Remove decimal and everything after
+              if (intValue !== numValue) { // Only update if it has decimals
+                input.focus();
+                input.click();
+                // Select all text to ensure we replace everything
+                input.select();
+                input.setSelectionRange(0, input.value.length);
+                // Clear and set as integer string (no decimal point, no commas)
+                input.value = '';
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+                input.value = String(intValue); // Plain integer, no decimals
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+                input.dispatchEvent(new Event('blur', { bubbles: true }));
+                // Also trigger keyup for React
+                input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+                updated++;
+                break;
+              }
+            }
+          }
+        }
+      }
+    }
+    
+    // Process Stop Loss USD input - find input near "USD" button/dropdown
+    if (slSection) {
+      let container = slSection;
+      for (let i = 0; i < 8; i++) {
+        if (!container || !container.parentElement) break;
+        container = container.parentElement;
+      }
+      
+      if (!container) {
+        return { updated, found, error: 'Stop Loss container not found' };
+      }
+      
+      // Find "USD" text/label
+      const allElements = Array.from(container.querySelectorAll('*'));
+      let usdLabel = null;
+      for (const el of allElements) {
+        const text = el.textContent?.trim() || '';
+        if (text === 'USD' && el.offsetParent !== null) {
+          usdLabel = el;
+          break;
+        }
+      }
+      
+      if (usdLabel) {
+        // Find input near USD label
+        let inputContainer = usdLabel;
+        for (let i = 0; i < 5; i++) {
+          inputContainer = inputContainer.parentElement;
+          if (!inputContainer) break;
+        }
+        
+        const inputs = Array.from(inputContainer.querySelectorAll('input'));
+        for (const input of inputs) {
+          const value = input.value || '';
+          const parentText = input.parentElement?.textContent || '';
+          
+          // This is the USD input (has USD nearby, not %)
+          if (parentText.includes('USD') && !parentText.includes('Profit%') && !parentText.includes('Loss%')) {
+            const cleanValue = value.replace(/[$,]/g, '');
+            const numValue = parseFloat(cleanValue);
+            // Check if it has decimals and is a reasonable USD amount
+            if (!isNaN(numValue) && numValue > 0.01 && cleanValue.includes('.')) {
+              found.push({ type: 'Stop Loss', original: value, numValue });
+              const intValue = Math.floor(numValue); // Remove decimal and everything after
+              if (intValue !== numValue) { // Only update if it has decimals
+                input.focus();
+                input.click();
+                // Select all text to ensure we replace everything
+                input.select();
+                input.setSelectionRange(0, input.value.length);
+                // Clear and set as integer string (no decimal point, no commas)
+                input.value = '';
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+                input.value = String(intValue); // Plain integer, no decimals
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+                input.dispatchEvent(new Event('blur', { bubbles: true }));
+                // Also trigger keyup for React
+                input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+                updated++;
+                break;
+              }
+            }
+          }
+        }
+      }
+    }
+    
+    // Fallback: If we didn't find both, try a simpler approach - find all inputs with USD values
+    if (updated < 2) {
+      const allInputs = Array.from(modal.querySelectorAll('input'));
+      for (const input of allInputs) {
+        const value = input.value || '';
+        const parentText = input.parentElement?.textContent || '';
+        const cleanValue = value.replace(/[$,]/g, '');
+        const numValue = parseFloat(cleanValue);
+        
+        // Check if this is a USD input with decimals
+        if (!isNaN(numValue) && numValue > 0.01 && cleanValue.includes('.')) {
+          // Check if we already processed this one
+          const alreadyProcessed = found.some(f => f.original === value);
+          if (alreadyProcessed) continue;
+          
+          // Determine if it's TP or SL based on nearby text
+          let type = 'Unknown';
+          if (parentText.includes('Take Profit') && parentText.includes('USD') && !parentText.includes('Profit%')) {
+            type = 'Take Profit';
+          } else if (parentText.includes('Stop Loss') && parentText.includes('USD') && !parentText.includes('Loss%')) {
+            type = 'Stop Loss';
+          } else {
+            // Skip if we can't determine the type
+            continue;
+          }
+          
+          const intValue = Math.floor(numValue); // Remove decimal and everything after
+          if (intValue !== numValue) {
+            found.push({ type, original: value, numValue });
+            input.focus();
+            input.click();
+            // Select all text to ensure we replace everything
+            input.select();
+            input.setSelectionRange(0, input.value.length);
+            // Clear and set as integer string (no decimal point, no commas)
+            input.value = '';
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+            input.value = String(intValue); // Plain integer, no decimals
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+            input.dispatchEvent(new Event('blur', { bubbles: true }));
+            // Also trigger keyup for React
+            input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+            updated++;
+          }
+        }
+      }
+    }
+    
+    return { updated, found };
+  });
+  
+    if (result.updated > 0) {
+      console.log(`[${email}] ✓ Removed decimals from ${result.updated} USD input(s)`);
+      console.log(`[${email}] Updated values:`, result.found);
+    } else {
+      console.log(`[${email}] ⚠ No USD inputs found to update`);
+      if (result.found && result.found.length > 0) {
+        console.log(`[${email}] Debug - Found inputs:`, result.found);
+      }
+      if (result.error) {
+        console.log(`[${email}] Error: ${result.error}`);
+      }
+    }
+    
+    // Check if modal is still open before validation
+    if (!(await isTpSlModalOpen(page))) {
+      console.log(`[${email}] ⚠ TP/SL modal closed before validation, exiting...`);
+      handlerLocks.set(lockKey, false);
+      return;
+    }
+    
+    await delay(300); // Reduced wait
+    
+    // Validate that USD values are calculated and there are no errors before confirming
+    console.log(`[${email}] Validating form before confirming...`);
+    const validation = await page.evaluate(() => {
+      // Find TP/SL modal specifically
+      const modals = Array.from(document.querySelectorAll('[class*="modal"], [role="dialog"]'));
+      let tpslModal = null;
+      for (const m of modals) {
+        const style = window.getComputedStyle(m);
+        const isVisible = m.offsetParent !== null && 
+                         style.display !== 'none' && 
+                         style.visibility !== 'hidden';
+        if (isVisible) {
+          const text = m.textContent || '';
+          if (text.includes('TP/SL') || text.includes('Take Profit') || text.includes('Stop Loss')) {
+            tpslModal = m;
+            break;
+          }
+        }
+      }
+      
+      if (!tpslModal) return { valid: false, error: 'Modal not found' };
+      
+      // Check for error messages
+      const errorTexts = [
+        'must be less than',
+        'must be greater than',
+        'invalid',
+        'error',
+        'required'
+      ];
+      const modalText = tpslModal.textContent || '';
+      const hasError = errorTexts.some(errorText => 
+        modalText.toLowerCase().includes(errorText.toLowerCase())
+      );
+      
+      if (hasError) {
+        // Find the error message
+        const errorElements = Array.from(tpslModal.querySelectorAll('*'));
+        const errorMsg = errorElements.find(el => {
+          const text = el.textContent || '';
+          return errorTexts.some(errorText => 
+            text.toLowerCase().includes(errorText.toLowerCase())
+          );
+        });
+        return { 
+          valid: false, 
+          error: errorMsg ? errorMsg.textContent.substring(0, 100) : 'Error message found' 
+        };
+      }
+      
+      // Check that USD inputs have values
+      const inputs = Array.from(tpslModal.querySelectorAll('input'));
+      let tpUsdHasValue = false;
+      let slUsdHasValue = false;
+      
+      for (const input of inputs) {
+        const value = input.value || '';
+        const parentText = input.parentElement?.textContent || '';
+        const cleanValue = value.replace(/[$,]/g, '');
+        const numValue = parseFloat(cleanValue);
+        
+        if (!isNaN(numValue) && numValue > 0.01) {
+          if (parentText.includes('Take Profit') && parentText.includes('USD') && !parentText.includes('Profit%')) {
+            tpUsdHasValue = true;
+          }
+          if (parentText.includes('Stop Loss') && parentText.includes('USD') && !parentText.includes('Loss%')) {
+            slUsdHasValue = true;
+          }
+        }
+      }
+      
+      return { 
+        valid: tpUsdHasValue && slUsdHasValue, 
+        tpUsdHasValue, 
+        slUsdHasValue,
+        error: null 
+      };
+    });
+    
+    if (!validation.valid) {
+      console.log(`[${email}] ⚠ Form validation failed:`, validation.error || `TP USD: ${validation.tpUsdHasValue}, SL USD: ${validation.slUsdHasValue}`);
+      console.log(`[${email}] ⚠ Not clicking Confirm - form has errors or values not ready`);
+      handlerLocks.set(lockKey, false);
+      return;
+    }
+    
+    console.log(`[${email}] ✓ Form validated - USD values are ready, clicking Confirm...`);
+    
+    // Click Confirm button - make sure we're clicking in TP/SL modal, not leverage modal
+    console.log(`[${email}] Clicking Confirm button...`);
+    const confirmClicked = await page.evaluate(() => {
+      // Find TP/SL modal specifically
+      const modals = Array.from(document.querySelectorAll('[class*="modal"], [role="dialog"]'));
+      let tpslModal = null;
+      for (const m of modals) {
+        const style = window.getComputedStyle(m);
+        const isVisible = m.offsetParent !== null && 
+                         style.display !== 'none' && 
+                         style.visibility !== 'hidden';
+        if (isVisible) {
+          const text = m.textContent || '';
+          if (text.includes('TP/SL') || text.includes('Take Profit') || text.includes('Stop Loss')) {
+            tpslModal = m;
+            break;
+          }
+        }
+      }
+      
+      if (!tpslModal) return false;
+      
+      const buttons = Array.from(tpslModal.querySelectorAll('button'));
+      for (const btn of buttons) {
+        const text = btn.textContent?.trim() || '';
+        if (text === 'Confirm' || text.includes('Confirm')) {
+          btn.click();
+          return true;
+        }
+      }
+      return false;
+    });
+  
+  if (confirmClicked) {
+    console.log(`[${email}] ✓ Confirm button clicked`);
+  } else {
+    console.log(`[${email}] ⚠ Confirm button not found`);
+  }
+  
+  console.log(`[${email}] ✓ TP/SL form completed`);
+  } finally {
+    // Release lock after 3 seconds
+    setTimeout(() => {
+      handlerLocks.set(lockKey, false);
+    }, 3000);
+  }
+}
+
+/**
+ * Alternative approach: Direct function to click TP/SL add button and perform action
+ * This is more reliable for automation - use this if you want to programmatically click the button
+ */
+async function clickTpSlAddButtonAndPerformAction(page, email) {
+  console.log(`[${email}] Looking for TP/SL add button...`);
+  
+  try {
+    // Find the button using Puppeteer (same pattern as other bot functions)
+    const button = await page.$('button[aria-label*="Add tpsl"], button[aria-label*="add tpsl"]');
+    
+    if (button) {
+      console.log(`[${email}] Found TP/SL add button, clicking...`);
+      await button.click();
+      console.log(`[${email}] ✓ TP/SL add button clicked`);
+      
+      // Perform your actions after click
+      await handleTpSlAddButtonClick(page, email);
+      
+      return { success: true };
+    } else {
+      console.log(`[${email}] TP/SL add button not found`);
+      return { success: false, error: 'Button not found' };
+    }
+  } catch (error) {
+    console.error(`[${email}] Error clicking TP/SL button:`, error.message);
+    return { success: false, error: error.message };
+  }
+}
+
 function startApiServer(page, apiPort, email) {
   let isReady = true;
   const apiApp = express();
@@ -2369,6 +3478,9 @@ async function launchAccount(accountConfig) {
 
       // Start the API server for this account
       startApiServer(page, apiPort, email);
+
+      // Set up TP/SL add button click listener
+      await setupTpSlAddButtonListener(page, email);
 
       return { browser, page, email, success: true };
     } else {
