@@ -1608,42 +1608,28 @@ async function setLeverage(page, leverage) {
     // Step 2: Find the input field in the modal and enter the leverage value
     console.log(`Setting leverage to ${leverage} in the modal...`);
 
-    // Find the leverage input field - ONLY in the "Adjust Leverage" modal
+    // Find the leverage input field
     const inputInfo = await page.evaluate(() => {
-      // First, find the modal dialog by its title "Adjust Leverage"
-      const modal = document.querySelector('[role="dialog"]');
-      if (!modal) {
-        return { success: false, error: "Leverage modal not found" };
-      }
+      const inputs = document.querySelectorAll(
+        'input[type="text"], input[type="number"], input:not([type])'
+      );
 
-      // Check if this is the leverage modal by looking for the title
-      const title = modal.querySelector('h1');
-      if (!title || !title.textContent?.includes("Adjust Leverage")) {
-        return { success: false, error: "Not the leverage modal" };
-      }
+      console.log(`Found ${inputs.length} input fields in modal`);
 
-      // Now find the input field ONLY within this modal
-      // Look for input with placeholder="Leverage" or in the modal form
-      const form = modal.querySelector('form');
-      if (!form) {
-        return { success: false, error: "Form not found in modal" };
-      }
-
-      const inputs = form.querySelectorAll('input[type="text"], input[type="number"], input:not([type])');
-      
-      console.log(`Found ${inputs.length} input fields in leverage modal`);
-
-      // Find the leverage input specifically by placeholder
+      // Strategy: Find input with numeric value in visible modal
       for (const input of inputs) {
         if (input.offsetParent === null) continue; // Skip hidden inputs
 
-        const placeholder = (input.placeholder || "").toLowerCase();
         const value = input.value || "";
+        const placeholder = input.placeholder || "";
 
         console.log(`Input: value="${value}", placeholder="${placeholder}"`);
 
-        // Only match if placeholder contains "leverage" - be very specific
-        if (placeholder.includes("leverage")) {
+        // Check if this looks like a leverage input
+        if (
+          /^\d+$/.test(value) ||
+          placeholder.toLowerCase().includes("leverage")
+        ) {
           console.log(`Found leverage input with current value: "${value}"`);
 
           // Mark the input with a unique attribute so we can find it again
@@ -1676,23 +1662,9 @@ async function setLeverage(page, leverage) {
       };
     }
 
-    // Focus and select all text in the leverage input
-    await leverageInput.focus();
-    await delay(100);
+    // Triple-click to select all and position cursor
     await leverageInput.click({ clickCount: 3 });
     await delay(200);
-
-    // Verify we're focused on the correct input
-    const focusedElement = await page.evaluate(() => {
-      const active = document.activeElement;
-      return active && active.hasAttribute('data-leverage-input') ? true : false;
-    });
-
-    if (!focusedElement) {
-      console.log(`⚠ Not focused on leverage input, refocusing...`);
-      await leverageInput.focus();
-      await delay(200);
-    }
 
     // Get current value
     let currentValue = await page.evaluate(() => {
@@ -1765,32 +1737,19 @@ async function setLeverage(page, leverage) {
     console.log("Waiting for UI to register the leverage change...");
     await delay(3000);
 
-    // Step 3: Click the "Confirm" button - ONLY in the leverage modal
-    console.log("Clicking Confirm button in leverage modal...");
+    // Step 3: Click the "Confirm" button
+    console.log("Clicking Confirm button...");
     const confirmed = await page.evaluate(() => {
-      // Find the leverage modal
-      const modal = document.querySelector('[role="dialog"]');
-      if (!modal) {
-        return { success: false, error: "Modal not found" };
-      }
-
-      // Verify it's the leverage modal
-      const title = modal.querySelector('h1');
-      if (!title || !title.textContent?.includes("Adjust Leverage")) {
-        return { success: false, error: "Not the leverage modal" };
-      }
-
-      // Find Confirm button ONLY within this modal
-      const buttons = Array.from(modal.querySelectorAll("button"));
+      const buttons = Array.from(document.querySelectorAll("button"));
       for (const btn of buttons) {
         const text = btn.textContent?.trim();
-        if (text === "Confirm" && btn.offsetParent !== null && btn.type === "submit") {
-          console.log(`Found and clicking Confirm button in leverage modal`);
+        if (text === "Confirm" && btn.offsetParent !== null) {
+          console.log(`Found and clicking Confirm button`);
           btn.click();
           return { success: true };
         }
       }
-      return { success: false, error: "Confirm button not found in modal" };
+      return { success: false };
     });
 
     if (!confirmed.success) {
