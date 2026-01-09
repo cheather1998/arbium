@@ -3581,6 +3581,25 @@ async function automatedTradingLoop(account1Result, account2Result) {
       // Small delay to ensure positions are fully closed
       await delay(2000);
 
+      // Step 0.5: Cancel any open orders before placing new orders
+      console.log(`\n[CYCLE ${cycleCount}] Canceling any open orders...`);
+      const cancelPromises = [
+        cancelAllOrders(page1),
+        cancelAllOrders(page2),
+      ];
+
+      const cancelResults = await Promise.all(cancelPromises);
+
+      if (cancelResults[0].success) {
+        console.log(`✓ [${email1}] Open orders checked/canceled`);
+      }
+      if (cancelResults[1].success) {
+        console.log(`✓ [${email2}] Open orders checked/canceled`);
+      }
+
+      // Small delay to ensure orders are fully canceled
+      await delay(1000);
+
       // Step 1: Execute trades in parallel with limit orders at market price
       console.log(`\n[CYCLE ${cycleCount}] Opening new positions...`);
       const tradePromises = [
