@@ -1260,10 +1260,13 @@ async function closeAllPositions(page, percent = 100) {
   }
 
   if (!hasPositions) {
-    console.log("No open positions found");
+    console.log("✓ No open positions found - nothing to close");
     return { success: true, message: "No positions to close" };
   }
 
+  // If we reach here, positions exist - proceed to find and click close button
+  console.log("✓ Positions found - proceeding to close them...");
+  
   // Wait a bit more for UI to fully render
   await delay(1000);
 
@@ -1334,11 +1337,14 @@ async function closeAllPositions(page, percent = 100) {
   let closeBtn = null;
   let closeBtnClicked = false;
 
-  // Strategy 1: Find by text "Close" using existing function
+  // Strategy 1: Find by text "Close" or "Close All" using existing function
   closeBtn = await findByText(page, "Close", ["button", "div", "a"]);
+  if (!closeBtn) {
+    closeBtn = await findByText(page, "Close All", ["button", "div", "a"]);
+  }
 
   // Strategy 2: If not found, try to find by evaluating the page and click directly
-  if (!closeBtn) {
+  if (!closeBtn && !closeBtnClicked) {
     const clicked = await page.evaluate(() => {
       const buttons = Array.from(
         document.querySelectorAll(
@@ -1387,6 +1393,59 @@ async function closeAllPositions(page, percent = 100) {
     if (clicked) {
       closeBtnClicked = true;
       console.log("Clicked Close button (via aria-label)");
+    }
+  }
+
+  // Strategy 4: Use buttons found in debug step (fallback) - try to click "Close All" button
+  if (!closeBtn && !closeBtnClicked && closeButtonsDebug.length > 0) {
+    console.log(`Found ${closeButtonsDebug.length} close button(s) in debug, attempting to click...`);
+    // Wait a bit for UI to stabilize
+    await delay(500);
+    const clicked = await page.evaluate(() => {
+      const buttons = Array.from(
+        document.querySelectorAll(
+          'button, div[role="button"], a[role="button"], [class*="button"]'
+        )
+      );
+      // First, try to find "Close All" button (exact text match, case insensitive)
+      for (const btn of buttons) {
+        const text = btn.textContent?.trim();
+        const isVisible = btn.offsetParent !== null;
+        if (isVisible && text && text.toLowerCase() === "close all") {
+          try {
+            btn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            btn.click();
+            return { success: true, method: 'exact-match' };
+          } catch (e) {
+            console.log(`Error clicking exact match: ${e.message}`);
+          }
+        }
+      }
+      // Fallback: try any button with "close" in text
+      for (const btn of buttons) {
+        const text = btn.textContent?.trim().toLowerCase();
+        const isVisible = btn.offsetParent !== null;
+        if (isVisible && text && text.includes("close") && !text.includes("position")) {
+          // Make sure it's not a position close button (we want "Close All")
+          if (text.includes("all") || text === "close") {
+            try {
+              btn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              btn.click();
+              return { success: true, method: 'partial-match' };
+            } catch (e) {
+              console.log(`Error clicking partial match: ${e.message}`);
+            }
+          }
+        }
+      }
+      return { success: false };
+    });
+
+    if (clicked && clicked.success) {
+      closeBtnClicked = true;
+      console.log(`✓ Clicked Close button (via debug fallback - ${clicked.method})`);
+    } else {
+      console.log("⚠ Debug fallback strategy failed to click button");
     }
   }
 
@@ -1519,6 +1578,163 @@ async function closeAllPositions(page, percent = 100) {
   } else {
     console.log("Close button not found");
     return { success: false, error: "Close button not found" };
+  }
+}
+
+async function cancelAllOrders(page) {
+  console.log(`\n=== Canceling All Open Orders ===`);
+
+  // Wait a moment for any previous actions to complete
+  await delay(1000);
+
+  // Click on Orders tab to see open orders
+  const ordersTab = await findByExactText(page, "Orders", [
+    "button",
+    "div",
+    "span",
+  ]);
+  if (ordersTab) {
+    await ordersTab.click();
+    console.log("Clicked Orders tab");
+    await delay(2000); // Wait for orders to load
+  }
+
+  // Check if there are any open orders
+  console.log("Checking for open orders...");
+  let hasOrders = false;
+  for (let i = 0; i < 3; i++) {
+    hasOrders = await page.evaluate(() => {
+      const text = document.body.innerText;
+      return (
+        text.includes("Open Orders") ||
+        text.includes("Pending") ||
+        text.includes("Limit Order") ||
+        text.includes("Market Order") ||
+        text.includes("Cancel")
+      );
+    });
+
+    if (hasOrders) {
+      console.log("Found open orders!");
+      break;
+    }
+
+    if (i < 2) {
+      console.log(`Attempt ${i + 1}/3: No orders found yet, waiting...`);
+      await delay(1500);
+    }
+  }
+
+  if (!hasOrders) {
+    console.log("No open orders found");
+    return { success: true, message: "No orders to cancel", canceled: 0 };
+  }
+
+  // Wait a bit more for UI to fully render
+  await delay(1000);
+
+  // Find and click all Cancel buttons
+  let canceledCount = 0;
+  let maxAttempts = 10; // Prevent infinite loop
+  let attempts = 0;
+
+  while (attempts < maxAttempts) {
+    attempts++;
+    console.log(`Looking for cancel buttons (attempt ${attempts}/${maxAttempts})...`);
+
+    const cancelResult = await page.evaluate(() => {
+      // Find all buttons that might be cancel buttons
+      const allButtons = Array.from(
+        document.querySelectorAll(
+          'button, div[role="button"], a[role="button"], [class*="button"]'
+        )
+      );
+
+      const cancelButtons = [];
+      for (const btn of allButtons) {
+        const text = btn.textContent?.trim().toLowerCase();
+        const ariaLabel = btn.getAttribute("aria-label")?.toLowerCase() || "";
+        const isVisible = btn.offsetParent !== null;
+
+        if (
+          isVisible &&
+          (text.includes("cancel") ||
+            text === "x" ||
+            ariaLabel.includes("cancel") ||
+            ariaLabel.includes("remove"))
+        ) {
+          // Make sure it's related to orders, not positions
+          const parentText = btn.parentElement?.textContent?.toLowerCase() || "";
+          if (
+            parentText.includes("order") ||
+            parentText.includes("pending") ||
+            parentText.includes("limit") ||
+            parentText.includes("market") ||
+            !parentText.includes("position")
+          ) {
+            cancelButtons.push({
+              element: btn,
+              text: btn.textContent?.trim() || ariaLabel,
+            });
+          }
+        }
+      }
+
+      // Click all cancel buttons found
+      let clicked = 0;
+      for (const btnInfo of cancelButtons) {
+        try {
+          btnInfo.element.click();
+          clicked++;
+        } catch (e) {
+          console.log(`Error clicking cancel button: ${e.message}`);
+        }
+      }
+
+      return { found: cancelButtons.length, clicked };
+    });
+
+    if (cancelResult.clicked > 0) {
+      canceledCount += cancelResult.clicked;
+      console.log(
+        `✓ Clicked ${cancelResult.clicked} cancel button(s) (total: ${canceledCount})`
+      );
+      await delay(1500); // Wait for orders to be canceled
+
+      // Check if there are still orders
+      const stillHasOrders = await page.evaluate(() => {
+        const text = document.body.innerText;
+        return (
+          text.includes("Open Orders") ||
+          text.includes("Pending") ||
+          (text.includes("Cancel") && text.includes("Order"))
+        );
+      });
+
+      if (!stillHasOrders) {
+        console.log("All orders canceled!");
+        break;
+      }
+    } else {
+      console.log("No more cancel buttons found");
+      break;
+    }
+  }
+
+  if (canceledCount > 0) {
+    console.log(`✓ Successfully canceled ${canceledCount} order(s)`);
+    return {
+      success: true,
+      message: `Canceled ${canceledCount} order(s)`,
+      canceled: canceledCount,
+    };
+  } else {
+    console.log("No orders were canceled (none found or already canceled)");
+    return {
+      success: true,
+      message: "No orders to cancel",
+      canceled: 0,
+    };
   }
 }
 
@@ -2336,7 +2552,7 @@ async function setupTpSlAddButtonListener(page, email) {
   
   // Check periodically (every 3 seconds) as backup
   const checkInterval = setInterval(async () => {
-    await checkAndClickButton();
+   await checkAndClickButton();
   }, 3000);
   
   // Store interval ID so it can be cleared if needed
@@ -2396,6 +2612,13 @@ async function handleTpSlAddButtonClick(page, email) {
     }
     
     console.log(`[${email}] Stop Loss Value: SL=${stopLossPercent}% (from env: "${stopLossPercentStr}")`);
+    
+    // Use the exact value from env - Paradex UI accepts decimals in percentage input
+    // The bot should type exactly what's in the env file, no conversion needed
+    let valueToType = stopLossPercentStr;
+    
+    console.log(`[${email}] Will type exact value from env: "${valueToType}"`);
+    console.log(`[${email}] Note: Paradex UI accepts decimals in percentage input, so using env value as-is`);
   
   // Wait for modal to appear - check specifically for TP/SL modal
   console.log(`[${email}] Waiting for TP/SL modal to appear...`);
@@ -2487,7 +2710,8 @@ async function handleTpSlAddButtonClick(page, email) {
     if (slInputHandle && slInputHandle.asElement()) {
       try {
         const inputElement = slInputHandle.asElement();
-        // Use Puppeteer's type method which works with React-controlled inputs
+        
+        // Focus and clear the input
         await inputElement.click({ clickCount: 3 }); // Triple click to select all
         await page.keyboard.press('Backspace'); // Clear selected text
         await inputElement.type(stopLossPercentStr, { delay: 30 }); // Use exact string value from env
@@ -2509,102 +2733,7 @@ async function handleTpSlAddButtonClick(page, email) {
       console.log(`[${email}] ⚠ Could not find Stop Loss percentage input`);
     }
     
-    if (slFilled) {
-      console.log(`[${email}] ✓ Stop Loss percentage filled`);
-      
-      // Verify both values are still set after setting Stop Loss
-      await delay(200); // Reduced wait
-      
-      // Check if modal is still open
-      if (!(await isTpSlModalOpen(page))) {
-        console.log(`[${email}] ⚠ TP/SL modal closed during verification, exiting...`);
-        handlerLocks.set(lockKey, false);
-        return;
-      }
-      
-      const verifyBoth = await page.evaluate(() => {
-        const modals = Array.from(document.querySelectorAll('[class*="modal"], [role="dialog"]'));
-        let modal = null;
-        for (const m of modals) {
-          const style = window.getComputedStyle(m);
-          const isVisible = m.offsetParent !== null && 
-                           style.display !== 'none' && 
-                           style.visibility !== 'hidden';
-          if (isVisible) {
-            const text = m.textContent || '';
-            if (text.includes('TP/SL') || text.includes('Take Profit') || text.includes('Stop Loss')) {
-              modal = m;
-              break;
-            }
-          }
-        }
-        if (!modal) return { tp: null, sl: null };
-        const inputs = Array.from(modal.querySelectorAll('input'));
-        let tpValue = null;
-        let slValue = null;
-        for (const input of inputs) {
-          const nearbyText = input.parentElement?.textContent || '';
-          if (nearbyText.includes('Profit') && nearbyText.includes('%') && !nearbyText.includes('USD')) {
-            tpValue = input.value;
-          }
-          if (nearbyText.includes('Loss') && nearbyText.includes('%') && !nearbyText.includes('USD')) {
-            slValue = input.value;
-          }
-        }
-        return { tp: tpValue, sl: slValue };
-      });
-      console.log(`[${email}] Verified Stop Loss value: "${verifyBoth.sl}"`);
-      
-      // Note: Take Profit is not filled, so we don't check or re-set it
-      
-      // If Stop Loss value is empty, wait a bit and try again
-      if (!verifyBoth.sl || verifyBoth.sl === '') {
-        console.log(`[${email}] ⚠ Stop Loss value not set, waiting and retrying...`);
-        await delay(1000);
-        // Try setting it again with a different approach
-        if (slInputHandle && slInputHandle.asElement()) {
-          try {
-            const inputElement = slInputHandle.asElement();
-            await inputElement.click({ clickCount: 3 });
-            await page.keyboard.press('Backspace');
-            await inputElement.type(stopLossPercentStr, { delay: 30 });
-            await delay(500);
-            console.log(`[${email}] ✓ Stop Loss re-set`);
-          } catch (error) {
-            console.log(`[${email}] ⚠ Error re-setting Stop Loss:`, error.message);
-          }
-        }
-      }
-    } else {
-      console.log(`[${email}] ⚠ Could not find Stop Loss percentage input`);
-      // Debug: log available inputs
-      const debugInputs = await page.evaluate(() => {
-        const modals = Array.from(document.querySelectorAll('[class*="modal"], [role="dialog"]'));
-        let modal = null;
-        for (const m of modals) {
-          const style = window.getComputedStyle(m);
-          const isVisible = m.offsetParent !== null && 
-                           style.display !== 'none' && 
-                           style.visibility !== 'hidden';
-          if (isVisible) {
-            const text = m.textContent || '';
-            if (text.includes('TP/SL') || text.includes('Take Profit') || text.includes('Stop Loss')) {
-              modal = m;
-              break;
-            }
-          }
-        }
-        if (!modal) return [];
-        const inputs = Array.from(modal.querySelectorAll('input'));
-        return inputs.map(input => ({
-          value: input.value,
-          nearby: input.parentElement?.textContent?.substring(0, 80) || ''
-        }));
-      });
-      console.log(`[${email}] Debug - Available inputs:`, JSON.stringify(debugInputs, null, 2));
-    }
-    
-    await delay(500); // Reduced wait for USD value to auto-calculate
+    await delay(500);
   }
   
   // Check if modal is still open before waiting for USD
@@ -3363,7 +3492,42 @@ async function automatedTradingLoop(account1Result, account2Result) {
   console.log(`Close after: Random time between 10s and 3min`);
   console.log(`========================================\n`);
 
-  // Set leverage ONCE at the beginning for both accounts
+  // Clean up any existing positions and orders BEFORE setting leverage
+  console.log(`\n🧹 Cleaning up existing positions and orders...`);
+  const cleanupPromises = [
+    (async () => {
+      console.log(`\n[${email1}] Checking for open positions and orders...`);
+      const closeResult = await closeAllPositions(page1, 100);
+      const cancelResult = await cancelAllOrders(page1);
+      return { email: email1, close: closeResult, cancel: cancelResult };
+    })(),
+    (async () => {
+      console.log(`\n[${email2}] Checking for open positions and orders...`);
+      const closeResult = await closeAllPositions(page2, 100);
+      const cancelResult = await cancelAllOrders(page2);
+      return { email: email2, close: closeResult, cancel: cancelResult };
+    })(),
+  ];
+
+  const cleanupResults = await Promise.all(cleanupPromises);
+
+  // Log cleanup results
+  for (const result of cleanupResults) {
+    if (result.close.success) {
+      console.log(`✓ [${result.email}] Positions: ${result.close.message || 'checked'}`);
+    } else {
+      console.log(`⚠ [${result.email}] Positions: ${result.close.error || 'check failed'}`);
+    }
+    if (result.cancel.success) {
+      console.log(`✓ [${result.email}] Orders: ${result.cancel.message || 'checked'}`);
+    } else {
+      console.log(`⚠ [${result.email}] Orders: ${result.cancel.error || 'check failed'}`);
+    }
+  }
+
+  console.log(`\n✓ Cleanup completed.`);
+  
+  // Set leverage ONCE at the beginning for both accounts (AFTER cleanup)
   console.log(`\n🔧 Setting leverage for both accounts...`);
   const leveragePromises = [
     setLeverage(page1, TRADE_CONFIG.leverage),
