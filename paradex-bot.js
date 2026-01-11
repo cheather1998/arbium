@@ -2274,7 +2274,16 @@ async function executeTrade(
 
   console.log(`✓ Successfully set size to: ${actualValue}`);
   await delay(1000);
-  // 4. Click Confirm button
+  
+  // 4. Cancel any open orders RIGHT BEFORE clicking confirm (to free up locked funds)
+  console.log("Canceling any open orders before confirming trade...");
+  const cancelResult = await cancelAllOrders(page);
+  if (cancelResult.success) {
+    console.log("✓ Open orders canceled before trade confirmation");
+  }
+  await delay(1000); // Wait for orders to be fully canceled and funds freed
+  
+  // 5. Click Confirm button
   const confirmText = side === "buy" ? "Confirm Buy" : "Confirm Sell";
   const confirmBtn = await findByText(page, confirmText, ["button"]);
 
@@ -3562,7 +3571,26 @@ async function automatedTradingLoop(account1Result, account2Result) {
     );
 
     try {
-      // Step 0: Close any existing positions FIRST
+      // Step 0: Cancel all open orders FIRST (to free up locked funds)
+      console.log(`\n[CYCLE ${cycleCount}] Canceling all open orders first...`);
+      const cancelPromises = [
+        cancelAllOrders(page1),
+        cancelAllOrders(page2),
+      ];
+
+      const cancelResults = await Promise.all(cancelPromises);
+
+      if (cancelResults[0].success) {
+        console.log(`✓ [${email1}] Open orders checked/canceled`);
+      }
+      if (cancelResults[1].success) {
+        console.log(`✓ [${email2}] Open orders checked/canceled`);
+      }
+
+      // Small delay to ensure orders are fully canceled and funds are freed
+      await delay(2000);
+
+      // Step 1: Close any existing positions
       console.log(`\n[CYCLE ${cycleCount}] Checking for existing positions...`);
       const initialClosePromises = [
         closeAllPositions(page1, 100),
@@ -3580,25 +3608,6 @@ async function automatedTradingLoop(account1Result, account2Result) {
 
       // Small delay to ensure positions are fully closed
       await delay(2000);
-
-      // Step 0.5: Cancel any open orders before placing new orders
-      console.log(`\n[CYCLE ${cycleCount}] Canceling any open orders...`);
-      const cancelPromises = [
-        cancelAllOrders(page1),
-        cancelAllOrders(page2),
-      ];
-
-      const cancelResults = await Promise.all(cancelPromises);
-
-      if (cancelResults[0].success) {
-        console.log(`✓ [${email1}] Open orders checked/canceled`);
-      }
-      if (cancelResults[1].success) {
-        console.log(`✓ [${email2}] Open orders checked/canceled`);
-      }
-
-      // Small delay to ensure orders are fully canceled
-      await delay(1000);
 
       // Step 1: Execute trades in parallel with limit orders at market price
       console.log(`\n[CYCLE ${cycleCount}] Opening new positions...`);
