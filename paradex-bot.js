@@ -1216,6 +1216,51 @@ async function getCurrentUnrealizedPnL(page) {
   }
 }
 
+// Helper function to check if positions are actually closed
+async function checkIfPositionsClosed(page) {
+  // Navigate to Positions tab to check
+  const positionsTab = await findByExactText(page, "Positions", [
+    "button",
+    "div",
+    "span",
+  ]);
+  if (positionsTab) {
+    await positionsTab.click();
+    await delay(1000);
+  }
+
+  const checkResult = await page.evaluate(() => {
+    const text = document.body.innerText;
+    const hasPositionIndicators = (
+      text.includes("Current Position") ||
+      text.includes("Unrealized P&L") ||
+      text.includes("Position Size") ||
+      text.includes("Entry Price")
+    );
+    
+    // Also check for "No positions" or "No open positions" messages
+    const hasNoPositionsMessage = (
+      text.includes("No positions") ||
+      text.includes("No open positions") ||
+      text.includes("You have no open positions")
+    );
+    
+    return {
+      hasPositions: hasPositionIndicators,
+      hasNoPositionsMessage: hasNoPositionsMessage,
+      isClosed: !hasPositionIndicators || hasNoPositionsMessage
+    };
+  });
+
+  if (checkResult.isClosed) {
+    console.log(`  ✓ Position check: Closed (${checkResult.hasNoPositionsMessage ? 'no positions message found' : 'no position indicators found'})`);
+  } else {
+    console.log(`  ⚠ Position check: Still open (position indicators found)`);
+  }
+
+  return checkResult.isClosed; // Returns true if positions are closed
+}
+
 async function closeAllPositions(page, percent = 100) {
   console.log(`\n=== Closing Position (${percent}%) ===`);
 
@@ -1264,12 +1309,386 @@ async function closeAllPositions(page, percent = 100) {
     return { success: true, message: "No positions to close" };
   }
 
-  // If we reach here, positions exist - proceed to find and click close button
+  // If we reach here, positions exist - first try Limit button, then fallback to Close All
   console.log("✓ Positions found - proceeding to close them...");
   
   // Wait a bit more for UI to fully render
-  await delay(500); // Reduced from 1000ms
+  await delay(500);
 
+  // Step 1: FIRST - Look for Limit button in Positions table Close column BEFORE any Close All button logic
+  // The Close column has buttons with text "Market" and "Limit" in MarketCloseButton__Container
+  // IMPORTANT: This must happen BEFORE looking for "Close All" button
+  console.log(`Step 1: Looking for Limit button in Positions table Close column (before Close All button)...`);
+  
+  // Make sure we're on the Positions tab before looking for Limit button
+  const isOnPositionsTab = await page.evaluate(() => {
+    const text = document.body.innerText;
+    return text.includes("Positions") && (
+      text.includes("Market") ||
+      text.includes("Size") ||
+      text.includes("Entry Price") ||
+      text.includes("Unrealized P&L")
+    );
+  });
+  
+  if (!isOnPositionsTab) {
+    console.log(`Not on Positions tab, switching to Positions tab...`);
+    const positionsTab = await findByExactText(page, "Positions", [
+      "button",
+      "div",
+      "span",
+    ]);
+    if (positionsTab) {
+      await positionsTab.click();
+      console.log("✓ Clicked Positions tab");
+      await delay(1000); // Wait for positions to load
+    } else {
+      console.log("⚠ Could not find Positions tab");
+    }
+  } else {
+    console.log("✓ Already on Positions tab");
+  }
+  
+  // Wait a bit more for the table to fully render
+  await delay(500);
+  
+  // Try multiple strategies to find and click Limit button (similar to Close All button detection)
+  let limitBtn = null;
+  let limitBtnClicked = false;
+  
+  // Strategy 1: Find by text "Limit" using existing function (same as Close All Strategy 1)
+  limitBtn = await findByText(page, "Limit", ["button", "div", "a"]);
+  
+  if (limitBtn) {
+    // Verify it's in the Close column (has Market button nearby)
+    const isInCloseColumn = await page.evaluate((btn) => {
+      let parent = btn.parentElement;
+      for (let i = 0; i < 10 && parent; i++) {
+        if (parent.tagName?.toLowerCase() === "td") {
+          // Check if there's also a "Market" button in the same container or td
+          const container = parent.querySelector('[class*="MarketCloseButton"]');
+          if (container) {
+            const marketBtn = Array.from(container.querySelectorAll('button')).find(
+              b => b.textContent?.trim() === "Market"
+            );
+            if (marketBtn) return true;
+          }
+          // Also check if there's a Market button in the same td
+          const marketBtn = Array.from(parent.querySelectorAll('button')).find(
+            b => b.textContent?.trim() === "Market"
+          );
+          if (marketBtn) return true;
+        }
+        parent = parent.parentElement;
+      }
+      return false;
+    }, limitBtn);
+    
+    if (isInCloseColumn) {
+      console.log(`✓ Found Limit button by text in Close column`);
+      await limitBtn.click();
+      limitBtnClicked = true;
+    } else {
+      console.log(`⚠ Found Limit button but not in Close column, trying other strategies...`);
+      limitBtn = null; // Reset to try other strategies
+    }
+  }
+  
+  // Strategy 2: If not found, try to find by evaluating the page and click directly (same as Close All Strategy 2)
+  if (!limitBtn && !limitBtnClicked) {
+    const clicked = await page.evaluate(() => {
+      const buttons = Array.from(
+        document.querySelectorAll(
+          'button, div[role="button"], a[role="button"]'
+        )
+      );
+      for (const btn of buttons) {
+        const text = btn.textContent?.trim();
+        const isVisible = btn.offsetParent !== null;
+        
+        if (isVisible && text === "Limit") {
+          // Verify it's in Close column (has Market button nearby)
+          let parent = btn.parentElement;
+          for (let i = 0; i < 10 && parent; i++) {
+            if (parent.tagName?.toLowerCase() === "td") {
+              // Check if there's also a "Market" button in the same container or td
+              const container = parent.querySelector('[class*="MarketCloseButton"]');
+              if (container) {
+                const marketBtn = Array.from(container.querySelectorAll('button')).find(
+                  b => b.textContent?.trim() === "Market"
+                );
+                if (marketBtn) {
+                  btn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                  btn.click();
+                  return true;
+                }
+              }
+              // Also check if there's a Market button in the same td
+              const marketBtn = Array.from(parent.querySelectorAll('button')).find(
+                b => b.textContent?.trim() === "Market"
+              );
+              if (marketBtn) {
+                btn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                btn.click();
+                return true;
+              }
+            }
+            parent = parent.parentElement;
+          }
+        }
+      }
+      return false;
+    });
+    
+    if (clicked) {
+      limitBtnClicked = true;
+      console.log("✓ Clicked Limit button (via evaluate)");
+    }
+  }
+  
+  // Strategy 3: Try finding by aria-label (same as Close All Strategy 3)
+  if (!limitBtn && !limitBtnClicked) {
+    const clicked = await page.evaluate(() => {
+      const buttons = Array.from(
+        document.querySelectorAll(
+          'button, div[role="button"], a[role="button"]'
+        )
+      );
+      for (const btn of buttons) {
+        const ariaLabel = btn.getAttribute("aria-label")?.toLowerCase() || "";
+        const isVisible = btn.offsetParent !== null;
+        if (
+          isVisible &&
+          (ariaLabel.includes("limit") || ariaLabel === "limit")
+        ) {
+          // Verify it's in Close column (has Market button nearby)
+          let parent = btn.parentElement;
+          for (let i = 0; i < 10 && parent; i++) {
+            if (parent.tagName?.toLowerCase() === "td") {
+              const marketBtn = Array.from(parent.querySelectorAll('button')).find(
+                b => b.textContent?.trim() === "Market"
+              );
+              if (marketBtn) {
+                btn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                btn.click();
+                return true;
+              }
+            }
+            parent = parent.parentElement;
+          }
+        }
+      }
+      return false;
+    });
+    
+    if (clicked) {
+      limitBtnClicked = true;
+      console.log("✓ Clicked Limit button (via aria-label)");
+    }
+  }
+  
+  // Strategy 4: Fallback - Look for button with text "Limit" inside MarketCloseButton__Container divs
+  if (!limitBtn && !limitBtnClicked) {
+    const limitButtonByText = await page.evaluate(() => {
+      // Look for button with text "Limit" inside MarketCloseButton__Container divs
+      const containers = Array.from(document.querySelectorAll('[class*="MarketCloseButton__Container"]'));
+      console.log(`Found ${containers.length} MarketCloseButton containers`);
+      
+      for (const container of containers) {
+        const buttons = Array.from(container.querySelectorAll('button'));
+        for (const btn of buttons) {
+          const text = btn.textContent?.trim();
+          const isVisible = btn.offsetParent !== null;
+          if (isVisible && text === "Limit") {
+            console.log(`Found Limit button in MarketCloseButton container`);
+            return { element: btn, text: text };
+          }
+        }
+      }
+      
+      // Also try finding by looking for buttons in td elements
+      const allTds = Array.from(document.querySelectorAll('td'));
+      for (const td of allTds) {
+        const buttons = Array.from(td.querySelectorAll('button'));
+        if (buttons.length >= 2) {
+          const buttonTexts = buttons.map(b => b.textContent?.trim()).filter(Boolean);
+          if (buttonTexts.includes('Market') && buttonTexts.includes('Limit')) {
+            const limitBtn = buttons.find(b => b.textContent?.trim() === 'Limit');
+            if (limitBtn && limitBtn.offsetParent !== null) {
+              console.log(`Found Limit button in TD with Market button`);
+              return { element: limitBtn, text: 'Limit' };
+            }
+          }
+        }
+      }
+      
+      return null;
+    });
+    
+    if (limitButtonByText) {
+      console.log(`✓ Found Limit button in Close column: "${limitButtonByText.text}"`);
+      await page.evaluate((btn) => {
+        btn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        btn.click();
+      }, limitButtonByText.element);
+      limitBtnClicked = true;
+    }
+  }
+  
+  // Set result based on whether Limit button was clicked
+  if (limitBtnClicked) {
+    var limitButtonClicked = { success: true, text: "Limit" };
+  } else {
+    console.log(`⚠ Limit button not found in Close column`);
+    var limitButtonClicked = { success: false, error: "Limit button not found in Close column" };
+  }
+  
+  if (limitButtonClicked.success) {
+    console.log(`✓ Clicked Limit button: "${limitButtonClicked.text}"`);
+    
+    // Wait for modal to appear and find button with text "close"
+    await delay(1500); // Wait for modal to fully load
+    
+    const closeButtonClicked = await page.evaluate(() => {
+      // First, find the visible modal
+      const modals = Array.from(document.querySelectorAll('[class*="modal"], [role="dialog"], [class*="Modal"], [class*="Dialog"]'));
+      let visibleModal = null;
+      
+      for (const modal of modals) {
+        const style = window.getComputedStyle(modal);
+        const isVisible = modal.offsetParent !== null && 
+                         style.display !== 'none' && 
+                         style.visibility !== 'hidden';
+        if (isVisible) {
+          visibleModal = modal;
+          break;
+        }
+      }
+      
+      if (!visibleModal) {
+        // Fallback: look for buttons anywhere
+        const allButtons = Array.from(document.querySelectorAll("button"));
+        for (const btn of allButtons) {
+          const text = btn.textContent?.trim().toLowerCase();
+          const isVisible = btn.offsetParent !== null;
+          
+          if (isVisible && text && text.includes("close")) {
+            console.log(`Found close button (no modal): "${btn.textContent?.trim()}"`);
+            btn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            btn.click();
+            return { success: true, text: btn.textContent?.trim() };
+          }
+        }
+        return { success: false, error: "No visible modal found" };
+      }
+      
+      // Look for buttons with text containing "close" in the modal
+      const buttons = Array.from(visibleModal.querySelectorAll("button"));
+      console.log(`Found ${buttons.length} buttons in modal`);
+      
+      for (const btn of buttons) {
+        const text = btn.textContent?.trim().toLowerCase();
+        const isVisible = btn.offsetParent !== null;
+        
+        if (isVisible && text && text.includes("close")) {
+          console.log(`Found close button: "${btn.textContent?.trim()}"`);
+          btn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          btn.click();
+          return { success: true, text: btn.textContent?.trim() };
+        }
+      }
+      
+      // Log all buttons for debugging
+      console.log("All buttons in modal:");
+      buttons.forEach((btn, idx) => {
+        if (btn.offsetParent !== null) {
+          console.log(`  [${idx}] "${btn.textContent?.trim()}"`);
+        }
+      });
+      
+      return { success: false, error: "Close button not found in modal" };
+    });
+    
+    if (closeButtonClicked.success) {
+      console.log(`✓ Clicked "${closeButtonClicked.text}" button`);
+      
+      // Wait 10 seconds and check if position closed
+      console.log(`✓ Limit close modal submitted. Waiting 10 seconds to check if position closed...`);
+      
+      const limitWaitTime = 10000; // 10 seconds
+      const checkInterval = 2000; // Check every 2 seconds
+      const totalChecks = limitWaitTime / checkInterval; // 5 checks
+      let positionClosed = false;
+      
+      for (let i = 0; i < totalChecks; i++) {
+        await delay(checkInterval);
+        
+        // Check if position is closed
+        positionClosed = await page.evaluate(() => {
+          const text = document.body.innerText;
+          const hasPositionIndicators = (
+            text.includes("Current Position") ||
+            text.includes("Unrealized P&L") ||
+            text.includes("Position Size") ||
+            text.includes("Entry Price")
+          );
+          
+          const hasNoPositionsMessage = (
+            text.includes("No positions") ||
+            text.includes("No open positions") ||
+            text.includes("You have no open positions")
+          );
+          
+          return !hasPositionIndicators || hasNoPositionsMessage;
+        });
+        
+        if (positionClosed) {
+          console.log(`✓ Position closed successfully with Limit order!`);
+          return { success: true, message: `Position closed with Limit order` };
+        }
+        
+        console.log(`  Check ${i + 1}/${totalChecks}: Position still open, waiting...`);
+      }
+      
+      // If not closed after 10 seconds, check one more time before falling back
+      if (!positionClosed) {
+        // Final check to make sure position is really not closed
+        const finalCheck = await checkIfPositionsClosed(page);
+        if (finalCheck) {
+          console.log(`✓ Position closed successfully with Limit order (final check)!`);
+          return { success: true, message: `Position closed with Limit order` };
+        }
+        console.log(`⚠ Position not closed after 10 seconds with Limit order. Will try Close All flow...`);
+        // Continue to the existing Close All flow below
+      }
+    } else {
+      console.log(`⚠ Could not click close button: ${closeButtonClicked.error}`);
+      // Check if position was closed anyway (maybe the click worked but we didn't detect it)
+      const positionCheck = await checkIfPositionsClosed(page);
+      if (positionCheck) {
+        console.log(`✓ Position closed successfully with Limit order (position check after error)!`);
+        return { success: true, message: `Position closed with Limit order` };
+      }
+      console.log(`⚠ Continuing with Close All flow...`);
+      // Continue to the existing Close All flow below
+    }
+  } else {
+    console.log(`⚠ Could not find Limit button: ${limitButtonClicked.error}`);
+    console.log(`⚠ Continuing with Close All flow...`);
+    // Continue to the existing Close All flow below
+  }
+
+  // Before proceeding to Close All flow, do a final check to see if position is already closed
+  // This prevents showing the market close modal if position was already closed using Limit
+  const finalPositionCheck = await checkIfPositionsClosed(page);
+  if (finalPositionCheck) {
+    console.log(`✓ Position already closed - skipping Close All flow to avoid showing market close modal`);
+    return { success: true, message: `Position already closed (no need for market close)` };
+  }
+
+  // Step 2: ONLY if Limit button was not found or didn't work - Look for Close All button
+  // This is the fallback method - only proceed if Limit button approach failed
+  console.log(`Step 2: Looking for Close All button (fallback method - only if Limit button failed)...`);
   // Look for Close buttons with multiple strategies
   const closeButtonsDebug = await page.evaluate(() => {
     const allButtons = Array.from(
