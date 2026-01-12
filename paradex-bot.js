@@ -1231,7 +1231,7 @@ async function closeAllPositions(page, percent = 100) {
   if (positionsTab) {
     await positionsTab.click();
     console.log("Clicked Positions tab");
-    await delay(2000); // Increased wait time for positions to load
+    await delay(1000); // Reduced from 2000ms - wait for positions to load
   }
 
   // Check if there are any open positions
@@ -1255,7 +1255,7 @@ async function closeAllPositions(page, percent = 100) {
 
     if (i < 2) {
       console.log(`Attempt ${i + 1}/3: No positions found yet, waiting...`);
-      await delay(1500);
+      await delay(800); // Reduced from 1500ms
     }
   }
 
@@ -1268,7 +1268,7 @@ async function closeAllPositions(page, percent = 100) {
   console.log("✓ Positions found - proceeding to close them...");
   
   // Wait a bit more for UI to fully render
-  await delay(1000);
+  await delay(500); // Reduced from 1000ms
 
   // Look for Close buttons with multiple strategies
   const closeButtonsDebug = await page.evaluate(() => {
@@ -1461,7 +1461,7 @@ async function closeAllPositions(page, percent = 100) {
 
   // Wait for modal to appear (whether clicked via element or evaluate)
   if (closeBtn || closeBtnClicked) {
-    await delay(2000); // Wait for modal to fully load
+    await delay(1000); // Reduced from 2000ms - wait for modal to fully load
 
     // Select the percentage by clicking the percentage button in the modal
     console.log(`Setting close percentage to ${percent}%`);
@@ -1515,7 +1515,7 @@ async function closeAllPositions(page, percent = 100) {
     }
 
     console.log(`Clicked ${percentButtonClicked.clicked} button in modal`);
-    await delay(800); // Reduced from 1500
+    await delay(500); // Reduced from 800ms
 
     // Now look for the close confirmation button
     // The button text should have changed to match the percentage
@@ -1552,7 +1552,7 @@ async function closeAllPositions(page, percent = 100) {
 
     if (closeConfirmBtn.success) {
       console.log(`Clicked button: "${closeConfirmBtn.text}"`);
-      await delay(1000); // Reduced from 2000
+      await delay(800); // Reduced from 1000ms
 
       const errorMsg = await page.evaluate(() => {
         const errors = document.querySelectorAll(
@@ -1585,18 +1585,45 @@ async function cancelAllOrders(page) {
   console.log(`\n=== Canceling All Open Orders ===`);
 
   // Wait a moment for any previous actions to complete
-  await delay(1000);
+  await delay(500); // Reduced from 1000ms
 
-  // Click on Orders tab to see open orders
-  const ordersTab = await findByExactText(page, "Orders", [
+  // First try to find "Open Orders" tab
+  let ordersTab = await findByExactText(page, "Open Orders", [
     "button",
     "div",
     "span",
   ]);
+  
+  // If "Open Orders" not found, try "Order History" as fallback
+  if (!ordersTab) {
+    ordersTab = await findByExactText(page, "Order History", [
+      "button",
+      "div",
+      "span",
+    ]);
+    if (ordersTab) {
+      console.log("Found Order History tab (using as fallback)");
+    }
+  }
+  
+  // If still not found, try just "Orders" as last resort
+  if (!ordersTab) {
+    ordersTab = await findByExactText(page, "Orders", [
+      "button",
+      "div",
+      "span",
+    ]);
+    if (ordersTab) {
+      console.log("Found Orders tab (using as last resort)");
+    }
+  }
+  
   if (ordersTab) {
     await ordersTab.click();
-    console.log("Clicked Orders tab");
-    await delay(2000); // Wait for orders to load
+    console.log("Clicked Orders/Open Orders/Order History tab");
+    await delay(1000); // Reduced from 2000ms - wait for orders to load
+  } else {
+    console.log("⚠ Could not find Open Orders, Order History, or Orders tab");
   }
 
   // Check if there are any open orders
@@ -1621,7 +1648,7 @@ async function cancelAllOrders(page) {
 
     if (i < 2) {
       console.log(`Attempt ${i + 1}/3: No orders found yet, waiting...`);
-      await delay(1500);
+      await delay(800); // Reduced from 1500ms
     }
   }
 
@@ -1631,7 +1658,7 @@ async function cancelAllOrders(page) {
   }
 
   // Wait a bit more for UI to fully render
-  await delay(1000);
+  await delay(500); // Reduced from 1000ms
 
   // Find and click all Cancel buttons
   let canceledCount = 0;
@@ -1699,7 +1726,7 @@ async function cancelAllOrders(page) {
       console.log(
         `✓ Clicked ${cancelResult.clicked} cancel button(s) (total: ${canceledCount})`
       );
-      await delay(1500); // Wait for orders to be canceled
+      await delay(1000); // Reduced from 1500ms - wait for orders to be canceled
 
       // Check if there are still orders
       const stillHasOrders = await page.evaluate(() => {
@@ -1819,7 +1846,7 @@ async function setLeverage(page, leverage) {
     console.log(
       `✓ Clicked leverage button: ${leverageOpened.found}, waiting for modal...`
     );
-    await delay(2500); // Wait for "Adjust Leverage" modal to open
+    await delay(1500); // Reduced from 2500ms - wait for "Adjust Leverage" modal to open
 
     // Step 2: Find the input field in the modal and enter the leverage value
     console.log(`Setting leverage to ${leverage} in the modal...`);
@@ -1951,7 +1978,7 @@ async function setLeverage(page, leverage) {
 
     // Wait for the UI to register the input change before clicking Confirm
     console.log("Waiting for UI to register the leverage change...");
-    await delay(3000);
+    await delay(2000); // Reduced from 3000ms
 
     // Step 3: Click the "Confirm" button
     console.log("Clicking Confirm button...");
@@ -1973,7 +2000,7 @@ async function setLeverage(page, leverage) {
       return { success: false, error: "Confirm button not found" };
     }
 
-    await delay(2000); // Wait for modal to close and settings to apply
+    await delay(1500); // Reduced from 2000ms - wait for modal to close and settings to apply
 
     // Verify the leverage was actually applied by checking the display button
     console.log("Verifying leverage was applied...");
@@ -2050,14 +2077,14 @@ async function executeTrade(
     if (sellBtn) {
       await sellBtn.click();
       console.log("Selected SELL");
-      await delay(500);
+      await delay(300); // Reduced from 500ms
     }
   } else {
     const buyBtn = await findByExactText(page, "Buy", ["button", "div"]);
     if (buyBtn) {
       await buyBtn.click();
       console.log("Selected BUY");
-      await delay(500);
+      await delay(300); // Reduced from 500ms
     }
   }
 
@@ -2067,18 +2094,18 @@ async function executeTrade(
     if (limitBtn) {
       await limitBtn.click();
       console.log("Selected LIMIT order");
-      await delay(500);
+      await delay(300); // Reduced from 500ms
     }
   } else {
     const marketBtn = await findByExactText(page, "Market", ["button", "div"]);
     if (marketBtn) {
       await marketBtn.click();
       console.log("Selected MARKET order");
-      await delay(500);
+      await delay(300); // Reduced from 500ms
     }
   }
 
-  await delay(1000);
+  await delay(500); // Reduced from 1000ms
 
   // 3. Find and fill inputs - Look for the Size input in the trading panel
   const inputs = await page.$$('input[type="text"], input:not([type])');
@@ -2273,7 +2300,7 @@ async function executeTrade(
   }
 
   console.log(`✓ Successfully set size to: ${actualValue}`);
-  await delay(1000);
+  await delay(500); // Reduced from 1000ms
   
   // 4. Cancel any open orders RIGHT BEFORE clicking confirm (to free up locked funds)
   console.log("Canceling any open orders before confirming trade...");
@@ -2281,7 +2308,8 @@ async function executeTrade(
   if (cancelResult.success) {
     console.log("✓ Open orders canceled before trade confirmation");
   }
-  await delay(1000); // Wait for orders to be fully canceled and funds freed
+  // Reduced from 500ms - cancelAllOrders() already waits internally
+  await delay(300); // Wait for orders to be fully canceled and funds freed
   
   // 5. Click Confirm button
   const confirmText = side === "buy" ? "Confirm Buy" : "Confirm Sell";
@@ -2290,7 +2318,7 @@ async function executeTrade(
   if (confirmBtn) {
     await confirmBtn.click();
     console.log(`Clicked "${confirmText}"`);
-    await delay(2000);
+    await delay(1500); // Reduced from 2000ms
 
     const errorMsg = await page.evaluate(() => {
       const errors = document.querySelectorAll(
@@ -3335,6 +3363,7 @@ async function launchAccount(accountConfig) {
         "--window-size=1920,1080",
       ],
       defaultViewport: HEADLESS ? { width: 1920, height: 1080 } : null,
+      protocolTimeout: 120000, // Increase protocol timeout to 120 seconds (default is 30s)
     });
 
     const page = await browser.newPage();
@@ -3562,7 +3591,7 @@ async function automatedTradingLoop(account1Result, account2Result) {
   }
 
   console.log(`\n✓ Leverage configured. Starting trading cycles...\n`);
-  await delay(2000);
+  await delay(1000); // Reduced from 2000ms
 
   while (!isShuttingDown) {
     cycleCount++;
@@ -3588,7 +3617,8 @@ async function automatedTradingLoop(account1Result, account2Result) {
       }
 
       // Small delay to ensure orders are fully canceled and funds are freed
-      await delay(2000);
+      // Reduced from 2000ms - cancelAllOrders() already waits internally
+      await delay(500);
 
       // Step 1: Close any existing positions
       console.log(`\n[CYCLE ${cycleCount}] Checking for existing positions...`);
@@ -3607,7 +3637,8 @@ async function automatedTradingLoop(account1Result, account2Result) {
       }
 
       // Small delay to ensure positions are fully closed
-      await delay(2000);
+      // Reduced from 500ms - closeAllPositions() already waits internally
+      await delay(300); // Reduced from 500ms
 
       // Step 1: Execute trades in parallel with limit orders at market price
       console.log(`\n[CYCLE ${cycleCount}] Opening new positions...`);
@@ -3840,14 +3871,23 @@ async function automatedTradingLoop(account1Result, account2Result) {
       }
 
       // Small delay before next cycle
+      // Reduced from 3000ms - closeAllPositions() already waits internally
       if (!isShuttingDown) {
-        console.log(`\nStarting next cycle in 3 seconds...`);
-        await delay(3000);
+        console.log(`\nStarting next cycle in 1 second...`);
+        await delay(1000);
       }
     } catch (error) {
       console.error(`\n✗ [CYCLE ${cycleCount}] Error:`, error.message);
-      console.log(`Waiting 5 seconds before retry...`);
-      await delay(5000);
+      
+      // Handle protocol timeout errors specifically
+      if (error.message && error.message.includes('ProtocolError') && error.message.includes('timed out')) {
+        console.log(`⚠ Protocol timeout detected - this may be due to slow page operations`);
+        console.log(`   The bot will retry after a longer delay...`);
+        await delay(10000); // Wait 10 seconds before retry for timeout errors
+      } else {
+        console.log(`Waiting 5 seconds before retry...`);
+        await delay(5000);
+      }
     }
   }
 
