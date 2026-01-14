@@ -12,9 +12,46 @@ dotenv.config();
 puppeteer.use(StealthPlugin());
 
 // ---------- CONFIG ----------
-const PARADEX_URL = "https://app.paradex.trade/trade/BTC-USD-PERP";
-const PARADEX_REFERRAL_URL = "https://app.paradex.trade/r/instantcrypto";
 const HEADLESS = process.argv.includes('--headless');
+
+// Exchange configurations
+const EXCHANGE_CONFIGS = {
+  paradex: {
+    name: "Paradex",
+    url: "https://app.paradex.trade/trade/BTC-USD-PERP",
+    referralUrl: "https://app.paradex.trade/r/instantcrypto",
+    urlPattern: "app.paradex.trade/trade",
+    // UI selectors - using same as current (Paradex-specific)
+    selectors: {
+      loginButton: 'button[data-dd-action-name="Connect wallet"]',
+      buyButton: "Buy",
+      sellButton: "Sell",
+      marketButton: "Market",
+      limitButton: "Limit",
+      confirmBuy: "Confirm Buy",
+      confirmSell: "Confirm Sell",
+      positionsTab: "Positions",
+    }
+  },
+  extended: {
+    name: "Extended Exchange",
+    url: "https://app.extended.exchange/perp",
+    referralUrl: "https://app.extended.exchange/perp",
+    urlPattern: "app.extended.exchange/perp",
+    // UI selectors - will need to be updated after inspecting Extended Exchange UI
+    // For now, using generic text-based selectors (same as Paradex)
+    selectors: {
+      loginButton: null, // Will use text-based search
+      buyButton: "Buy",
+      sellButton: "Sell",
+      marketButton: "Market",
+      limitButton: "Limit",
+      confirmBuy: "Confirm Buy", // May need to change
+      confirmSell: "Confirm Sell", // May need to change
+      positionsTab: "Positions", // May need to change
+    }
+  }
+};
 
 // Multiple accounts configuration - read from environment variable
 const getAccountsFromEnv = () => {
@@ -37,9 +74,10 @@ const getAccountsFromEnv = () => {
     const emailHash = Buffer.from(email).toString('base64').replace(/[^a-zA-Z0-9]/g, '').substring(0, 10);
     return {
       email: email,
-      cookiesPath: `./paradex-cookies-account${index + 1}.json`,
+      cookiesPath: `./paradex-cookies-account${index + 1}.json`, // Keep same name for compatibility
       profileDir: `/tmp/puppeteer-chrome-profile-${index + 1}-${emailHash}`,
-      apiPort: 3001 + index
+      apiPort: 3001 + index,
+      exchange: null // Will be set based on trading mode
     };
   });
 };
@@ -62,6 +100,38 @@ async function prompt(question) {
       resolve(answer);
     });
   });
+}
+
+// Prompt user to choose trading mode
+async function chooseTradingMode() {
+  console.log(`\n========================================`);
+  console.log(`Select Trading Mode:`);
+  console.log(`========================================`);
+  console.log(`1. Buy from Paradex, Sell from Paradex (Both accounts on Paradex)`);
+  console.log(`2. Buy from Paradex, Sell from Extended Exchange`);
+  console.log(`========================================\n`);
+  
+  const answer = await prompt(`Enter option (1 or 2): `);
+  const mode = answer.trim();
+  
+  if (mode === '1') {
+    return {
+      mode: 1,
+      buyExchange: 'paradex',
+      sellExchange: 'paradex',
+      description: 'Buy from Paradex, Sell from Paradex'
+    };
+  } else if (mode === '2') {
+    return {
+      mode: 2,
+      buyExchange: 'paradex',
+      sellExchange: 'extended',
+      description: 'Buy from Paradex, Sell from Extended Exchange'
+    };
+  } else {
+    console.log(`\n✗ Invalid option. Please enter 1 or 2.`);
+    process.exit(1);
+  }
 }
 
 async function findByText(page, text, tagNames = ['button', 'a', 'div', 'span']) {
@@ -118,10 +188,552 @@ async function loadCookies(page, cookiesPath, expectedEmail) {
   return false;
 }
 
-async function isLoggedIn(page) {
+// Check if Extended Exchange cookies exist
+async function hasExtendedExchangeCookies(page) {
+  const cookies = await page.cookies();
+  const hasAccessToken = cookies.some(c => c.name === 'x10_access_token');
+  const hasRefreshToken = cookies.some(c => c.name === 'x10_refresh_token');
+  return hasAccessToken && hasRefreshToken;
+}
+
+// Clear Extended Exchange cookies
+async function clearExtendedExchangeCookies(page) {
+  console.log(`Clearing Extended Exchange cookies...`);
+  try {
+    const cookies = await page.cookies();
+    const extendedCookies = cookies.filter(c => 
+      c.name === 'x10_access_token' || c.name === 'x10_refresh_token'
+    );
+    
+    if (extendedCookies.length > 0) {
+      // Delete cookies by setting them with past expiry
+      for (const cookie of extendedCookies) {
+        await page.deleteCookie({
+          name: cookie.name,
+          domain: cookie.domain
+        });
+      }
+      console.log(`Cleared ${extendedCookies.length} Extended Exchange cookie(s)`);
+      return true;
+    }
+    console.log(`No Extended Exchange cookies to clear`);
+    return false;
+  } catch (error) {
+    console.log(`Error clearing Extended Exchange cookies: ${error.message}`);
+    return false;
+  }
+}
+
+// Click on Orders tab for Extended Exchange
+async function clickOrdersTab(page, email) {
+  console.log(`[${email}] Looking for Orders tab...`);
+  
+  try {
+    let ordersTabClicked = false;
+    
+    // Strategy 1: Find by exact text "Orders"
+    const ordersTab = await findByExactText(page, "Orders", ["button", "div", "span", "a"]);
+    if (ordersTab) {
+      const isVisible = await page.evaluate((el) => {
+        return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+      }, ordersTab);
+      if (isVisible) {
+        await ordersTab.click();
+        console.log(`[${email}] Clicked Orders tab (exact text)`);
+        ordersTabClicked = true;
+        await delay(1000);
+      }
+    }
+    
+    // Strategy 2: Find by text containing "orders" (case insensitive)
+    if (!ordersTabClicked) {
+      const ordersTab2 = await findByText(page, "orders", ["button", "div", "span", "a"]);
+      if (ordersTab2) {
+        const isVisible = await page.evaluate((el) => {
+          return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+        }, ordersTab2);
+        if (isVisible) {
+          await ordersTab2.click();
+          console.log(`[${email}] Clicked Orders tab (text search)`);
+          ordersTabClicked = true;
+          await delay(1000);
+        }
+      }
+    }
+    
+    // Strategy 3: Use evaluate to find Orders tab
+    if (!ordersTabClicked) {
+      const clicked = await page.evaluate(() => {
+        // Look for tabs or navigation elements
+        const allElements = Array.from(document.querySelectorAll('button, div[role="tab"], span[role="tab"], a[role="tab"], div, span, a'));
+        for (const el of allElements) {
+          const text = el.textContent?.trim();
+          const isVisible = el.offsetParent !== null;
+          if (isVisible && text && text.toLowerCase() === 'orders') {
+            el.click();
+            return true;
+          }
+        }
+        return false;
+      });
+      
+      if (clicked) {
+        console.log(`[${email}] Clicked Orders tab (via evaluate)`);
+        ordersTabClicked = true;
+        await delay(1000);
+      }
+    }
+    
+    if (!ordersTabClicked) {
+      console.log(`[${email}] Orders tab not found`);
+      return false;
+    }
+    
+    // After clicking Orders tab, check for buttons in Orders tab
+    console.log(`[${email}] Checking for buttons in Orders tab (Login, Connect Wallet, or CANCEL ALL)...`);
+    await delay(1500); // Wait for Orders tab content to load
+    
+    // Check for CANCEL ALL button first (use case in flow)
+    let cancelAllClicked = false;
+    
+    // Strategy 1: Find by exact text "CANCEL ALL" or "Cancel All"
+    const cancelAllBtn = await findByExactText(page, "CANCEL ALL", ["button", "div", "span", "a"]);
+    if (cancelAllBtn) {
+      const isVisible = await page.evaluate((el) => {
+        return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+      }, cancelAllBtn);
+      if (isVisible) {
+        await cancelAllBtn.click();
+        cancelAllClicked = true;
+        console.log(`[${email}] Clicked CANCEL ALL button in Orders tab (exact text)`);
+      }
+    }
+    
+    if (!cancelAllClicked) {
+      const cancelAllBtn2 = await findByExactText(page, "Cancel All", ["button", "div", "span", "a"]);
+      if (cancelAllBtn2) {
+        const isVisible = await page.evaluate((el) => {
+          return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+        }, cancelAllBtn2);
+        if (isVisible) {
+          await cancelAllBtn2.click();
+          cancelAllClicked = true;
+          console.log(`[${email}] Clicked Cancel All button in Orders tab (exact text)`);
+        }
+      }
+    }
+    
+    // Strategy 2: Find by text containing "cancel all" (case insensitive)
+    if (!cancelAllClicked) {
+      const cancelAllBtn3 = await findByText(page, "cancel all", ["button", "div", "span", "a"]);
+      if (cancelAllBtn3) {
+        const isVisible = await page.evaluate((el) => {
+          return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+        }, cancelAllBtn3);
+        if (isVisible) {
+          await cancelAllBtn3.click();
+          cancelAllClicked = true;
+          console.log(`[${email}] Clicked Cancel All button in Orders tab (text search)`);
+        }
+      }
+    }
+    
+    // Strategy 3: Use evaluate to find CANCEL ALL button
+    if (!cancelAllClicked) {
+      const clicked = await page.evaluate(() => {
+        const buttons = Array.from(document.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"]'));
+        for (const btn of buttons) {
+          const text = btn.textContent?.trim().toLowerCase();
+          const isVisible = btn.offsetParent !== null;
+          if (isVisible && text && (
+            text === 'cancel all' || 
+            text === 'cancelall' ||
+            text.includes('cancel all')
+          )) {
+            btn.click();
+            return true;
+          }
+        }
+        return false;
+      });
+      
+      if (clicked) {
+        cancelAllClicked = true;
+        console.log(`[${email}] Clicked Cancel All button in Orders tab (via evaluate)`);
+      }
+    }
+    
+    if (cancelAllClicked) {
+      console.log(`[${email}] Cancel All button clicked, waiting before clicking Positions tab...`);
+      await delay(2000); // Wait for cancel operation to complete
+      
+      // Click on Positions tab after CANCEL ALL
+      console.log(`[${email}] Looking for Positions tab after CANCEL ALL...`);
+      let positionsTabClicked = false;
+      
+      // Strategy 1: Find by exact text "Positions"
+      const positionsTab = await findByExactText(page, "Positions", ["button", "div", "span", "a"]);
+      if (positionsTab) {
+        const isVisible = await page.evaluate((el) => {
+          return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+        }, positionsTab);
+        if (isVisible) {
+          await positionsTab.click();
+          positionsTabClicked = true;
+          console.log(`[${email}] Clicked Positions tab after CANCEL ALL (exact text)`);
+        }
+      }
+      
+      // Strategy 2: Find by text containing "positions" (case insensitive)
+      if (!positionsTabClicked) {
+        const positionsTab2 = await findByText(page, "positions", ["button", "div", "span", "a"]);
+        if (positionsTab2) {
+          const isVisible = await page.evaluate((el) => {
+            return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+          }, positionsTab2);
+          if (isVisible) {
+            await positionsTab2.click();
+            positionsTabClicked = true;
+            console.log(`[${email}] Clicked Positions tab after CANCEL ALL (text search)`);
+          }
+        }
+      }
+      
+      // Strategy 3: Use evaluate to find Positions tab
+      if (!positionsTabClicked) {
+        const clicked = await page.evaluate(() => {
+          const allElements = Array.from(document.querySelectorAll('button, div[role="tab"], span[role="tab"], a[role="tab"], div, span, a'));
+          for (const el of allElements) {
+            const text = el.textContent?.trim().toLowerCase();
+            const isVisible = el.offsetParent !== null;
+            if (isVisible && text && text === 'positions') {
+              el.click();
+              return true;
+            }
+          }
+          return false;
+        });
+        
+        if (clicked) {
+          positionsTabClicked = true;
+          console.log(`[${email}] Clicked Positions tab after CANCEL ALL (via evaluate)`);
+        }
+      }
+      
+      if (positionsTabClicked) {
+        console.log(`[${email}] Positions tab clicked after CANCEL ALL`);
+        await delay(2000); // Wait for Positions tab content to load
+        
+        // Look for TP/SL column in table and click any element/button in that column
+        console.log(`[${email}] Looking for TP/SL column in Positions table...`);
+        const tpSlClicked = await page.evaluate(() => {
+          // Find all table elements
+          const tables = Array.from(document.querySelectorAll('table'));
+          
+          for (const table of tables) {
+            // Find header row
+            const headerRow = table.querySelector('thead tr, thead > tr, tr:first-child');
+            if (!headerRow) continue;
+            
+            // Find TP/SL column header
+            const headers = Array.from(headerRow.querySelectorAll('th, td'));
+            let tpSlColumnIndex = -1;
+            
+            for (let i = 0; i < headers.length; i++) {
+              const headerText = headers[i].textContent?.trim().toLowerCase();
+              if (headerText && (headerText.includes('tp/sl') || headerText.includes('tp / sl') || headerText.includes('tpsl'))) {
+                tpSlColumnIndex = i;
+                console.log(`Found TP/SL column at index ${i}`);
+                break;
+              }
+            }
+            
+            if (tpSlColumnIndex === -1) continue;
+            
+            // Find data rows (skip header row)
+            const dataRows = Array.from(table.querySelectorAll('tbody tr, tr:not(:first-child)'));
+            
+            // Find first data row and click any clickable element in TP/SL column
+            for (const row of dataRows) {
+              const cells = Array.from(row.querySelectorAll('td, th'));
+              if (cells.length > tpSlColumnIndex) {
+                const tpSlCell = cells[tpSlColumnIndex];
+                
+                // Look for any clickable element in this cell (button, icon, div, span, etc.)
+                const clickableElements = tpSlCell.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"], a, div, span, svg, [onclick], [class*="icon"], [class*="Icon"]');
+                
+                for (const element of clickableElements) {
+                  // Check if element is visible
+                  if (element.offsetParent !== null && element.offsetWidth > 0 && element.offsetHeight > 0) {
+                    // Click the first visible clickable element found
+                    element.click();
+                    return true;
+                  }
+                }
+                
+                // If no clickable element found, try clicking the cell itself
+                if (tpSlCell.offsetParent !== null) {
+                  tpSlCell.click();
+                  return true;
+                }
+              }
+            }
+          }
+          
+          return false;
+        });
+        
+        if (tpSlClicked) {
+          console.log(`[${email}] Clicked element in TP/SL column of Positions table`);
+          await delay(1000);
+        } else {
+          console.log(`[${email}] Could not find TP/SL column or clickable element in Positions table`);
+        }
+      } else {
+        console.log(`[${email}] Positions tab not found after CANCEL ALL`);
+      }
+    }
+    
+    // Check for Login button (just click once)
+    let loginButtonFound = false;
+    
+    // Strategy 1: Find Login button by exact text
+    const loginBtn = await findByExactText(page, "Log in", ["button", "div", "span", "a"]);
+    if (loginBtn) {
+      const isVisible = await page.evaluate((el) => {
+        return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+      }, loginBtn);
+      if (isVisible) {
+        await loginBtn.click();
+        loginButtonFound = true;
+        console.log(`[${email}] Clicked Log in button in Orders tab (exact text)`);
+      }
+    }
+    
+    if (!loginButtonFound) {
+      const loginBtn2 = await findByExactText(page, "Login", ["button", "div", "span", "a"]);
+      if (loginBtn2) {
+        const isVisible = await page.evaluate((el) => {
+          return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+        }, loginBtn2);
+        if (isVisible) {
+          await loginBtn2.click();
+          loginButtonFound = true;
+          console.log(`[${email}] Clicked Login button in Orders tab (exact text)`);
+        }
+      }
+    }
+    
+    // Strategy 2: Find Login button by text search
+    if (!loginButtonFound) {
+      const loginBtn3 = await findByText(page, "login", ["button", "div", "span", "a"]);
+      if (loginBtn3) {
+        const isVisible = await page.evaluate((el) => {
+          return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+        }, loginBtn3);
+        if (isVisible) {
+          await loginBtn3.click();
+          loginButtonFound = true;
+          console.log(`[${email}] Clicked Login button in Orders tab (text search)`);
+        }
+      }
+    }
+    
+    // Strategy 3: Use evaluate to find Login button
+    if (!loginButtonFound) {
+      const clicked = await page.evaluate(() => {
+        const buttons = Array.from(document.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"]'));
+        for (const btn of buttons) {
+          const text = btn.textContent?.trim().toLowerCase();
+          const isVisible = btn.offsetParent !== null;
+          if (isVisible && text && (text === 'log in' || text === 'login')) {
+            btn.click();
+            return true;
+          }
+        }
+        return false;
+      });
+      
+      if (clicked) {
+        loginButtonFound = true;
+        console.log(`[${email}] Clicked Login button in Orders tab (via evaluate)`);
+      }
+    }
+    
+    if (loginButtonFound) {
+      console.log(`[${email}] Login button clicked, waiting for authentication...`);
+      await delay(2000);
+      return ordersTabClicked;
+    }
+    
+    // If Login button not found, check for Connect Wallet button
+    console.log(`[${email}] Login button not found, checking for Connect Wallet button...`);
+    let connectWalletButtonClicked = false;
+    
+    // Strategy 1: Find Connect Wallet button by exact text
+    const connectWalletBtn = await findByExactText(page, "Connect Wallet", ["button", "div", "span", "a"]);
+    if (connectWalletBtn) {
+      const isVisible = await page.evaluate((el) => {
+        return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+      }, connectWalletBtn);
+      if (isVisible) {
+        await connectWalletBtn.click();
+        connectWalletButtonClicked = true;
+        console.log(`[${email}] Clicked Connect Wallet button in Orders tab (exact text)`);
+      }
+    }
+    
+    // Strategy 2: Find Connect Wallet button by text search
+    if (!connectWalletButtonClicked) {
+      const connectWalletBtn2 = await findByText(page, "Connect Wallet", ["button", "div", "span", "a"]);
+      if (connectWalletBtn2) {
+        const isVisible = await page.evaluate((el) => {
+          return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+        }, connectWalletBtn2);
+        if (isVisible) {
+          await connectWalletBtn2.click();
+          connectWalletButtonClicked = true;
+          console.log(`[${email}] Clicked Connect Wallet button in Orders tab (text search)`);
+        }
+      }
+    }
+    
+    // Strategy 3: Use evaluate to find Connect Wallet button
+    if (!connectWalletButtonClicked) {
+      const clicked = await page.evaluate(() => {
+        const buttons = Array.from(document.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"]'));
+        for (const btn of buttons) {
+          const text = btn.textContent?.trim().toLowerCase();
+          const isVisible = btn.offsetParent !== null;
+          if (isVisible && text && (text === 'connect wallet' || text.includes('connect wallet'))) {
+            btn.click();
+            return true;
+          }
+        }
+        return false;
+      });
+      
+      if (clicked) {
+        connectWalletButtonClicked = true;
+        console.log(`[${email}] Clicked Connect Wallet button in Orders tab (via evaluate)`);
+      }
+    }
+    
+    if (connectWalletButtonClicked) {
+      // Wait for modal to appear
+      console.log(`[${email}] Connect Wallet button clicked, waiting for modal to appear...`);
+      await delay(2000);
+      
+      // Look for WalletConnect button in modal
+      console.log(`[${email}] Looking for WalletConnect button in modal...`);
+      let walletConnectClicked = false;
+      
+      // Strategy 1: Find by exact text "WalletConnect"
+      const walletConnectBtn = await findByExactText(page, "WalletConnect", ["button", "div", "span"]);
+      if (walletConnectBtn) {
+        const isVisible = await page.evaluate((el) => {
+          return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+        }, walletConnectBtn);
+        if (isVisible) {
+          await walletConnectBtn.click();
+          walletConnectClicked = true;
+          console.log(`[${email}] Clicked WalletConnect button in modal`);
+        }
+      }
+      
+      // Strategy 2: Find by text containing "WalletConnect" (case insensitive)
+      if (!walletConnectClicked) {
+        const walletConnectBtn2 = await findByText(page, "WalletConnect", ["button", "div", "span"]);
+        if (walletConnectBtn2) {
+          const isVisible = await page.evaluate((el) => {
+            return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+          }, walletConnectBtn2);
+          if (isVisible) {
+            await walletConnectBtn2.click();
+            walletConnectClicked = true;
+            console.log(`[${email}] Clicked WalletConnect button in modal (by text search)`);
+          }
+        }
+      }
+      
+      // Strategy 3: Use evaluate to find WalletConnect in modal
+      if (!walletConnectClicked) {
+        const clicked = await page.evaluate(() => {
+          // Look for modal/dialog
+          const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="Modal"]');
+          if (!modal) return false;
+          
+          // Find WalletConnect button in modal
+          const buttons = Array.from(modal.querySelectorAll('button, div[role="button"], span[role="button"]'));
+          for (const btn of buttons) {
+            const text = btn.textContent?.trim();
+            const isVisible = btn.offsetParent !== null;
+            if (isVisible && text && (text.includes('WalletConnect') || text.includes('Wallet Connect'))) {
+              btn.click();
+              return true;
+            }
+          }
+          return false;
+        });
+        if (clicked) {
+          walletConnectClicked = true;
+          console.log(`[${email}] Clicked WalletConnect button in modal (via evaluate)`);
+        }
+      }
+      
+      if (!walletConnectClicked) {
+        console.log(`[${email}] Could not find WalletConnect button in modal`);
+        console.log(`[${email}] User will need to manually connect wallet`);
+      } else {
+        console.log(`[${email}] WalletConnect button clicked, waiting for wallet connection...`);
+        await delay(3000);
+      }
+    } else {
+      console.log(`[${email}] No Login or Connect Wallet button found in Orders tab`);
+    }
+    
+    return ordersTabClicked;
+  } catch (error) {
+    console.log(`[${email}] Error clicking Orders tab: ${error.message}`);
+    return false;
+  }
+}
+
+async function isLoggedIn(page, exchangeConfig = null) {
+  const exchange = exchangeConfig || EXCHANGE_CONFIGS.paradex; // Default to Paradex
+  
+  // For Extended Exchange, check for specific cookies first
+  if (exchange.name === 'Extended Exchange') {
+    const hasCookies = await hasExtendedExchangeCookies(page);
+    if (hasCookies) {
+      console.log(`[Extended Exchange] Found x10_access_token and x10_refresh_token cookies`);
+      // Also check if trading interface is visible
+      await delay(1000);
+      const hasTradingInterface = await page.evaluate(() => {
+        const text = document.body.innerText;
+        const hasAccountInfo = text.includes('Available to trade') ||
+                              text.includes('Account Value') ||
+                              text.includes('Portfolio Value') ||
+                              text.includes('Unrealized P&L') ||
+                              text.includes('Balance') ||
+                              text.includes('Equity');
+        const hasTradingButtons = Array.from(document.querySelectorAll('button')).some(
+          b => {
+            const btnText = b.textContent?.trim();
+            return btnText === 'Buy' || btnText === 'Sell' || btnText === 'Long' || btnText === 'Short';
+          }
+        );
+        return hasAccountInfo || hasTradingButtons;
+      });
+      return hasTradingInterface;
+    }
+    return false;
+  }
+  
+  // For Paradex, use original logic
   // Check if user is logged in by looking for account/portfolio elements
   await delay(2000);
-  const loggedInIndicators = await page.evaluate(() => {
+  const loggedInIndicators = await page.evaluate((exchangeName) => {
     const text = document.body.innerText;
 
     // Check for "Log in" button - if exists, we're NOT logged in
@@ -130,22 +742,25 @@ async function isLoggedIn(page) {
     );
 
     // Check for actual trading interface elements that only appear when logged in
+    // Generic indicators that work for both exchanges
     const hasAccountInfo = text.includes('Available to trade') ||
                           text.includes('Account Value') ||
                           text.includes('Portfolio Value') ||
-                          text.includes('Unrealized P&L');
+                          text.includes('Unrealized P&L') ||
+                          text.includes('Balance') ||
+                          text.includes('Equity');
 
     // More specific check - look for the trading form (Buy/Sell buttons in trading panel)
     const hasTradingInterface = Array.from(document.querySelectorAll('button')).some(
       b => {
         const btnText = b.textContent?.trim();
-        return btnText === 'Buy' || btnText === 'Sell';
+        return btnText === 'Buy' || btnText === 'Sell' || btnText === 'Long' || btnText === 'Short';
       }
     );
 
     // We're only logged in if we DON'T see login button AND we DO see trading interface
     return !hasLoginBtn && (hasAccountInfo || hasTradingInterface);
-  });
+  }, exchange.name);
   return loggedInIndicators;
 }
 
@@ -240,21 +855,115 @@ async function handleWalletConnectionError(page, email) {
   }
 }
 
-async function login(page, browser, email, cookiesPath, isNewAccount = false) {
-  console.log(`[${email}] Starting login process...`);
+async function login(page, browser, email, cookiesPath, isNewAccount = false, exchangeConfig = null) {
+  const exchange = exchangeConfig || EXCHANGE_CONFIGS.paradex; // Default to Paradex
+  console.log(`[${email}] Starting login process for ${exchange.name}...`);
 
   try {
+    // Extended Exchange specific login flow
+    if (exchange.name === 'Extended Exchange') {
+      console.log(`[${email}] Extended Exchange - starting login flow...`);
+      
+      // Step 1: Clear cookies when bot starts
+      console.log(`[${email}] Clearing Extended Exchange cookies...`);
+      await clearExtendedExchangeCookies(page);
+      await delay(1000);
+      
+      // Step 2: Look for Connect Wallet or Start Trading button
+      console.log(`[${email}] Looking for Connect Wallet or Start Trading button...`);
+      await delay(2000);
+      
+      let connectButtonClicked = false;
+      
+      // Strategy 1: Find "Connect Wallet" button
+      const connectWalletBtn = await findByText(page, "Connect Wallet", ["button", "div", "span"]);
+      if (connectWalletBtn) {
+        const isVisible = await page.evaluate((el) => {
+          return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+        }, connectWalletBtn);
+        if (isVisible) {
+          await connectWalletBtn.click();
+          connectButtonClicked = true;
+          console.log(`[${email}] Clicked Connect Wallet button`);
+        }
+      }
+      
+      // Strategy 2: Find "Start Trading" button
+      if (!connectButtonClicked) {
+        const startTradingBtn = await findByText(page, "Start Trading", ["button", "div", "span"]);
+        if (startTradingBtn) {
+          const isVisible = await page.evaluate((el) => {
+            return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+          }, startTradingBtn);
+          if (isVisible) {
+            await startTradingBtn.click();
+            connectButtonClicked = true;
+            console.log(`[${email}] Clicked Start Trading button`);
+          }
+        }
+      }
+      
+      // Strategy 3: Use evaluate to find button
+      if (!connectButtonClicked) {
+        const clicked = await page.evaluate(() => {
+          const buttons = Array.from(document.querySelectorAll('button, div[role="button"], span[role="button"]'));
+          for (const btn of buttons) {
+            const text = btn.textContent?.trim();
+            const isVisible = btn.offsetParent !== null;
+            if (isVisible && (text === 'Connect Wallet' || text === 'Start Trading')) {
+              btn.click();
+              return true;
+            }
+          }
+          return false;
+        });
+        if (clicked) {
+          connectButtonClicked = true;
+          console.log(`[${email}] Clicked Connect Wallet/Start Trading button (via evaluate)`);
+        }
+      }
+      
+      if (!connectButtonClicked) {
+        console.log(`[${email}] Could not find Connect Wallet or Start Trading button`);
+        return false;
+      }
+      
+      // Wait for modal/QR code to appear
+      console.log(`[${email}] Waiting for modal/QR code to appear...`);
+      console.log(`[${email}] User should scan QR code and connect wallet...`);
+      await delay(3000);
+      
+      // Check if cookies are set (one-time check after waiting)
+      const hasCookiesNow = await hasExtendedExchangeCookies(page);
+      if (hasCookiesNow) {
+        console.log(`[${email}] ✅ Extended Exchange cookies detected!`);
+        
+        // Save cookies
+        await saveCookies(page, cookiesPath, email);
+        
+        // Click on Orders tab
+        console.log(`[${email}] Clicking Orders tab...`);
+        await clickOrdersTab(page, email);
+        
+        return true;
+      }
+      
+      console.log(`[${email}] Extended Exchange login process - user should complete wallet connection`);
+      return true; // Return true to allow manual completion
+    }
+
+    // Paradex login flow (original logic)
     // For new accounts, navigate to referral URL first
     if (isNewAccount) {
       console.log(`[${email}] New account detected - using referral link`);
       try {
-        await page.goto(PARADEX_REFERRAL_URL, {
+        await page.goto(exchange.referralUrl, {
           waitUntil: "domcontentloaded",
           timeout: 30000,
         });
         await delay(3000);
         console.log(
-          `[${email}] Referral link applied: ${PARADEX_REFERRAL_URL}`
+          `[${email}] Referral link applied: ${exchange.referralUrl}`
         );
       } catch (error) {
         console.log(`[${email}] Error loading referral link, continuing...`);
@@ -266,14 +975,14 @@ async function login(page, browser, email, cookiesPath, isNewAccount = false) {
     console.log(`[${email}] Looking for Log in button...`);
     let loginClicked = false;
 
-    // Strategy 1: Find by data attribute (most reliable)
-    const loginBtnByAttr = await page.$(
-      'button[data-dd-action-name="Connect wallet"]'
-    );
-    if (loginBtnByAttr) {
-      await loginBtnByAttr.click();
-      loginClicked = true;
-      console.log(`[${email}] Clicked Log in button (by data attribute)`);
+    // Strategy 1: Find by data attribute (most reliable) - Paradex specific
+    if (exchange.selectors.loginButton) {
+      const loginBtnByAttr = await page.$(exchange.selectors.loginButton);
+      if (loginBtnByAttr) {
+        await loginBtnByAttr.click();
+        loginClicked = true;
+        console.log(`[${email}] Clicked Log in button (by data attribute)`);
+      }
     }
 
     // Strategy 2: Find by text "Log in" in button
@@ -328,7 +1037,7 @@ async function login(page, browser, email, cookiesPath, isNewAccount = false) {
       console.log(
         `[${email}] No Log in button found - might already be logged in`
       );
-      const alreadyLoggedIn = await isLoggedIn(page);
+      const alreadyLoggedIn = await isLoggedIn(page, exchange);
       if (alreadyLoggedIn) {
         return true;
       }
@@ -773,7 +1482,7 @@ async function login(page, browser, email, cookiesPath, isNewAccount = false) {
       await delay(2000);
 
       // Check if we're logged in (error might be resolved)
-      const loggedIn = await isLoggedIn(page);
+      const loggedIn = await isLoggedIn(page, exchange);
       if (loggedIn) {
         console.log(`[${email}] Login detected after handling wallet error!`);
         break;
@@ -807,7 +1516,7 @@ async function login(page, browser, email, cookiesPath, isNewAccount = false) {
       }
 
       try {
-        const loggedIn = await isLoggedIn(page);
+        const loggedIn = await isLoggedIn(page, exchange);
         if (loggedIn) {
           console.log(`[${email}] Login detected!`);
           break;
@@ -1261,14 +1970,15 @@ async function checkIfPositionsClosed(page) {
   return checkResult.isClosed; // Returns true if positions are closed
 }
 
-async function closeAllPositions(page, percent = 100) {
-  console.log(`\n=== Closing Position (${percent}%) ===`);
+async function closeAllPositions(page, percent = 100, exchangeConfig = null) {
+  const exchange = exchangeConfig || EXCHANGE_CONFIGS.paradex; // Default to Paradex
+  console.log(`\n=== Closing Position (${percent}%) on ${exchange.name} ===`);
 
   // Wait a moment for any previous actions to complete
   await delay(1000);
 
   // Click on Positions tab to see open positions
-  const positionsTab = await findByExactText(page, "Positions", [
+  const positionsTab = await findByExactText(page, exchange.selectors.positionsTab, [
     "button",
     "div",
     "span",
@@ -1333,7 +2043,7 @@ async function closeAllPositions(page, percent = 100) {
   
   if (!isOnPositionsTab) {
     console.log(`Not on Positions tab, switching to Positions tab...`);
-    const positionsTab = await findByExactText(page, "Positions", [
+    const positionsTab = await findByExactText(page, exchange.selectors.positionsTab, [
       "button",
       "div",
       "span",
@@ -2458,8 +3168,10 @@ async function setLeverage(page, leverage) {
 
 async function executeTrade(
   page,
-  { side, orderType, price, qty, setLeverageFirst = false, leverage = null }
+  { side, orderType, price, qty, setLeverageFirst = false, leverage = null },
+  exchangeConfig = null
 ) {
+  const exchange = exchangeConfig || EXCHANGE_CONFIGS.paradex; // Default to Paradex
   console.log(`\n=== Executing Trade ===`);
 
   // Set leverage first if requested (legacy support for API calls)
@@ -2492,14 +3204,14 @@ async function executeTrade(
 
   // 1. Select Buy or Sell
   if (side === "sell") {
-    const sellBtn = await findByExactText(page, "Sell", ["button", "div"]);
+    const sellBtn = await findByExactText(page, exchange.selectors.sellButton, ["button", "div"]);
     if (sellBtn) {
       await sellBtn.click();
       console.log("Selected SELL");
       await delay(300); // Reduced from 500ms
     }
   } else {
-    const buyBtn = await findByExactText(page, "Buy", ["button", "div"]);
+    const buyBtn = await findByExactText(page, exchange.selectors.buyButton, ["button", "div"]);
     if (buyBtn) {
       await buyBtn.click();
       console.log("Selected BUY");
@@ -2509,14 +3221,14 @@ async function executeTrade(
 
   // 2. Select Market or Limit order type
   if (orderType === "limit") {
-    const limitBtn = await findByExactText(page, "Limit", ["button", "div"]);
+    const limitBtn = await findByExactText(page, exchange.selectors.limitButton, ["button", "div"]);
     if (limitBtn) {
       await limitBtn.click();
       console.log("Selected LIMIT order");
       await delay(300); // Reduced from 500ms
     }
   } else {
-    const marketBtn = await findByExactText(page, "Market", ["button", "div"]);
+    const marketBtn = await findByExactText(page, exchange.selectors.marketButton, ["button", "div"]);
     if (marketBtn) {
       await marketBtn.click();
       console.log("Selected MARKET order");
@@ -3734,8 +4446,9 @@ function startApiServer(page, apiPort, email) {
   });
 }
 
-async function launchAccount(accountConfig) {
+async function launchAccount(accountConfig, exchangeConfig) {
   const { email, cookiesPath, profileDir, apiPort } = accountConfig;
+  const exchange = exchangeConfig || EXCHANGE_CONFIGS.paradex; // Default to Paradex
 
   try {
     console.log(`\n[${email}] Launching browser instance...`);
@@ -3796,17 +4509,27 @@ async function launchAccount(accountConfig) {
     );
 
     // Try to load saved cookies - check if this is a new account
-    const hasExistingCookies = await loadCookies(page, cookiesPath, email);
-    const isNewAccount = !hasExistingCookies;
+    // For Extended Exchange, skip loading cookies (we'll clear them anyway)
+    let hasExistingCookies = false;
+    let isNewAccount = true;
+    
+    if (exchange.name !== 'Extended Exchange') {
+      // For non-Extended Exchange, load cookies normally
+      hasExistingCookies = await loadCookies(page, cookiesPath, email);
+      isNewAccount = !hasExistingCookies;
+    } else {
+      // For Extended Exchange, don't load cookies - we'll clear them in login flow
+      console.log(`[${email}] Extended Exchange - skipping cookie load (will clear and re-authenticate)`);
+    }
 
     if (isNewAccount) {
       console.log(`[${email}] New account detected - no existing cookies`);
     }
 
-    console.log(`[${email}] Opening Paradex...`);
+    console.log(`[${email}] Opening ${exchange.name}...`);
 
     // If new account, use referral URL; otherwise use regular trading URL
-    const targetUrl = isNewAccount ? PARADEX_REFERRAL_URL : PARADEX_URL;
+    const targetUrl = isNewAccount ? exchange.referralUrl : exchange.url;
 
     try {
       await page.goto(targetUrl, {
@@ -3841,7 +4564,7 @@ async function launchAccount(accountConfig) {
     let loggedIn = false;
     const maxLoginChecks = hasExistingCookies ? 5 : 1; // More retries if cookies exist
     for (let i = 0; i < maxLoginChecks; i++) {
-      loggedIn = await isLoggedIn(page);
+      loggedIn = await isLoggedIn(page, exchange);
       console.log(
         `[${email}] Logged in:`,
         loggedIn,
@@ -3860,9 +4583,9 @@ async function launchAccount(accountConfig) {
       console.log(
         `[${email}] Not logged in after ${maxLoginChecks} check(s), starting login process...`
       );
-      await login(page, browser, email, cookiesPath, isNewAccount);
+      await login(page, browser, email, cookiesPath, isNewAccount, exchange);
       await delay(3000);
-      loggedIn = await isLoggedIn(page);
+      loggedIn = await isLoggedIn(page, exchange);
     } else {
       console.log(
         `[${email}] Already logged in with existing cookies, skipping login process`
@@ -3872,10 +4595,10 @@ async function launchAccount(accountConfig) {
     // If logged in and we were on referral page, navigate to trading page
     if (loggedIn && isNewAccount) {
       const currentUrl = page.url();
-      if (!currentUrl.includes("app.paradex.trade/trade")) {
+      if (!currentUrl.includes(exchange.urlPattern)) {
         console.log(`[${email}] Navigating to trading page after login...`);
         try {
-          await page.goto(PARADEX_URL, {
+          await page.goto(exchange.url, {
             waitUntil: "domcontentloaded",
             timeout: 30000,
           });
@@ -3887,20 +4610,37 @@ async function launchAccount(accountConfig) {
     }
 
     if (loggedIn) {
-      console.log(`\n[${email}] *** Successfully logged in! ***\n`);
+      console.log(`\n[${email}] *** Successfully logged in to ${exchange.name}! ***\n`);
+
+      // For Extended Exchange, if cookies are set, click on Orders tab
+      if (exchange.name === 'Extended Exchange') {
+        const hasCookies = await hasExtendedExchangeCookies(page);
+        if (hasCookies) {
+          console.log(`[${email}] Extended Exchange cookies detected, clicking Orders tab...`);
+          await clickOrdersTab(page, email);
+        }
+      }
 
       // Ensure we're on the trading page (not redirected to status page)
       const currentUrl = page.url();
-      if (!currentUrl.includes("app.paradex.trade/trade")) {
+      if (!currentUrl.includes(exchange.urlPattern)) {
         console.log(
           `[${email}] Redirected to ${currentUrl}, navigating back to trading page...`
         );
         try {
-          await page.goto(PARADEX_URL, {
+          await page.goto(exchange.url, {
             waitUntil: "domcontentloaded",
             timeout: 30000,
           });
           await delay(3000);
+          
+          // After navigation, click Orders tab again for Extended Exchange
+          if (exchange.name === 'Extended Exchange') {
+            const hasCookies = await hasExtendedExchangeCookies(page);
+            if (hasCookies) {
+              await clickOrdersTab(page, email);
+            }
+          }
         } catch (error) {
           console.log(`[${email}] Navigation error, continuing...`);
         }
@@ -3909,10 +4649,12 @@ async function launchAccount(accountConfig) {
       // Start the API server for this account
       startApiServer(page, apiPort, email);
 
-      // Set up TP/SL add button click listener
-      await setupTpSlAddButtonListener(page, email);
+      // Set up TP/SL add button click listener (only for Paradex for now)
+      if (exchange.name === 'Paradex') {
+        await setupTpSlAddButtonListener(page, email);
+      }
 
-      return { browser, page, email, success: true };
+      return { browser, page, email, success: true, exchange: exchange.name };
     } else {
       console.log(`[${email}] Failed to login.`);
       await browser.close();
@@ -3936,15 +4678,21 @@ const TRADE_CONFIG = {
 let isShuttingDown = false;
 
 async function automatedTradingLoop(account1Result, account2Result) {
-  const { page: page1, email: email1 } = account1Result;
-  const { page: page2, email: email2 } = account2Result;
+  const { page: page1, email: email1, exchange: exchange1Name } = account1Result;
+  const { page: page2, email: email2, exchange: exchange2Name } = account2Result;
+  
+  // Get exchange configs - handle both string names and undefined
+  const exchange1Key = exchange1Name?.toLowerCase() || 'paradex';
+  const exchange2Key = exchange2Name?.toLowerCase() || 'paradex';
+  const exchange1 = EXCHANGE_CONFIGS[exchange1Key] || EXCHANGE_CONFIGS.paradex;
+  const exchange2 = EXCHANGE_CONFIGS[exchange2Key] || EXCHANGE_CONFIGS.paradex;
 
   let cycleCount = 0;
 
   console.log(`\n========================================`);
   console.log(`Starting Automated Trading Loop`);
-  console.log(`Account 1 (${email1}): BUY ${TRADE_CONFIG.buyQty} BTC`);
-  console.log(`Account 2 (${email2}): SELL ${TRADE_CONFIG.sellQty} BTC`);
+  console.log(`Account 1 (${email1}) on ${exchange1.name}: BUY ${TRADE_CONFIG.buyQty} BTC`);
+  console.log(`Account 2 (${email2}) on ${exchange2.name}: SELL ${TRADE_CONFIG.sellQty} BTC`);
   console.log(`Leverage: ${TRADE_CONFIG.leverage}x`);
   console.log(`Close after: Random time between 10s and 3min`);
   console.log(`========================================\n`);
@@ -3954,13 +4702,13 @@ async function automatedTradingLoop(account1Result, account2Result) {
   const cleanupPromises = [
     (async () => {
       console.log(`\n[${email1}] Checking for open positions and orders...`);
-      const closeResult = await closeAllPositions(page1, 100);
+      const closeResult = await closeAllPositions(page1, 100, exchange1);
       const cancelResult = await cancelAllOrders(page1);
       return { email: email1, close: closeResult, cancel: cancelResult };
     })(),
     (async () => {
       console.log(`\n[${email2}] Checking for open positions and orders...`);
-      const closeResult = await closeAllPositions(page2, 100);
+      const closeResult = await closeAllPositions(page2, 100, exchange2);
       const cancelResult = await cancelAllOrders(page2);
       return { email: email2, close: closeResult, cancel: cancelResult };
     })(),
@@ -4042,8 +4790,8 @@ async function automatedTradingLoop(account1Result, account2Result) {
       // Step 1: Close any existing positions
       console.log(`\n[CYCLE ${cycleCount}] Checking for existing positions...`);
       const initialClosePromises = [
-        closeAllPositions(page1, 100),
-        closeAllPositions(page2, 100),
+        closeAllPositions(page1, 100, exchange1),
+        closeAllPositions(page2, 100, exchange2),
       ];
 
       const initialCloseResults = await Promise.all(initialClosePromises);
@@ -4067,13 +4815,13 @@ async function automatedTradingLoop(account1Result, account2Result) {
           orderType: "limit",
           qty: TRADE_CONFIG.buyQty,
           // Leverage already set at the beginning, price will be fetched automatically
-        }),
+        }, exchange1),
         executeTrade(page2, {
           side: "sell",
           orderType: "limit",
           qty: TRADE_CONFIG.sellQty,
           // Leverage already set at the beginning, price will be fetched automatically
-        }),
+        }, exchange2),
       ];
 
       const tradeResults = await Promise.all(tradePromises);
@@ -4177,8 +4925,8 @@ async function automatedTradingLoop(account1Result, account2Result) {
               console.log(`   Closing positions immediately...`);
 
               // Close both accounts' positions to maintain balance
-              await closeAllPositions(page1, 100);
-              await closeAllPositions(page2, 100);
+              await closeAllPositions(page1, 100, exchange1);
+              await closeAllPositions(page2, 100, exchange2);
 
               console.log(
                 `✓ [CYCLE ${cycleCount}] Positions closed due to stop loss`
@@ -4205,8 +4953,8 @@ async function automatedTradingLoop(account1Result, account2Result) {
               console.log(`   Closing positions immediately...`);
 
               // Close both accounts' positions to maintain balance
-              await closeAllPositions(page1, 100);
-              await closeAllPositions(page2, 100);
+              await closeAllPositions(page1, 100, exchange1);
+              await closeAllPositions(page2, 100, exchange2);
 
               console.log(
                 `✓ [CYCLE ${cycleCount}] Positions closed due to stop loss`
@@ -4249,8 +4997,8 @@ async function automatedTradingLoop(account1Result, account2Result) {
       // Step 3: Close positions in parallel
       console.log(`\n[CYCLE ${cycleCount}] Closing positions...`);
       const closePromises = [
-        closeAllPositions(page1, 100),
-        closeAllPositions(page2, 100),
+        closeAllPositions(page1, 100, exchange1),
+        closeAllPositions(page2, 100, exchange2),
       ];
 
       const closeResults = await Promise.all(closePromises);
@@ -4342,11 +5090,38 @@ async function closeAllPositionsOnShutdown(results) {
 
 async function main() {
   console.log(`\n========================================`);
-  console.log(`Starting Paradex Multi-Account Bot`);
+  console.log(`Starting Multi-Exchange Trading Bot`);
   console.log(`Headless mode: ${HEADLESS}`);
   console.log(`Number of accounts: ${ACCOUNTS.length}`);
-  console.log(`Referral code: instantcrypto (auto-applied for new accounts)`);
   console.log(`========================================\n`);
+
+  // Prompt user to choose trading mode
+  const tradingMode = await chooseTradingMode();
+  console.log(`\n✓ Selected: ${tradingMode.description}\n`);
+
+  // Assign exchanges to accounts based on mode
+  const accountsWithExchanges = ACCOUNTS.map((account, index) => {
+    let exchangeName;
+    if (index === 0) {
+      // First account = BUY account
+      exchangeName = tradingMode.buyExchange;
+    } else {
+      // Second account = SELL account
+      exchangeName = tradingMode.sellExchange;
+    }
+    return {
+      ...account,
+      exchange: exchangeName,
+      exchangeConfig: EXCHANGE_CONFIGS[exchangeName]
+    };
+  });
+
+  console.log(`\n📋 Account Configuration:`);
+  accountsWithExchanges.forEach((acc, idx) => {
+    console.log(`   Account ${idx + 1} (${acc.email}): ${acc.exchangeConfig.name} - ${idx === 0 ? 'BUY' : 'SELL'}`);
+  });
+  console.log(``);
+
   console.log(
     `💡 Tip: If you changed account emails, old cookies will be auto-deleted.`
   );
@@ -4354,8 +5129,10 @@ async function main() {
     `    You can also manually delete paradex-cookies-*.json files to reset.\n`
   );
 
-  // Launch all accounts in parallel
-  const accountPromises = ACCOUNTS.map((account) => launchAccount(account));
+  // Launch all accounts in parallel with their exchange configs
+  const accountPromises = accountsWithExchanges.map((account) => 
+    launchAccount(account, account.exchangeConfig)
+  );
   const results = await Promise.all(accountPromises);
 
   // Summary
@@ -4367,8 +5144,8 @@ async function main() {
   const failed = results.filter((r) => !r.success);
 
   successful.forEach((r) => {
-    const account = ACCOUNTS.find((a) => a.email === r.email);
-    console.log(`✓ ${r.email} - API on port ${account.apiPort}`);
+    const account = accountsWithExchanges.find((a) => a.email === r.email);
+    console.log(`✓ ${r.email} on ${r.exchange || account.exchangeConfig.name} - API on port ${account.apiPort}`);
   });
 
   failed.forEach((r) => {
@@ -4428,12 +5205,68 @@ async function main() {
   process.on("SIGINT", shutdownHandler);
   process.on("SIGTERM", shutdownHandler);
 
+  // Get emails from ACCOUNT_EMAILS in order (first = BUY, second = SELL)
+  const emailsEnv = process.env.ACCOUNT_EMAILS;
+  if (!emailsEnv) {
+    console.log(`\n✗ Error: ACCOUNT_EMAILS not found in .env file.`);
+    process.exit(1);
+  }
+
+  const emails = emailsEnv.split(',').map(e => e.trim()).filter(e => e);
+  
+  if (emails.length < 2) {
+    console.log(`\n✗ Error: ACCOUNT_EMAILS must contain at least 2 emails (comma-separated).`);
+    console.log(`Format: ACCOUNT_EMAILS=email1@example.com,email2@example.com`);
+    console.log(`First email will be used for BUY, second email for SELL.`);
+    process.exit(1);
+  }
+
+  const buyEmail = emails[0];
+  const sellEmail = emails[1];
+
+  console.log(`\n📋 Account assignment from ACCOUNT_EMAILS:`);
+  console.log(`   BUY:  ${buyEmail} (first email)`);
+  console.log(`   SELL: ${sellEmail} (second email)`);
+
+  // Find accounts by email from successful logins
+  // Exchange info should already be stored in the result from launchAccount
+  const buyAccount = successful.find((r) => r.email === buyEmail);
+  const sellAccount = successful.find((r) => r.email === sellEmail);
+  
+  // Ensure exchange info is stored (fallback to trading mode if missing)
+  if (buyAccount && !buyAccount.exchange) {
+    buyAccount.exchange = tradingMode.buyExchange;
+  }
+  if (sellAccount && !sellAccount.exchange) {
+    sellAccount.exchange = tradingMode.sellExchange;
+  }
+
+  if (!buyAccount) {
+    console.log(`\n✗ Error: First email "${buyEmail}" (for BUY) not found in successful accounts.`);
+    console.log(`Available accounts: ${successful.map((r) => r.email).join(", ")}`);
+    process.exit(1);
+  }
+
+  if (!sellAccount) {
+    console.log(`\n✗ Error: Second email "${sellEmail}" (for SELL) not found in successful accounts.`);
+    console.log(`Available accounts: ${successful.map((r) => r.email).join(", ")}`);
+    process.exit(1);
+  }
+
+  if (buyAccount.email === sellAccount.email) {
+    console.log(`\n✗ Error: First and second emails in ACCOUNT_EMAILS must be different.`);
+    process.exit(1);
+  }
+
+  console.log(`\n✓ Using ${buyAccount.email} for BUY orders`);
+  console.log(`✓ Using ${sellAccount.email} for SELL orders`);
+
   // Start automated trading loop
   console.log(`\n🤖 Starting automated trading in 5 seconds...`);
   await delay(5000);
 
-  // Start the trading loop with both accounts
-  automatedTradingLoop(successful[0], successful[1]).catch((error) => {
+  // Start the trading loop with accounts based on ACCOUNT_EMAILS order
+  automatedTradingLoop(buyAccount, sellAccount).catch((error) => {
     console.error(`Trading loop error:`, error);
   });
 }
