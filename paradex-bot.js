@@ -290,211 +290,10 @@ async function clickOrdersTab(page, email) {
     }
     
     // After clicking Orders tab, check for buttons in Orders tab
-    console.log(`[${email}] Checking for buttons in Orders tab (Login, Connect Wallet, or CANCEL ALL)...`);
+    console.log(`[${email}] Checking for buttons in Orders tab (Login, Connect Wallet, CANCEL ALL, Positions)...`);
     await delay(1500); // Wait for Orders tab content to load
     
-    // Check for CANCEL ALL button first (use case in flow)
-    let cancelAllClicked = false;
-    
-    // Strategy 1: Find by exact text "CANCEL ALL" or "Cancel All"
-    const cancelAllBtn = await findByExactText(page, "CANCEL ALL", ["button", "div", "span", "a"]);
-    if (cancelAllBtn) {
-      const isVisible = await page.evaluate((el) => {
-        return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
-      }, cancelAllBtn);
-      if (isVisible) {
-        await cancelAllBtn.click();
-        cancelAllClicked = true;
-        console.log(`[${email}] Clicked CANCEL ALL button in Orders tab (exact text)`);
-      }
-    }
-    
-    if (!cancelAllClicked) {
-      const cancelAllBtn2 = await findByExactText(page, "Cancel All", ["button", "div", "span", "a"]);
-      if (cancelAllBtn2) {
-        const isVisible = await page.evaluate((el) => {
-          return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
-        }, cancelAllBtn2);
-        if (isVisible) {
-          await cancelAllBtn2.click();
-          cancelAllClicked = true;
-          console.log(`[${email}] Clicked Cancel All button in Orders tab (exact text)`);
-        }
-      }
-    }
-    
-    // Strategy 2: Find by text containing "cancel all" (case insensitive)
-    if (!cancelAllClicked) {
-      const cancelAllBtn3 = await findByText(page, "cancel all", ["button", "div", "span", "a"]);
-      if (cancelAllBtn3) {
-        const isVisible = await page.evaluate((el) => {
-          return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
-        }, cancelAllBtn3);
-        if (isVisible) {
-          await cancelAllBtn3.click();
-          cancelAllClicked = true;
-          console.log(`[${email}] Clicked Cancel All button in Orders tab (text search)`);
-        }
-      }
-    }
-    
-    // Strategy 3: Use evaluate to find CANCEL ALL button
-    if (!cancelAllClicked) {
-      const clicked = await page.evaluate(() => {
-        const buttons = Array.from(document.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"]'));
-        for (const btn of buttons) {
-          const text = btn.textContent?.trim().toLowerCase();
-          const isVisible = btn.offsetParent !== null;
-          if (isVisible && text && (
-            text === 'cancel all' || 
-            text === 'cancelall' ||
-            text.includes('cancel all')
-          )) {
-            btn.click();
-            return true;
-          }
-        }
-        return false;
-      });
-      
-      if (clicked) {
-        cancelAllClicked = true;
-        console.log(`[${email}] Clicked Cancel All button in Orders tab (via evaluate)`);
-      }
-    }
-    
-    if (cancelAllClicked) {
-      console.log(`[${email}] Cancel All button clicked, waiting before clicking Positions tab...`);
-      await delay(2000); // Wait for cancel operation to complete
-      
-      // Click on Positions tab after CANCEL ALL
-      console.log(`[${email}] Looking for Positions tab after CANCEL ALL...`);
-      let positionsTabClicked = false;
-      
-      // Strategy 1: Find by exact text "Positions"
-      const positionsTab = await findByExactText(page, "Positions", ["button", "div", "span", "a"]);
-      if (positionsTab) {
-        const isVisible = await page.evaluate((el) => {
-          return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
-        }, positionsTab);
-        if (isVisible) {
-          await positionsTab.click();
-          positionsTabClicked = true;
-          console.log(`[${email}] Clicked Positions tab after CANCEL ALL (exact text)`);
-        }
-      }
-      
-      // Strategy 2: Find by text containing "positions" (case insensitive)
-      if (!positionsTabClicked) {
-        const positionsTab2 = await findByText(page, "positions", ["button", "div", "span", "a"]);
-        if (positionsTab2) {
-          const isVisible = await page.evaluate((el) => {
-            return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
-          }, positionsTab2);
-          if (isVisible) {
-            await positionsTab2.click();
-            positionsTabClicked = true;
-            console.log(`[${email}] Clicked Positions tab after CANCEL ALL (text search)`);
-          }
-        }
-      }
-      
-      // Strategy 3: Use evaluate to find Positions tab
-      if (!positionsTabClicked) {
-        const clicked = await page.evaluate(() => {
-          const allElements = Array.from(document.querySelectorAll('button, div[role="tab"], span[role="tab"], a[role="tab"], div, span, a'));
-          for (const el of allElements) {
-            const text = el.textContent?.trim().toLowerCase();
-            const isVisible = el.offsetParent !== null;
-            if (isVisible && text && text === 'positions') {
-              el.click();
-              return true;
-            }
-          }
-          return false;
-        });
-        
-        if (clicked) {
-          positionsTabClicked = true;
-          console.log(`[${email}] Clicked Positions tab after CANCEL ALL (via evaluate)`);
-        }
-      }
-      
-      if (positionsTabClicked) {
-        console.log(`[${email}] Positions tab clicked after CANCEL ALL`);
-        await delay(2000); // Wait for Positions tab content to load
-        
-        // Look for TP/SL column in table and click any element/button in that column
-        console.log(`[${email}] Looking for TP/SL column in Positions table...`);
-        const tpSlClicked = await page.evaluate(() => {
-          // Find all table elements
-          const tables = Array.from(document.querySelectorAll('table'));
-          
-          for (const table of tables) {
-            // Find header row
-            const headerRow = table.querySelector('thead tr, thead > tr, tr:first-child');
-            if (!headerRow) continue;
-            
-            // Find TP/SL column header
-            const headers = Array.from(headerRow.querySelectorAll('th, td'));
-            let tpSlColumnIndex = -1;
-            
-            for (let i = 0; i < headers.length; i++) {
-              const headerText = headers[i].textContent?.trim().toLowerCase();
-              if (headerText && (headerText.includes('tp/sl') || headerText.includes('tp / sl') || headerText.includes('tpsl'))) {
-                tpSlColumnIndex = i;
-                console.log(`Found TP/SL column at index ${i}`);
-                break;
-              }
-            }
-            
-            if (tpSlColumnIndex === -1) continue;
-            
-            // Find data rows (skip header row)
-            const dataRows = Array.from(table.querySelectorAll('tbody tr, tr:not(:first-child)'));
-            
-            // Find first data row and click any clickable element in TP/SL column
-            for (const row of dataRows) {
-              const cells = Array.from(row.querySelectorAll('td, th'));
-              if (cells.length > tpSlColumnIndex) {
-                const tpSlCell = cells[tpSlColumnIndex];
-                
-                // Look for any clickable element in this cell (button, icon, div, span, etc.)
-                const clickableElements = tpSlCell.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"], a, div, span, svg, [onclick], [class*="icon"], [class*="Icon"]');
-                
-                for (const element of clickableElements) {
-                  // Check if element is visible
-                  if (element.offsetParent !== null && element.offsetWidth > 0 && element.offsetHeight > 0) {
-                    // Click the first visible clickable element found
-                    element.click();
-                    return true;
-                  }
-                }
-                
-                // If no clickable element found, try clicking the cell itself
-                if (tpSlCell.offsetParent !== null) {
-                  tpSlCell.click();
-                  return true;
-                }
-              }
-            }
-          }
-          
-          return false;
-        });
-        
-        if (tpSlClicked) {
-          console.log(`[${email}] Clicked element in TP/SL column of Positions table`);
-          await delay(1000);
-        } else {
-          console.log(`[${email}] Could not find TP/SL column or clickable element in Positions table`);
-        }
-      } else {
-        console.log(`[${email}] Positions tab not found after CANCEL ALL`);
-      }
-    }
-    
-    // Check for Login button (just click once)
+    // Step 1: Check for Login button first (just click once)
     let loginButtonFound = false;
     
     // Strategy 1: Find Login button by exact text
@@ -690,6 +489,210 @@ async function clickOrdersTab(page, email) {
       }
     } else {
       console.log(`[${email}] No Login or Connect Wallet button found in Orders tab`);
+    }
+    
+    // Step 2: Check for CANCEL ALL button (after Login/Connect Wallet steps)
+    console.log(`[${email}] Checking for CANCEL ALL button in Orders tab...`);
+    let cancelAllClicked = false;
+    
+    // Strategy 1: Find by exact text "CANCEL ALL" or "Cancel All"
+    const cancelAllBtn = await findByExactText(page, "CANCEL ALL", ["button", "div", "span", "a"]);
+    if (cancelAllBtn) {
+      const isVisible = await page.evaluate((el) => {
+        return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+      }, cancelAllBtn);
+      if (isVisible) {
+        await cancelAllBtn.click();
+        cancelAllClicked = true;
+        console.log(`[${email}] Clicked CANCEL ALL button in Orders tab (exact text)`);
+      }
+    }
+    
+    if (!cancelAllClicked) {
+      const cancelAllBtn2 = await findByExactText(page, "Cancel All", ["button", "div", "span", "a"]);
+      if (cancelAllBtn2) {
+        const isVisible = await page.evaluate((el) => {
+          return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+        }, cancelAllBtn2);
+        if (isVisible) {
+          await cancelAllBtn2.click();
+          cancelAllClicked = true;
+          console.log(`[${email}] Clicked Cancel All button in Orders tab (exact text)`);
+        }
+      }
+    }
+    
+    // Strategy 2: Find by text containing "cancel all" (case insensitive)
+    if (!cancelAllClicked) {
+      const cancelAllBtn3 = await findByText(page, "cancel all", ["button", "div", "span", "a"]);
+      if (cancelAllBtn3) {
+        const isVisible = await page.evaluate((el) => {
+          return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+        }, cancelAllBtn3);
+        if (isVisible) {
+          await cancelAllBtn3.click();
+          cancelAllClicked = true;
+          console.log(`[${email}] Clicked Cancel All button in Orders tab (text search)`);
+        }
+      }
+    }
+    
+    // Strategy 3: Use evaluate to find CANCEL ALL button
+    if (!cancelAllClicked) {
+      const clicked = await page.evaluate(() => {
+        const buttons = Array.from(document.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"]'));
+        for (const btn of buttons) {
+          const text = btn.textContent?.trim().toLowerCase();
+          const isVisible = btn.offsetParent !== null;
+          if (isVisible && text && (
+            text === 'cancel all' || 
+            text === 'cancelall' ||
+            text.includes('cancel all')
+          )) {
+            btn.click();
+            return true;
+          }
+        }
+        return false;
+      });
+      
+      if (clicked) {
+        cancelAllClicked = true;
+        console.log(`[${email}] Clicked Cancel All button in Orders tab (via evaluate)`);
+      }
+    }
+    
+    // Step 3: If CANCEL ALL was clicked, then click Positions tab
+    if (cancelAllClicked) {
+      console.log(`[${email}] Cancel All button clicked, waiting before clicking Positions tab...`);
+      await delay(2000); // Wait for cancel operation to complete
+      
+      // Click on Positions tab after CANCEL ALL
+      console.log(`[${email}] Looking for Positions tab after CANCEL ALL...`);
+      let positionsTabClicked = false;
+      
+      // Strategy 1: Find by exact text "Positions"
+      const positionsTab = await findByExactText(page, "Positions", ["button", "div", "span", "a"]);
+      if (positionsTab) {
+        const isVisible = await page.evaluate((el) => {
+          return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+        }, positionsTab);
+        if (isVisible) {
+          await positionsTab.click();
+          positionsTabClicked = true;
+          console.log(`[${email}] Clicked Positions tab after CANCEL ALL (exact text)`);
+        }
+      }
+      
+      // Strategy 2: Find by text containing "positions" (case insensitive)
+      if (!positionsTabClicked) {
+        const positionsTab2 = await findByText(page, "positions", ["button", "div", "span", "a"]);
+        if (positionsTab2) {
+          const isVisible = await page.evaluate((el) => {
+            return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+          }, positionsTab2);
+          if (isVisible) {
+            await positionsTab2.click();
+            positionsTabClicked = true;
+            console.log(`[${email}] Clicked Positions tab after CANCEL ALL (text search)`);
+          }
+        }
+      }
+      
+      // Strategy 3: Use evaluate to find Positions tab
+      if (!positionsTabClicked) {
+        const clicked = await page.evaluate(() => {
+          const allElements = Array.from(document.querySelectorAll('button, div[role="tab"], span[role="tab"], a[role="tab"], div, span, a'));
+          for (const el of allElements) {
+            const text = el.textContent?.trim().toLowerCase();
+            const isVisible = el.offsetParent !== null;
+            if (isVisible && text && text === 'positions') {
+              el.click();
+              return true;
+            }
+          }
+          return false;
+        });
+        
+        if (clicked) {
+          positionsTabClicked = true;
+          console.log(`[${email}] Clicked Positions tab after CANCEL ALL (via evaluate)`);
+        }
+      }
+      
+      // Step 4: After clicking Positions tab, find TP/SL column and click element
+      if (positionsTabClicked) {
+        console.log(`[${email}] Positions tab clicked after CANCEL ALL`);
+        await delay(2000); // Wait for Positions tab content to load
+        
+        // Look for TP/SL column in table and click any element/button in that column
+        console.log(`[${email}] Looking for TP/SL column in Positions table...`);
+        const tpSlClicked = await page.evaluate(() => {
+          // Find all table elements
+          const tables = Array.from(document.querySelectorAll('table'));
+          
+          for (const table of tables) {
+            // Find header row
+            const headerRow = table.querySelector('thead tr, thead > tr, tr:first-child');
+            if (!headerRow) continue;
+            
+            // Find TP/SL column header
+            const headers = Array.from(headerRow.querySelectorAll('th, td'));
+            let tpSlColumnIndex = -1;
+            
+            for (let i = 0; i < headers.length; i++) {
+              const headerText = headers[i].textContent?.trim().toLowerCase();
+              if (headerText && (headerText.includes('tp/sl') || headerText.includes('tp / sl') || headerText.includes('tpsl'))) {
+                tpSlColumnIndex = i;
+                console.log(`Found TP/SL column at index ${i}`);
+                break;
+              }
+            }
+            
+            if (tpSlColumnIndex === -1) continue;
+            
+            // Find data rows (skip header row)
+            const dataRows = Array.from(table.querySelectorAll('tbody tr, tr:not(:first-child)'));
+            
+            // Find first data row and click any clickable element in TP/SL column
+            for (const row of dataRows) {
+              const cells = Array.from(row.querySelectorAll('td, th'));
+              if (cells.length > tpSlColumnIndex) {
+                const tpSlCell = cells[tpSlColumnIndex];
+                
+                // Look for any clickable element in this cell (button, icon, div, span, etc.)
+                const clickableElements = tpSlCell.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"], a, div, span, svg, [onclick], [class*="icon"], [class*="Icon"]');
+                
+                for (const element of clickableElements) {
+                  // Check if element is visible
+                  if (element.offsetParent !== null && element.offsetWidth > 0 && element.offsetHeight > 0) {
+                    // Click the first visible clickable element found
+                    element.click();
+                    return true;
+                  }
+                }
+                
+                // If no clickable element found, try clicking the cell itself
+                if (tpSlCell.offsetParent !== null) {
+                  tpSlCell.click();
+                  return true;
+                }
+              }
+            }
+          }
+          
+          return false;
+        });
+        
+        if (tpSlClicked) {
+          console.log(`[${email}] Clicked element in TP/SL column of Positions table`);
+          await delay(1000);
+        } else {
+          console.log(`[${email}] Could not find TP/SL column or clickable element in Positions table`);
+        }
+      } else {
+        console.log(`[${email}] Positions tab not found after CANCEL ALL`);
+      }
     }
     
     return ordersTabClicked;
@@ -4583,9 +4586,40 @@ async function launchAccount(accountConfig, exchangeConfig) {
       console.log(
         `[${email}] Not logged in after ${maxLoginChecks} check(s), starting login process...`
       );
-      await login(page, browser, email, cookiesPath, isNewAccount, exchange);
-      await delay(3000);
-      loggedIn = await isLoggedIn(page, exchange);
+      const loginResult = await login(page, browser, email, cookiesPath, isNewAccount, exchange);
+      
+      // For Extended Exchange, if login returns true but cookies aren't set yet,
+      // wait longer for user to complete wallet connection manually
+      if (exchange.name === 'Extended Exchange' && loginResult) {
+        console.log(`[${email}] Extended Exchange login initiated, waiting for wallet connection...`);
+        // Wait up to 2 minutes for cookies to be set (user needs to scan QR and connect)
+        let waitAttempts = 0;
+        const maxWaitAttempts = 40; // 40 * 3s = 2 minutes
+        while (waitAttempts < maxWaitAttempts) {
+          await delay(3000); // Check every 3 seconds
+          loggedIn = await isLoggedIn(page, exchange);
+          if (loggedIn) {
+            console.log(`[${email}] ✅ Extended Exchange cookies detected after wallet connection!`);
+            break;
+          }
+          waitAttempts++;
+          if (waitAttempts % 10 === 0) {
+            console.log(`[${email}] Still waiting for wallet connection... (${waitAttempts * 3}s elapsed)`);
+          }
+        }
+        
+        if (!loggedIn) {
+          console.log(`[${email}] ⚠️  Extended Exchange: Wallet connection not completed after 2 minutes.`);
+          console.log(`[${email}] Browser will remain open for manual connection.`);
+          // Don't close browser - allow user to manually complete connection
+          // Return success: false but keep browser open
+          return { browser, page, email, success: false, exchange: exchange.name, keepBrowserOpen: true };
+        }
+      } else {
+        // For non-Extended Exchange or if login failed
+        await delay(3000);
+        loggedIn = await isLoggedIn(page, exchange);
+      }
     } else {
       console.log(
         `[${email}] Already logged in with existing cookies, skipping login process`
@@ -4657,8 +4691,17 @@ async function launchAccount(accountConfig, exchangeConfig) {
       return { browser, page, email, success: true, exchange: exchange.name };
     } else {
       console.log(`[${email}] Failed to login.`);
-      await browser.close();
-      return { email, success: false };
+      // For Extended Exchange, keep browser open to allow manual wallet connection
+      // For other exchanges, close browser on login failure
+      const shouldKeepOpen = exchange.name === 'Extended Exchange';
+      if (!shouldKeepOpen) {
+        await browser.close();
+        return { email, success: false };
+      } else {
+        console.log(`[${email}] Extended Exchange: Keeping browser open for manual wallet connection.`);
+        console.log(`[${email}] Please complete wallet connection manually in the browser window.`);
+        return { browser, page, email, success: false, exchange: exchange.name, keepBrowserOpen: true };
+      }
     }
   } catch (error) {
     console.error(`\n✗ [${email}] Error during account launch:`, error.message);
