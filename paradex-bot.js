@@ -686,7 +686,298 @@ async function clickOrdersTab(page, email) {
         
         if (tpSlClicked) {
           console.log(`[${email}] Clicked element in TP/SL column of Positions table`);
-          await delay(1000);
+          await delay(2000); // Wait for modal to appear
+          
+          // Handle TP/SL modal: Find the 5th input in the modal and fill with STOP_LOSS value
+          console.log(`[${email}] Looking for TP/SL modal and 5th input...`);
+          const stopLossResult = await page.evaluate((stopLossValue) => {
+            // Find modal/dialog
+            const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]');
+            if (!modal) {
+              console.log('No modal found');
+              return { success: false, reason: 'No modal found' };
+            }
+            
+            // Find all input fields in the modal (excluding hidden inputs)
+            const allInputs = Array.from(modal.querySelectorAll('input[type="text"], input[type="number"], input:not([type="hidden"]), input[data-part="input"]'));
+            
+            // Filter out disabled or readonly inputs that might not be interactive
+            const interactiveInputs = allInputs.filter(input => {
+              return !input.disabled && !input.readOnly && input.offsetParent !== null;
+            });
+            
+            console.log(`Found ${interactiveInputs.length} interactive inputs in modal`);
+            
+            // Get the 5th input (index 4)
+            let stopLossInput = null;
+            if (interactiveInputs.length >= 5) {
+              stopLossInput = interactiveInputs[4]; // 5th input (index 4)
+              console.log(`Found 5th input in modal (index 4 of ${interactiveInputs.length} inputs)`);
+            } else if (interactiveInputs.length > 0) {
+              // If less than 5 inputs, use the last one
+              stopLossInput = interactiveInputs[interactiveInputs.length - 1];
+              console.log(`Only ${interactiveInputs.length} inputs found, using last input (index ${interactiveInputs.length - 1})`);
+            } else {
+              // Try to find any input-like elements
+              const allInputLike = Array.from(modal.querySelectorAll('input, [contenteditable="true"], [role="textbox"]'));
+              const interactiveInputLike = allInputLike.filter(el => {
+                return !el.disabled && !el.readOnly && el.offsetParent !== null;
+              });
+              
+              if (interactiveInputLike.length >= 5) {
+                stopLossInput = interactiveInputLike[4];
+                console.log(`Found 5th input-like element in modal`);
+              } else if (interactiveInputLike.length > 0) {
+                stopLossInput = interactiveInputLike[interactiveInputLike.length - 1];
+                console.log(`Using last input-like element (${interactiveInputLike.length} found)`);
+              }
+            }
+            
+            if (!stopLossInput) {
+              console.log(`Could not find 5th input in modal. Total inputs found: ${allInputs.length}`);
+              return { success: false, reason: `Input #5 not found. Only ${allInputs.length} inputs available.` };
+            }
+            
+            // Return the input element info so we can use Puppeteer to type
+            const inputInfo = {
+              id: stopLossInput.id,
+              className: stopLossInput.className,
+              dataPart: stopLossInput.getAttribute('data-part'),
+              placeholder: stopLossInput.placeholder,
+              type: stopLossInput.type
+            };
+            
+            console.log(`Found input to fill:`, inputInfo);
+            return { success: true, inputInfo: inputInfo, inputFound: true };
+            
+            // Find and click Confirm button
+            const confirmButton = Array.from(modal.querySelectorAll('button, div[role="button"], span[role="button"]')).find(btn => {
+              const text = btn.textContent?.trim().toLowerCase();
+              return text === 'confirm' || text === 'apply' || text === 'save';
+            });
+            
+            if (confirmButton) {
+              confirmButton.click();
+              console.log('Clicked Confirm button');
+              return { success: true, filled: true, confirmed: true };
+            } else {
+              console.log('Could not find Confirm button');
+              return { success: true, filled: true, confirmed: false, reason: 'Confirm button not found' };
+            }
+          }, process.env.STOP_LOSS || '');
+          
+          if (stopLossResult.success && stopLossResult.inputFound) {
+            // Use Puppeteer to click and type into the input
+            console.log(`[${email}] Clicking and typing into the 5th input...`);
+            const stopLossValue = process.env.STOP_LOSS || '';
+            
+            try {
+              // Find the input using the info we got
+              let inputElement = null;
+              
+              // Try multiple strategies to find the input
+              if (stopLossResult.inputInfo.id) {
+                inputElement = await page.$(`#${stopLossResult.inputInfo.id}`);
+              }
+              
+              if (!inputElement && stopLossResult.inputInfo.dataPart) {
+                inputElement = await page.$(`input[data-part="${stopLossResult.inputInfo.dataPart}"]`);
+              }
+              
+              // Fallback: find 5th input again using Puppeteer
+              if (!inputElement) {
+                const inputs = await page.$$('input[type="text"], input[type="number"], input:not([type="hidden"]), input[data-part="input"]');
+                const interactiveInputs = [];
+                for (const input of inputs) {
+                  const isVisible = await input.evaluate(el => el.offsetParent !== null && !el.disabled && !el.readOnly);
+                  if (isVisible) {
+                    interactiveInputs.push(input);
+                  }
+                }
+                if (interactiveInputs.length >= 5) {
+                  inputElement = interactiveInputs[4]; // 5th input
+                } else if (interactiveInputs.length > 0) {
+                  inputElement = interactiveInputs[interactiveInputs.length - 1];
+                }
+              }
+              
+              if (inputElement) {
+                // Click the input to focus it
+                await inputElement.click({ delay: 100 });
+                await delay(300);
+                
+                // Clear existing value
+                await inputElement.click({ clickCount: 3 }); // Triple click to select all
+                await page.keyboard.press('Backspace');
+                await delay(200);
+                
+                // Type the value
+                await inputElement.type(stopLossValue, { delay: 50 });
+                
+                // Trigger additional events
+                await inputElement.evaluate((el, val) => {
+                  el.dispatchEvent(new Event('input', { bubbles: true }));
+                  el.dispatchEvent(new Event('change', { bubbles: true }));
+                  el.dispatchEvent(new Event('blur', { bubbles: true }));
+                }, stopLossValue);
+                
+                console.log(`[${email}] ✅ Successfully filled stop loss input with value: ${stopLossValue}`);
+                
+                // Wait 100ms after entering value
+                await delay(100);
+                
+                // Find and click Confirm button in modal
+                console.log(`[${email}] Looking for Confirm button in modal...`);
+                const confirmButton = await page.evaluate(() => {
+                  const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]');
+                  if (!modal) {
+                    console.log('No modal found when looking for Confirm button');
+                    return null;
+                  }
+                  const buttons = Array.from(modal.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"]'));
+                  const confirmBtn = buttons.find(btn => {
+                    const text = btn.textContent?.trim().toLowerCase();
+                    const isVisible = btn.offsetParent !== null;
+                    return isVisible && (text === 'confirm' || text === 'apply' || text === 'save');
+                  });
+                  if (confirmBtn) {
+                    console.log('Found Confirm button');
+                    return true; // Return true to indicate button was found
+                  }
+                  console.log('Confirm button not found');
+                  return false;
+                });
+                
+                if (confirmButton) {
+                  // Click the Confirm button
+                  await page.evaluate(() => {
+                    const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]');
+                    if (!modal) return;
+                    const buttons = Array.from(modal.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"]'));
+                    const confirmBtn = buttons.find(btn => {
+                      const text = btn.textContent?.trim().toLowerCase();
+                      const isVisible = btn.offsetParent !== null;
+                      return isVisible && (text === 'confirm' || text === 'apply' || text === 'save');
+                    });
+                    if (confirmBtn) {
+                      confirmBtn.click();
+                    }
+                  });
+                  console.log(`[${email}] ✅ Successfully clicked Confirm button`);
+                  await delay(2000);
+                  
+                  // After clicking Confirm, find and click Limit button in the same row as TP/SL button
+                  console.log(`[${email}] Looking for Limit button in Positions table (same row as TP/SL)...`);
+                  const limitButtonClicked = await page.evaluate(() => {
+                    // Find all table elements
+                    const tables = Array.from(document.querySelectorAll('table'));
+                    
+                    for (const table of tables) {
+                      // Find header row
+                      const headerRow = table.querySelector('thead tr, thead > tr, tr:first-child');
+                      if (!headerRow) continue;
+                      
+                      // Find TP/SL column header
+                      const headers = Array.from(headerRow.querySelectorAll('th, td'));
+                      let tpSlColumnIndex = -1;
+                      
+                      for (let i = 0; i < headers.length; i++) {
+                        const headerText = headers[i].textContent?.trim().toLowerCase();
+                        if (headerText && (headerText.includes('tp/sl') || headerText.includes('tp / sl') || headerText.includes('tpsl'))) {
+                          tpSlColumnIndex = i;
+                          break;
+                        }
+                      }
+                      
+                      if (tpSlColumnIndex === -1) continue;
+                      
+                      // Find data rows
+                      const dataRows = Array.from(table.querySelectorAll('tbody tr, tr:not(:first-child)'));
+                      
+                      // Find first data row that has a TP/SL column
+                      for (const row of dataRows) {
+                        const cells = Array.from(row.querySelectorAll('td, th'));
+                        if (cells.length > tpSlColumnIndex) {
+                          const tpSlCell = cells[tpSlColumnIndex];
+                          
+                          // Check if this row has a TP/SL element (indicating it's the row we clicked)
+                          const hasTpSlElement = tpSlCell.querySelector('button, div[role="button"], span[role="button"], a, svg, [onclick], [class*="icon"]');
+                          
+                          if (hasTpSlElement) {
+                            // Now find Limit button in this same row (with capital L)
+                            const limitButton = Array.from(row.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"], a')).find(btn => {
+                              const text = btn.textContent?.trim();
+                              const isVisible = btn.offsetParent !== null && btn.offsetWidth > 0 && btn.offsetHeight > 0;
+                              return isVisible && (text === 'Limit' || text.includes('Limit'));
+                            });
+                            
+                            if (limitButton) {
+                              limitButton.click();
+                              console.log('Found and clicked Limit button in same row as TP/SL');
+                              return true;
+                            }
+                          }
+                        }
+                      }
+                    }
+                    
+                    return false;
+                  });
+                  
+                  if (limitButtonClicked) {
+                    console.log(`[${email}] ✅ Successfully clicked Limit button in Positions table`);
+                    await delay(2000); // Wait for modal to appear
+                    
+                    // Find and click Close Position button in the modal
+                    console.log(`[${email}] Looking for Close Position button in modal...`);
+                    const closePositionClicked = await page.evaluate(() => {
+                      // Find modal/dialog
+                      const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]');
+                      if (!modal) {
+                        console.log('No modal found when looking for Close Position button');
+                        return false;
+                      }
+                      
+                      // Find Close Position button
+                      const buttons = Array.from(modal.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"]'));
+                      const closePositionBtn = buttons.find(btn => {
+                        const text = btn.textContent?.trim();
+                        const isVisible = btn.offsetParent !== null && btn.offsetWidth > 0 && btn.offsetHeight > 0;
+                        return isVisible && (text === 'Close Position' || text.includes('Close Position'));
+                      });
+                      
+                      if (closePositionBtn) {
+                        closePositionBtn.click();
+                        console.log('Found and clicked Close Position button');
+                        return true;
+                      }
+                      
+                      console.log('Close Position button not found in modal');
+                      return false;
+                    });
+                    
+                    if (closePositionClicked) {
+                      console.log(`[${email}] ✅ Successfully clicked Close Position button in modal`);
+                      await delay(1000);
+                    } else {
+                      console.log(`[${email}] ⚠️  Could not find Close Position button in modal`);
+                    }
+                  } else {
+                    console.log(`[${email}] ⚠️  Could not find Limit button in same row as TP/SL`);
+                  }
+                } else {
+                  console.log(`[${email}] ⚠️  Could not find Confirm button in modal`);
+                }
+              } else {
+                console.log(`[${email}] ⚠️  Could not find input element to fill`);
+              }
+            } catch (error) {
+              console.log(`[${email}] ⚠️  Error filling input: ${error.message}`);
+            }
+          } else {
+            console.log(`[${email}] ⚠️  Could not find 5th input: ${stopLossResult.reason || 'unknown'}`);
+            console.log(`[${email}] STOP_LOSS env value: ${process.env.STOP_LOSS || 'not set'}`);
+          }
         } else {
           console.log(`[${email}] Could not find TP/SL column or clickable element in Positions table`);
         }
