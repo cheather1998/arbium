@@ -546,11 +546,37 @@ async function clickOrdersTab(page, email, skipLeverage = false) {
       if (hasOpenPositions) {
         console.log(`[${email}] Open positions detected, proceeding with TP/SL flow...`);
         
-        // Step 4a: Find TP/SL column and click element to add TP/SL
+        // First, check if TP/SL modal is already open (from auto-click listener)
+        console.log(`[${email}] Checking if TP/SL modal is already open...`);
+        const tpSlModalAlreadyOpen = await page.evaluate(() => {
+          const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]'));
+          for (const modal of modals) {
+            const style = window.getComputedStyle(modal);
+            const isVisible = modal.offsetParent !== null && 
+                             style.display !== 'none' && 
+                             style.visibility !== 'hidden';
+            if (isVisible) {
+              const text = modal.textContent || '';
+              if (text.includes('TP/SL') || text.includes('Take Profit') || text.includes('Stop Loss')) {
+                return true; // TP/SL modal is already open
+              }
+            }
+          }
+          return false;
+        });
         
-        // Look for TP/SL column in table and click any element/button in that column
-        console.log(`[${email}] Looking for TP/SL column in Positions table...`);
-        const tpSlClicked = await page.evaluate(() => {
+        if (tpSlModalAlreadyOpen) {
+          console.log(`[${email}] ✅ TP/SL modal is already open (likely from auto-click listener), proceeding to fill it...`);
+          // Don't click TP/SL button again, just proceed to fill the modal
+        } else {
+          // Step 4a: Find TP/SL column and click element to add TP/SL
+          // Look for TP/SL column in table and click any element/button in that column
+          console.log(`[${email}] TP/SL modal not open, looking for TP/SL column in Positions table...`);
+        }
+        
+        const tpSlClicked = await page.evaluate((skipClick) => {
+          if (skipClick) return false; // Skip clicking if modal is already open
+          
           // Find all table elements
           const tables = Array.from(document.querySelectorAll('table'));
           
@@ -605,153 +631,235 @@ async function clickOrdersTab(page, email, skipLeverage = false) {
           }
           
           return false;
-        });
+        }, tpSlModalAlreadyOpen);
         
-        if (tpSlClicked) {
-          console.log(`[${email}] Clicked TP/SL button to add TP/SL`);
-          console.log(`[${email}] Clicked element in TP/SL column of Positions table`);
-          await delay(2000); // Wait for modal to appear
+        if (tpSlClicked || tpSlModalAlreadyOpen) {
+          if (tpSlModalAlreadyOpen) {
+            console.log(`[${email}] ✅ TP/SL modal already open (from auto-click listener), proceeding to fill it...`);
+            await delay(1000); // Brief delay to ensure modal is ready
+          } else {
+            console.log(`[${email}] Clicked TP/SL button to add TP/SL`);
+            console.log(`[${email}] Clicked element in TP/SL column of Positions table`);
+            console.log(`[${email}] Waiting after TP/SL button click...`);
+            await delay(2000); // Wait for modal to appear
+            console.log(`[${email}] ✓ Delay completed after TP/SL button click`);
+          }
           
-          // Handle TP/SL modal: Find the 5th input in the modal and fill with STOP_LOSS value
-          console.log(`[${email}] Looking for TP/SL modal and 5th input...`);
-          const stopLossResult = await page.evaluate((stopLossValue) => {
-            // Find modal/dialog
-            const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]');
-            if (!modal) {
-              console.log('No modal found');
-              return { success: false, reason: 'No modal found' };
-            }
-            
-            // Find all input fields in the modal (excluding hidden inputs)
-            const allInputs = Array.from(modal.querySelectorAll('input[type="text"], input[type="number"], input:not([type="hidden"]), input[data-part="input"]'));
-            
-            // Filter out disabled or readonly inputs that might not be interactive
-            const interactiveInputs = allInputs.filter(input => {
-              return !input.disabled && !input.readOnly && input.offsetParent !== null;
-            });
-            
-            console.log(`Found ${interactiveInputs.length} interactive inputs in modal`);
-            
-            // Get the 5th input (index 4)
-            let stopLossInput = null;
-            if (interactiveInputs.length >= 5) {
-              stopLossInput = interactiveInputs[4]; // 5th input (index 4)
-              console.log(`Found 5th input in modal (index 4 of ${interactiveInputs.length} inputs)`);
-            } else if (interactiveInputs.length > 0) {
-              // If less than 5 inputs, use the last one
-              stopLossInput = interactiveInputs[interactiveInputs.length - 1];
-              console.log(`Only ${interactiveInputs.length} inputs found, using last input (index ${interactiveInputs.length - 1})`);
-            } else {
-              // Try to find any input-like elements
-              const allInputLike = Array.from(modal.querySelectorAll('input, [contenteditable="true"], [role="textbox"]'));
-              const interactiveInputLike = allInputLike.filter(el => {
-                return !el.disabled && !el.readOnly && el.offsetParent !== null;
-              });
-              
-              if (interactiveInputLike.length >= 5) {
-                stopLossInput = interactiveInputLike[4];
-                console.log(`Found 5th input-like element in modal`);
-              } else if (interactiveInputLike.length > 0) {
-                stopLossInput = interactiveInputLike[interactiveInputLike.length - 1];
-                console.log(`Using last input-like element (${interactiveInputLike.length} found)`);
-              }
-            }
-            
-            if (!stopLossInput) {
-              console.log(`Could not find 5th input in modal. Total inputs found: ${allInputs.length}`);
-              return { success: false, reason: `Input #5 not found. Only ${allInputs.length} inputs available.` };
-            }
-            
-            // Return the input element info so we can use Puppeteer to type
-            const inputInfo = {
-              id: stopLossInput.id,
-              className: stopLossInput.className,
-              dataPart: stopLossInput.getAttribute('data-part'),
-              placeholder: stopLossInput.placeholder,
-              type: stopLossInput.type
-            };
-            
-            console.log(`Found input to fill:`, inputInfo);
-            return { success: true, inputInfo: inputInfo, inputFound: true };
-            
-            // Find and click Confirm button
-            const confirmButton = Array.from(modal.querySelectorAll('button, div[role="button"], span[role="button"]')).find(btn => {
-              const text = btn.textContent?.trim().toLowerCase();
-              return text === 'confirm' || text === 'apply' || text === 'save';
-            });
-            
-            if (confirmButton) {
-              confirmButton.click();
-              console.log('Clicked Confirm button');
-              return { success: true, filled: true, confirmed: true };
-            } else {
-              console.log('Could not find Confirm button');
-              return { success: true, filled: true, confirmed: false, reason: 'Confirm button not found' };
-            }
-          }, process.env.STOP_LOSS || '');
+          // Detect exchange type to use appropriate TP/SL input finding method
+          const currentUrl = page.url();
+          const isExtendedExchange = currentUrl.includes('extended.exchange');
+          const isParadex = currentUrl.includes('paradex.trade') || !isExtendedExchange;
           
-          if (stopLossResult.success && stopLossResult.inputFound) {
-            // Use Puppeteer to click and type into the input
-            console.log(`[${email}] Clicking and typing into the 5th input...`);
+          if (isParadex) {
+            // For Paradex: Use method from handleTpSlAddButtonClick - find input with "Loss" and "%" in nearby text
+            console.log(`[${email}] Paradex detected - using Paradex-specific TP/SL input finding method...`);
             const stopLossValue = process.env.STOP_LOSS || '';
             
-            try {
-              // Find the input using the info we got
-              let inputElement = null;
-              
-              // Try multiple strategies to find the input
-              if (stopLossResult.inputInfo.id) {
-                inputElement = await page.$(`#${stopLossResult.inputInfo.id}`);
-              }
-              
-              if (!inputElement && stopLossResult.inputInfo.dataPart) {
-                inputElement = await page.$(`input[data-part="${stopLossResult.inputInfo.dataPart}"]`);
-              }
-              
-              // Fallback: find 5th input again using Puppeteer
-              if (!inputElement) {
-                const inputs = await page.$$('input[type="text"], input[type="number"], input:not([type="hidden"]), input[data-part="input"]');
-                const interactiveInputs = [];
-                for (const input of inputs) {
-                  const isVisible = await input.evaluate(el => el.offsetParent !== null && !el.disabled && !el.readOnly);
-                  if (isVisible) {
-                    interactiveInputs.push(input);
+            if (!stopLossValue) {
+              console.log(`[${email}] ⚠️  STOP_LOSS env variable not set!`);
+              return ordersTabClicked;
+            }
+            
+            // Find the input element using evaluateHandle (Paradex method)
+            const slInputHandle = await page.evaluateHandle(() => {
+              // Find TP/SL modal specifically
+              const modals = Array.from(document.querySelectorAll('[class*="modal"], [role="dialog"]'));
+              let modal = null;
+              for (const m of modals) {
+                const style = window.getComputedStyle(m);
+                const isVisible = m.offsetParent !== null && 
+                                 style.display !== 'none' && 
+                                 style.visibility !== 'hidden';
+                if (isVisible) {
+                  const text = m.textContent || '';
+                  if (text.includes('TP/SL') || text.includes('Take Profit') || text.includes('Stop Loss')) {
+                    modal = m;
+                    break;
                   }
                 }
-                if (interactiveInputs.length >= 5) {
-                  inputElement = interactiveInputs[4]; // 5th input
-                } else if (interactiveInputs.length > 0) {
-                  inputElement = interactiveInputs[interactiveInputs.length - 1];
-                }
               }
               
-              if (inputElement) {
-                // Click the input to focus it
-                await inputElement.click({ delay: 100 });
-                await delay(300);
+              if (!modal) return null;
+              
+              // Find all inputs in modal
+              const inputs = Array.from(modal.querySelectorAll('input'));
+              
+              // Find input with "Loss" and "%" in nearby text (Paradex-specific)
+              for (const input of inputs) {
+                const parentText = input.parentElement?.textContent || '';
+                const nearbyText = parentText + ' ' + (input.previousElementSibling?.textContent || '') + ' ' + (input.nextElementSibling?.textContent || '');
                 
-                // Clear existing value
+                // Look for input near "Loss" label with "%" dropdown
+                if (nearbyText.includes('Loss') && nearbyText.includes('%') && !nearbyText.includes('USD')) {
+                  return input;
+                }
+              }
+              return null;
+            });
+            
+            if (slInputHandle && slInputHandle.asElement()) {
+              try {
+                const inputElement = slInputHandle.asElement();
+                
+                // Focus and clear the input
                 await inputElement.click({ clickCount: 3 }); // Triple click to select all
-                await page.keyboard.press('Backspace');
-                await delay(200);
-                
-                // Type the value
-                await inputElement.type(stopLossValue, { delay: 50 });
-                
-                // Trigger additional events
-                await inputElement.evaluate((el, val) => {
-                  el.dispatchEvent(new Event('input', { bubbles: true }));
-                  el.dispatchEvent(new Event('change', { bubbles: true }));
-                  el.dispatchEvent(new Event('blur', { bubbles: true }));
-                }, stopLossValue);
-                
-                console.log(`[${email}] ✅ Successfully filled stop loss input with value: ${stopLossValue}`);
+                await page.keyboard.press('Backspace'); // Clear selected text
+                await inputElement.type(stopLossValue, { delay: 30 }); // Use exact string value from env
+                await page.keyboard.press('Tab'); // Trigger blur to calculate USD
+                await delay(300);
+                console.log(`[${email}] ✅ Successfully filled Stop Loss percentage using Paradex method`);
                 
                 // Wait 100ms after entering value
                 await delay(100);
+              } catch (error) {
+                console.log(`[${email}] ⚠️  Error filling Stop Loss input: ${error.message}`);
+                return ordersTabClicked;
+              }
+            } else {
+              console.log(`[${email}] ⚠️  Could not find Stop Loss input using Paradex method`);
+              return ordersTabClicked;
+            }
+          } else {
+            // For Extended Exchange: Use 5th input method
+            console.log(`[${email}] Extended Exchange detected - using 5th input method...`);
+            const stopLossResult = await page.evaluate((stopLossValue) => {
+              // Find modal/dialog
+              const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]');
+              if (!modal) {
+                console.log('No modal found');
+                return { success: false, reason: 'No modal found' };
+              }
+              
+              // Find all input fields in the modal (excluding hidden inputs)
+              const allInputs = Array.from(modal.querySelectorAll('input[type="text"], input[type="number"], input:not([type="hidden"]), input[data-part="input"]'));
+              
+              // Filter out disabled or readonly inputs that might not be interactive
+              const interactiveInputs = allInputs.filter(input => {
+                return !input.disabled && !input.readOnly && input.offsetParent !== null;
+              });
+              
+              console.log(`Found ${interactiveInputs.length} interactive inputs in modal`);
+              
+              // Get the 5th input (index 4) - Extended Exchange method
+              let stopLossInput = null;
+              if (interactiveInputs.length >= 5) {
+                stopLossInput = interactiveInputs[4]; // 5th input (index 4)
+                console.log(`Found 5th input in modal (index 4 of ${interactiveInputs.length} inputs)`);
+              } else if (interactiveInputs.length > 0) {
+                // If less than 5 inputs, use the last one
+                stopLossInput = interactiveInputs[interactiveInputs.length - 1];
+                console.log(`Only ${interactiveInputs.length} inputs found, using last input (index ${interactiveInputs.length - 1})`);
+              } else {
+                // Try to find any input-like elements
+                const allInputLike = Array.from(modal.querySelectorAll('input, [contenteditable="true"], [role="textbox"]'));
+                const interactiveInputLike = allInputLike.filter(el => {
+                  return !el.disabled && !el.readOnly && el.offsetParent !== null;
+                });
                 
-                // Find and click Confirm button in modal
-                console.log(`[${email}] Looking for Confirm button in modal...`);
+                if (interactiveInputLike.length >= 5) {
+                  stopLossInput = interactiveInputLike[4];
+                  console.log(`Found 5th input-like element in modal`);
+                } else if (interactiveInputLike.length > 0) {
+                  stopLossInput = interactiveInputLike[interactiveInputLike.length - 1];
+                  console.log(`Using last input-like element (${interactiveInputLike.length} found)`);
+                }
+              }
+              
+              if (!stopLossInput) {
+                console.log(`Could not find 5th input in modal. Total inputs found: ${allInputs.length}`);
+                return { success: false, reason: `Input #5 not found. Only ${allInputs.length} inputs available.` };
+              }
+              
+              // Return the input element info so we can use Puppeteer to type
+              const inputInfo = {
+                id: stopLossInput.id,
+                className: stopLossInput.className,
+                dataPart: stopLossInput.getAttribute('data-part'),
+                placeholder: stopLossInput.placeholder,
+                type: stopLossInput.type
+              };
+              
+              console.log(`Found input to fill:`, inputInfo);
+              return { success: true, inputInfo: inputInfo, inputFound: true };
+            }, process.env.STOP_LOSS || '');
+            
+            if (stopLossResult.success && stopLossResult.inputFound) {
+              // Use Puppeteer to click and type into the input
+              console.log(`[${email}] Clicking and typing into the 5th input (Extended Exchange method)...`);
+              const stopLossValue = process.env.STOP_LOSS || '';
+              
+              try {
+                // Find the input using the info we got
+                let inputElement = null;
+                
+                // Try multiple strategies to find the input
+                if (stopLossResult.inputInfo.id) {
+                  inputElement = await page.$(`#${stopLossResult.inputInfo.id}`);
+                }
+                
+                if (!inputElement && stopLossResult.inputInfo.dataPart) {
+                  inputElement = await page.$(`input[data-part="${stopLossResult.inputInfo.dataPart}"]`);
+                }
+                
+                // Fallback: find 5th input again using Puppeteer
+                if (!inputElement) {
+                  const inputs = await page.$$('input[type="text"], input[type="number"], input:not([type="hidden"]), input[data-part="input"]');
+                  const interactiveInputs = [];
+                  for (const input of inputs) {
+                    const isVisible = await input.evaluate(el => el.offsetParent !== null && !el.disabled && !el.readOnly);
+                    if (isVisible) {
+                      interactiveInputs.push(input);
+                    }
+                  }
+                  if (interactiveInputs.length >= 5) {
+                    inputElement = interactiveInputs[4]; // 5th input
+                  } else if (interactiveInputs.length > 0) {
+                    inputElement = interactiveInputs[interactiveInputs.length - 1];
+                  }
+                }
+                
+                if (inputElement) {
+                  // Click the input to focus it
+                  await inputElement.click({ delay: 100 });
+                  await delay(300);
+                  
+                  // Clear existing value
+                  await inputElement.click({ clickCount: 3 }); // Triple click to select all
+                  await page.keyboard.press('Backspace');
+                  await delay(200);
+                  
+                  // Type the value
+                  await inputElement.type(stopLossValue, { delay: 50 });
+                  
+                  // Trigger additional events
+                  await inputElement.evaluate((el, val) => {
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                    el.dispatchEvent(new Event('blur', { bubbles: true }));
+                  }, stopLossValue);
+                  
+                  console.log(`[${email}] ✅ Successfully filled stop loss input with value: ${stopLossValue}`);
+                  
+                  // Wait 100ms after entering value
+                  await delay(100);
+                } else {
+                  console.log(`[${email}] ⚠️  Could not find input element to fill`);
+                  return ordersTabClicked;
+                }
+              } catch (error) {
+                console.log(`[${email}] ⚠️  Error filling input: ${error.message}`);
+                return ordersTabClicked;
+              }
+            } else {
+              console.log(`[${email}] ⚠️  Could not find 5th input: ${stopLossResult.reason || 'unknown'}`);
+              return ordersTabClicked;
+            }
+          }
+          
+          // Common code for both exchanges: Find and click Confirm button
+          try {
+            // Find and click Confirm button in modal
+            console.log(`[${email}] Looking for Confirm button in modal...`);
                 const confirmButton = await page.evaluate(() => {
                   const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]');
                   if (!modal) {
@@ -773,26 +881,106 @@ async function clickOrdersTab(page, email, skipLeverage = false) {
                 });
                 
                 if (confirmButton) {
-                  // Click the Confirm button
-                  await page.evaluate(() => {
-                    const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]');
-                    if (!modal) return;
-                    const buttons = Array.from(modal.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"]'));
+                  // CRITICAL: Click the TP/SL Confirm button and wait for it to complete
+                  // This MUST happen BEFORE clicking Limit button
+                  console.log(`[${email}] Clicking TP/SL Confirm button...`);
+                  const confirmClicked = await page.evaluate(() => {
+                    // Find TP/SL modal specifically (not Limit modal)
+                    const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]'));
+                    let tpslModal = null;
+                    for (const m of modals) {
+                      const style = window.getComputedStyle(m);
+                      const isVisible = m.offsetParent !== null && 
+                                       style.display !== 'none' && 
+                                       style.visibility !== 'hidden';
+                      if (isVisible) {
+                        const text = m.textContent || '';
+                        // Make sure this is TP/SL modal, not Limit modal
+                        if ((text.includes('TP/SL') || text.includes('Take Profit') || text.includes('Stop Loss')) && 
+                            !text.includes('Close Position') && !text.includes('Limit')) {
+                          tpslModal = m;
+                          break;
+                        }
+                      }
+                    }
+                    
+                    if (!tpslModal) {
+                      console.log('TP/SL modal not found when trying to click Confirm');
+                      return false;
+                    }
+                    
+                    // Find Confirm button in TP/SL modal
+                    const buttons = Array.from(tpslModal.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"]'));
                     const confirmBtn = buttons.find(btn => {
                       const text = btn.textContent?.trim().toLowerCase();
-                      const isVisible = btn.offsetParent !== null;
+                      const isVisible = btn.offsetParent !== null && btn.offsetWidth > 0 && btn.offsetHeight > 0;
                       return isVisible && (text === 'confirm' || text === 'apply' || text === 'save');
                     });
+                    
                     if (confirmBtn) {
                       confirmBtn.click();
+                      console.log('Clicked TP/SL Confirm button');
+                      return true;
                     }
+                    
+                    console.log('Confirm button not found in TP/SL modal');
+                    return false;
                   });
-                  console.log(`[${email}] ✅ Successfully clicked Confirm button`);
-                  await delay(2000);
                   
-                  // After clicking Confirm, find and click Limit button in the same row as TP/SL button
+                  if (!confirmClicked) {
+                    console.log(`[${email}] ⚠️  Failed to click TP/SL Confirm button - NOT proceeding to Limit button`);
+                    // Don't proceed to Limit if Confirm wasn't clicked
+                    return ordersTabClicked;
+                  }
+                  
+                  console.log(`[${email}] ✅ Successfully clicked TP/SL Confirm button`);
+                  console.log(`[${email}] Waiting 3-4 seconds after TP/SL confirm click before proceeding to Limit...`);
+                  await delay(3500); // Wait 3.5 seconds after confirming TP/SL (3-4 second range)
+                  console.log(`[${email}] ✓ 3.5 second delay completed after TP/SL confirm`);
+                  
+                  // CRITICAL: Verify TP/SL modal is actually closed before clicking Limit button
+                  console.log(`[${email}] Verifying TP/SL modal is closed before proceeding to Limit button...`);
+                  let tpSlModalClosed = false;
+                  let modalCheckAttempts = 0;
+                  const maxModalChecks = 15; // Check up to 15 times (15 seconds)
+                  
+                  while (!tpSlModalClosed && modalCheckAttempts < maxModalChecks) {
+                    await delay(1000); // Wait 1 second between checks
+                    modalCheckAttempts++;
+                    
+                    tpSlModalClosed = await page.evaluate(() => {
+                      const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]'));
+                      // Check if any modal contains TP/SL related text
+                      for (const modal of modals) {
+                        const style = window.getComputedStyle(modal);
+                        const isVisible = modal.offsetParent !== null && 
+                                         style.display !== 'none' && 
+                                         style.visibility !== 'hidden';
+                        if (isVisible) {
+                          const text = modal.textContent || '';
+                          if (text.includes('TP/SL') || text.includes('Take Profit') || text.includes('Stop Loss')) {
+                            return false; // TP/SL modal still open
+                          }
+                        }
+                      }
+                      return true; // No TP/SL modal found, it's closed
+                    });
+                    
+                    if (!tpSlModalClosed) {
+                      console.log(`[${email}] TP/SL modal still open (attempt ${modalCheckAttempts}/${maxModalChecks}), waiting...`);
+                    }
+                  }
+                  
+                  if (tpSlModalClosed) {
+                    console.log(`[${email}] ✅ TP/SL modal is confirmed closed, proceeding to Limit button...`);
+                  } else {
+                    console.log(`[${email}] ⚠️  TP/SL modal may still be open after ${maxModalChecks} seconds, but proceeding to Limit button...`);
+                  }
+                  
+                  // Only proceed to click Limit button after TP/SL modal is confirmed closed
+                  // After TP/SL modal is closed, find and click Limit button in the same row as TP/SL button
                   console.log(`[${email}] Looking for Limit button in Positions table (same row as TP/SL)...`);
-                  const limitButtonClicked = await page.evaluate(() => {
+                  const limitButtonResult = await page.evaluate(() => {
                     // Find all table elements
                     const tables = Array.from(document.querySelectorAll('table'));
                     
@@ -848,9 +1036,11 @@ async function clickOrdersTab(page, email, skipLeverage = false) {
                     return false;
                   });
                   
-                  if (limitButtonClicked) {
+                  if (limitButtonResult) {
                     console.log(`[${email}] ✅ Successfully clicked Limit button in Positions table`);
+                    console.log(`[${email}] Waiting after Limit button click...`);
                     await delay(2000); // Wait for modal to appear
+                    console.log(`[${email}] ✓ Delay completed after Limit button click`);
                     
                     // Find and click Close Position button in the modal
                     console.log(`[${email}] Looking for Close Position button in modal...`);
@@ -882,11 +1072,38 @@ async function clickOrdersTab(page, email, skipLeverage = false) {
                     
                     if (closePositionClicked) {
                       console.log(`[${email}] ✅ Successfully clicked Close Position button in modal`);
-                      await delay(1000);
+                      await delay(1000); // Brief delay before looking for Confirm button
                       
-                      // Wait 10 seconds after closing position, then check if positions are still open
-                      console.log(`[${email}] Waiting 10 seconds after closing position...`);
+                      // Find and click Confirm button in the Limit modal (after Close Position)
+                      console.log(`[${email}] Looking for Confirm button in Limit modal...`);
+                      const confirmInLimitModal = await page.evaluate(() => {
+                        const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]');
+                        if (!modal) return false;
+                        const buttons = Array.from(modal.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"]'));
+                        const confirmBtn = buttons.find(btn => {
+                          const text = btn.textContent?.trim().toLowerCase();
+                          const isVisible = btn.offsetParent !== null && btn.offsetWidth > 0 && btn.offsetHeight > 0;
+                          return isVisible && (text === 'confirm' || text === 'apply' || text === 'save');
+                        });
+                        if (confirmBtn) {
+                          confirmBtn.click();
+                          return true;
+                        }
+                        return false;
+                      });
+                      
+                      if (confirmInLimitModal) {
+                        console.log(`[${email}] ✅ Successfully clicked Confirm button in Limit modal`);
+                        await delay(2000);
+                      } else {
+                        console.log(`[${email}] ⚠️  Could not find Confirm button in Limit modal, continuing...`);
+                        await delay(1000);
+                      }
+                      
+                      // Wait 10 seconds after confirming Limit close, then check if positions are still open
+                      console.log(`[${email}] Waiting 10 seconds after confirming Limit close...`);
                       await delay(10000); // Wait 10 seconds
+                      console.log(`[${email}] ✓ 10 second wait completed after Limit close`);
                       
                       // Now check if there are any open positions still remaining
                       console.log(`[${email}] Checking if positions are still open after 10 seconds...`);
@@ -1100,24 +1317,9 @@ async function clickOrdersTab(page, email, skipLeverage = false) {
                     await handleClosePositionsAndSetLeverage(page, email);
                   }
                 }
-              } else {
-                console.log(`[${email}] ⚠️  Could not find input element to fill`);
-                // If input not found, try to close all positions
-                if (!skipLeverage) {
-                  await handleClosePositionsAndSetLeverage(page, email);
-                }
-              }
-            } catch (error) {
-              console.log(`[${email}] ⚠️  Error filling input: ${error.message}`);
-              // On error, try to close all positions
-              if (!skipLeverage) {
-                await handleClosePositionsAndSetLeverage(page, email);
-              }
-            }
-          } else {
-            console.log(`[${email}] ⚠️  Could not find 5th input: ${stopLossResult.reason || 'unknown'}`);
-            console.log(`[${email}] STOP_LOSS env value: ${process.env.STOP_LOSS || 'not set'}`);
-            // If input not found, try to close all positions
+          } catch (error) {
+            console.log(`[${email}] ⚠️  Error in TP/SL flow: ${error.message}`);
+            // On error, try to close all positions
             if (!skipLeverage) {
               await handleClosePositionsAndSetLeverage(page, email);
             }
@@ -3511,6 +3713,9 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null) {
   await delay(1000);
 
   // Click on Positions tab to see open positions
+  // IMPORTANT: For Paradex, we need to stay on Positions tab throughout the entire flow
+  // Do NOT navigate to Orders tab - we need Positions tab for TP/SL and Limit button
+  console.log(`[${exchange.name}] Navigating to Positions tab (will stay here for TP/SL and Limit button)...`);
   const positionsTab = await findByExactText(page, exchange.selectors.positionsTab, [
     "button",
     "div",
@@ -3518,8 +3723,10 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null) {
   ]);
   if (positionsTab) {
     await positionsTab.click();
-    console.log("Clicked Positions tab");
+    console.log(`[${exchange.name}] ✓ Clicked Positions tab - will stay here for TP/SL and Limit button`);
     await delay(1000); // Reduced from 2000ms - wait for positions to load
+  } else {
+    console.log(`[${exchange.name}] ⚠️  Could not find Positions tab`);
   }
 
   // Check if there are any open positions
@@ -3552,18 +3759,403 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null) {
     return { success: true, message: "No positions to close" };
   }
 
-  // If we reach here, positions exist - first try Limit button, then fallback to Close All
-  console.log("✓ Positions found - proceeding to close them...");
+  // If we reach here, positions exist - FIRST add TP/SL, then close using Limit, then fallback to Close All
+  console.log("✓ Positions found - proceeding to add TP/SL first, then close them...");
   
   // Wait a bit more for UI to fully render
   await delay(500);
 
-  // Step 1: FIRST - Look for Limit button in Positions table Close column BEFORE any Close All button logic
+  // Step 0: For Paradex - Add TP/SL before closing positions
+  let tpSlCompleted = false; // Track if TP/SL was successfully completed and modal is closed
+  if (exchange.name === 'Paradex') {
+    console.log(`\n[Paradex] Step 0: Adding TP/SL before closing positions...`);
+    
+    // Check if TP/SL modal is already open
+    const tpSlModalAlreadyOpen = await page.evaluate(() => {
+      const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]'));
+      for (const modal of modals) {
+        const style = window.getComputedStyle(modal);
+        const isVisible = modal.offsetParent !== null && 
+                         style.display !== 'none' && 
+                         style.visibility !== 'hidden';
+        if (isVisible) {
+          const text = modal.textContent || '';
+          if (text.includes('TP/SL') || text.includes('Take Profit') || text.includes('Stop Loss')) {
+            return true; // TP/SL modal is already open
+          }
+        }
+      }
+      return false;
+    });
+    
+    if (!tpSlModalAlreadyOpen) {
+      // Find and click TP/SL button in Positions table
+      console.log(`[Paradex] Looking for TP/SL button in Positions table...`);
+      const tpSlClicked = await page.evaluate(() => {
+        // Find all table elements
+        const tables = Array.from(document.querySelectorAll('table'));
+        
+        for (const table of tables) {
+          // Find header row
+          const headerRow = table.querySelector('thead tr, thead > tr, tr:first-child');
+          if (!headerRow) continue;
+          
+          // Find TP/SL column header
+          const headers = Array.from(headerRow.querySelectorAll('th, td'));
+          let tpSlColumnIndex = -1;
+          
+          for (let i = 0; i < headers.length; i++) {
+            const headerText = headers[i].textContent?.trim().toLowerCase();
+            if (headerText && (headerText.includes('tp/sl') || headerText.includes('tp / sl') || headerText.includes('tpsl'))) {
+              tpSlColumnIndex = i;
+              break;
+            }
+          }
+          
+          if (tpSlColumnIndex === -1) continue;
+          
+          // Find data rows
+          const dataRows = Array.from(table.querySelectorAll('tbody tr, tr:not(:first-child)'));
+          
+          // Find first data row and click any clickable element in TP/SL column
+          for (const row of dataRows) {
+            const cells = Array.from(row.querySelectorAll('td, th'));
+            if (cells.length > tpSlColumnIndex) {
+              const tpSlCell = cells[tpSlColumnIndex];
+              
+              // Look for any clickable element in this cell
+              const clickableElements = tpSlCell.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"], a, div, span, svg, [onclick], [class*="icon"], [class*="Icon"]');
+              
+              for (const element of clickableElements) {
+                if (element.offsetParent !== null && element.offsetWidth > 0 && element.offsetHeight > 0) {
+                  element.click();
+                  return true;
+                }
+              }
+              
+              // If no clickable element found, try clicking the cell itself
+              if (tpSlCell.offsetParent !== null) {
+                tpSlCell.click();
+                return true;
+              }
+            }
+          }
+        }
+        
+        return false;
+      });
+      
+      if (tpSlClicked) {
+        console.log(`[Paradex] ✅ Clicked TP/SL button`);
+        await delay(2000); // Wait for modal to appear
+      } else {
+        console.log(`[Paradex] ⚠️  Could not find TP/SL button, proceeding to close positions without TP/SL`);
+      }
+    } else {
+      console.log(`[Paradex] ✅ TP/SL modal already open, proceeding to fill it...`);
+      await delay(1000);
+    }
+    
+    // Fill TP/SL modal with STOP_LOSS value (Paradex method)
+    const stopLossValue = process.env.STOP_LOSS || '';
+    if (stopLossValue) {
+      console.log(`[Paradex] Filling TP/SL modal with STOP_LOSS value: ${stopLossValue}`);
+      
+      // Find the input element using evaluateHandle (Paradex method)
+      const slInputHandle = await page.evaluateHandle(() => {
+        // Find TP/SL modal specifically
+        const modals = Array.from(document.querySelectorAll('[class*="modal"], [role="dialog"]'));
+        let modal = null;
+        for (const m of modals) {
+          const style = window.getComputedStyle(m);
+          const isVisible = m.offsetParent !== null && 
+                           style.display !== 'none' && 
+                           style.visibility !== 'hidden';
+          if (isVisible) {
+            const text = m.textContent || '';
+            if (text.includes('TP/SL') || text.includes('Take Profit') || text.includes('Stop Loss')) {
+              modal = m;
+              break;
+            }
+          }
+        }
+        
+        if (!modal) return null;
+        
+        // Find all inputs in modal
+        const inputs = Array.from(modal.querySelectorAll('input'));
+        
+        // Find input with "Loss" and "%" in nearby text (Paradex-specific)
+        for (const input of inputs) {
+          const parentText = input.parentElement?.textContent || '';
+          const nearbyText = parentText + ' ' + (input.previousElementSibling?.textContent || '') + ' ' + (input.nextElementSibling?.textContent || '');
+          
+          // Look for input near "Loss" label with "%" dropdown
+          if (nearbyText.includes('Loss') && nearbyText.includes('%') && !nearbyText.includes('USD')) {
+            return input;
+          }
+        }
+        return null;
+      });
+      
+      if (slInputHandle && slInputHandle.asElement()) {
+        try {
+          const inputElement = slInputHandle.asElement();
+          
+          // Focus and clear the input
+          await inputElement.click({ clickCount: 3 }); // Triple click to select all
+          await page.keyboard.press('Backspace'); // Clear selected text
+          await inputElement.type(stopLossValue, { delay: 30 }); // Use exact string value from env
+          await page.keyboard.press('Tab'); // Trigger blur to calculate USD
+          await delay(500);
+          console.log(`[Paradex] ✅ Successfully filled Stop Loss percentage`);
+          
+          // Wait for USD calculation
+          await delay(1000);
+        } catch (error) {
+          console.log(`[Paradex] ⚠️  Error filling Stop Loss input: ${error.message}`);
+        }
+      } else {
+        console.log(`[Paradex] ⚠️  Could not find Stop Loss input`);
+      }
+      
+      // Click Confirm button in TP/SL modal
+      console.log(`[Paradex] 🔍 Looking for Confirm button in TP/SL modal...`);
+      await delay(500); // Small delay to ensure modal is fully rendered after value entry
+      
+      // Try multiple strategies to find and click Confirm button
+      let confirmClicked = false;
+      
+      // Strategy 1: Use page.evaluate to find and click
+      const confirmResult = await page.evaluate(() => {
+        // Find TP/SL modal specifically
+        const modals = Array.from(document.querySelectorAll('[class*="modal"], [role="dialog"], [class*="Modal"], [class*="Dialog"]'));
+        let tpslModal = null;
+        
+        for (const m of modals) {
+          const style = window.getComputedStyle(m);
+          const isVisible = m.offsetParent !== null && 
+                           style.display !== 'none' && 
+                           style.visibility !== 'hidden';
+          if (isVisible) {
+            const text = m.textContent || '';
+            if ((text.includes('TP/SL') || text.includes('Take Profit') || text.includes('Stop Loss')) && 
+                !text.includes('Close Position') && !text.includes('Limit')) {
+              tpslModal = m;
+              break;
+            }
+          }
+        }
+        
+        if (!tpslModal) {
+          console.log('TP/SL modal not found when trying to click Confirm');
+          return { found: false, reason: 'Modal not found' };
+        }
+        
+        // Find all buttons in TP/SL modal
+        const buttons = Array.from(tpslModal.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"]'));
+        console.log(`Found ${buttons.length} buttons in TP/SL modal`);
+        
+        // Log all button texts for debugging
+        buttons.forEach((btn, idx) => {
+          const text = btn.textContent?.trim();
+          const isVisible = btn.offsetParent !== null && btn.offsetWidth > 0 && btn.offsetHeight > 0;
+          if (isVisible) {
+            console.log(`  Button ${idx}: "${text}" (visible: ${isVisible})`);
+          }
+        });
+        
+        // Find Confirm button - try exact match first
+        let confirmBtn = buttons.find(btn => {
+          const text = btn.textContent?.trim().toLowerCase();
+          const isVisible = btn.offsetParent !== null && btn.offsetWidth > 0 && btn.offsetHeight > 0;
+          return isVisible && text === 'confirm';
+        });
+        
+        // If not found, try partial match
+        if (!confirmBtn) {
+          confirmBtn = buttons.find(btn => {
+            const text = btn.textContent?.trim().toLowerCase();
+            const isVisible = btn.offsetParent !== null && btn.offsetWidth > 0 && btn.offsetHeight > 0;
+            return isVisible && (text.includes('confirm') || text === 'apply' || text === 'save');
+          });
+        }
+        
+        if (confirmBtn) {
+          console.log(`Found Confirm button: "${confirmBtn.textContent?.trim()}"`);
+          confirmBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          confirmBtn.click();
+          console.log('Clicked TP/SL Confirm button');
+          return { found: true, buttonText: confirmBtn.textContent?.trim() };
+        }
+        
+        console.log('Confirm button not found in TP/SL modal');
+        return { found: false, reason: 'Confirm button not found', buttonCount: buttons.length };
+      });
+      
+      if (confirmResult.found) {
+        confirmClicked = true;
+        console.log(`[Paradex] ✅ Successfully clicked Confirm button: "${confirmResult.buttonText}"`);
+      } else {
+        console.log(`[Paradex] ⚠️  Strategy 1 failed: ${confirmResult.reason || 'unknown'}`);
+        
+        // Strategy 2: Use Puppeteer to find button by text
+        console.log(`[Paradex] Strategy 2: Trying to find Confirm button using Puppeteer...`);
+        try {
+          const confirmButton = await findByText(page, 'Confirm', ['button', 'div', 'span']);
+          if (confirmButton) {
+            const buttonText = await page.evaluate(el => el.textContent?.trim(), confirmButton);
+            console.log(`[Paradex] Found Confirm button via Puppeteer: "${buttonText}"`);
+            await confirmButton.click();
+            confirmClicked = true;
+            console.log(`[Paradex] ✅ Successfully clicked Confirm button via Puppeteer`);
+          }
+        } catch (error) {
+          console.log(`[Paradex] ⚠️  Strategy 2 failed: ${error.message}`);
+        }
+      }
+      
+      if (confirmClicked) {
+        console.log(`[Paradex] ✅ Successfully clicked TP/SL Confirm button`);
+        console.log(`[Paradex] Waiting 2-3 seconds after TP/SL confirm before proceeding to Limit button...`);
+        await delay(2500); // Wait 2.5 seconds (2-3 second range) after confirming TP/SL
+        
+        // Verify TP/SL modal is closed - check more frequently with shorter intervals
+        let tpSlModalClosed = false;
+        const maxChecks = 8; // Reduced from 10 to 8
+        const checkInterval = 500; // Reduced from 1000ms to 500ms for faster checking
+        
+        for (let i = 0; i < maxChecks; i++) {
+          await delay(checkInterval);
+          tpSlModalClosed = await page.evaluate(() => {
+            const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]'));
+            for (const modal of modals) {
+              const style = window.getComputedStyle(modal);
+              const isVisible = modal.offsetParent !== null && 
+                               style.display !== 'none' && 
+                               style.visibility !== 'hidden';
+              if (isVisible) {
+                const text = modal.textContent || '';
+                if (text.includes('TP/SL') || text.includes('Take Profit') || text.includes('Stop Loss')) {
+                  return false; // TP/SL modal still open
+                }
+              }
+            }
+            return true; // No TP/SL modal found, it's closed
+          });
+          
+          if (tpSlModalClosed) {
+            console.log(`[Paradex] ✅ TP/SL modal is confirmed closed! (checked ${i + 1}/${maxChecks})`);
+            tpSlCompleted = true; // Mark TP/SL as completed
+            break;
+          } else {
+            if (i < maxChecks - 1) {
+              console.log(`[Paradex] ⏳ TP/SL modal still open (check ${i + 1}/${maxChecks}), waiting ${checkInterval}ms...`);
+            }
+          }
+        }
+        
+        if (!tpSlModalClosed) {
+          console.log(`[Paradex] ⚠️  TP/SL modal may still be open after ${maxChecks} checks (${(maxChecks * checkInterval) / 1000}s)`);
+          console.log(`[Paradex] ⚠️  Will NOT proceed to Limit button until TP/SL modal is confirmed closed`);
+          // Do NOT set tpSlCompleted = true if modal is still open
+        }
+      } else {
+        console.log(`[Paradex] ⚠️  Failed to click TP/SL Confirm button - TP/SL not completed`);
+      }
+    } else {
+      console.log(`[Paradex] ⚠️  STOP_LOSS env variable not set, skipping TP/SL`);
+    }
+  }
+
+  // CRITICAL: For Paradex, ONLY proceed to Limit button if TP/SL modal is confirmed closed
+  if (exchange.name === 'Paradex' && !tpSlCompleted) {
+    // Final check: Verify TP/SL modal is not open before proceeding
+    console.log(`[Paradex] 🔍 Final check: Verifying TP/SL modal is not open before searching for Limit button...`);
+    const tpSlModalStillOpen = await page.evaluate(() => {
+      const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]'));
+      for (const modal of modals) {
+        const style = window.getComputedStyle(modal);
+        const isVisible = modal.offsetParent !== null && 
+                         style.display !== 'none' && 
+                         style.visibility !== 'hidden';
+        if (isVisible) {
+          const text = modal.textContent || '';
+          if (text.includes('TP/SL') || text.includes('Take Profit') || text.includes('Stop Loss')) {
+            return true; // TP/SL modal is still open
+          }
+        }
+      }
+      return false; // No TP/SL modal found
+    });
+    
+    if (tpSlModalStillOpen) {
+      console.log(`[Paradex] ⚠️  TP/SL modal is STILL OPEN - waiting additional 2 seconds before checking again...`);
+      await delay(2000); // Reduced from 5s to 2s
+      
+      // Check one more time
+      const tpSlModalStillOpen2 = await page.evaluate(() => {
+        const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]'));
+        for (const modal of modals) {
+          const style = window.getComputedStyle(modal);
+          const isVisible = modal.offsetParent !== null && 
+                           style.display !== 'none' && 
+                           style.visibility !== 'hidden';
+          if (isVisible) {
+            const text = modal.textContent || '';
+            if (text.includes('TP/SL') || text.includes('Take Profit') || text.includes('Stop Loss')) {
+              return true; // TP/SL modal is still open
+            }
+          }
+        }
+        return false; // No TP/SL modal found
+      });
+      
+      if (tpSlModalStillOpen2) {
+        console.log(`[Paradex] ❌ TP/SL modal is STILL OPEN after additional wait - NOT proceeding to Limit button`);
+        console.log(`[Paradex] ❌ This will prevent clicking Limit button until TP/SL modal closes`);
+        return { success: false, error: 'TP/SL modal still open, cannot proceed to Limit button' };
+      } else {
+        console.log(`[Paradex] ✅ TP/SL modal is now closed after additional wait`);
+        tpSlCompleted = true;
+      }
+    } else {
+      console.log(`[Paradex] ✅ TP/SL modal is confirmed closed - safe to proceed to Limit button`);
+      tpSlCompleted = true;
+    }
+  }
+
+  // CRITICAL: After TP/SL is set, ensure we're still on Positions tab before looking for Limit button
+  // Do NOT navigate to Orders tab - we need to stay on Positions tab to find Limit button
+  console.log(`[Paradex] TP/SL setup complete. Ensuring we're on Positions tab before looking for Limit button...`);
+  
+  // IMPORTANT: Only look for Limit button if there are still open positions
+  // Check if positions exist before looking for Limit button
+  console.log(`[Paradex] Checking if positions still exist before looking for Limit button...`);
+  const hasPositionsForLimit = await page.evaluate(() => {
+    const text = document.body.innerText;
+    return (
+      text.includes("Current Position") ||
+      text.includes("Unrealized P&L") ||
+      text.includes("Position Size") ||
+      text.includes("Entry Price")
+    );
+  });
+  
+  if (!hasPositionsForLimit) {
+    console.log(`[Paradex] ✅ No open positions found - skipping Limit button search`);
+    return { success: true, message: "No positions to close - TP/SL was set but positions already closed" };
+  }
+  
+  console.log(`[Paradex] ✅ Positions still exist - proceeding to find Limit button...`);
+  
+  // Step 1: Look for Limit button in Positions table Close column BEFORE any Close All button logic
   // The Close column has buttons with text "Market" and "Limit" in MarketCloseButton__Container
   // IMPORTANT: This must happen BEFORE looking for "Close All" button
   console.log(`Step 1: Looking for Limit button in Positions table Close column (before Close All button)...`);
   
   // Make sure we're on the Positions tab before looking for Limit button
+  // IMPORTANT: Do NOT navigate to Orders tab - stay on Positions tab
   const isOnPositionsTab = await page.evaluate(() => {
     const text = document.body.innerText;
     return text.includes("Positions") && (
@@ -3575,7 +4167,8 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null) {
   });
   
   if (!isOnPositionsTab) {
-    console.log(`Not on Positions tab, switching to Positions tab...`);
+    console.log(`[Paradex] ⚠️  Not on Positions tab after TP/SL setup, switching to Positions tab...`);
+    console.log(`[Paradex] ⚠️  CRITICAL: Must stay on Positions tab to find Limit button - DO NOT navigate to Orders tab`);
     const positionsTab = await findByExactText(page, exchange.selectors.positionsTab, [
       "button",
       "div",
@@ -3583,23 +4176,29 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null) {
     ]);
     if (positionsTab) {
       await positionsTab.click();
-      console.log("✓ Clicked Positions tab");
+      console.log(`[Paradex] ✓ Clicked Positions tab - staying on Positions tab to find Limit button`);
       await delay(1000); // Wait for positions to load
     } else {
-      console.log("⚠ Could not find Positions tab");
+      console.log(`[Paradex] ⚠️  Could not find Positions tab - this will prevent finding Limit button`);
     }
   } else {
-    console.log("✓ Already on Positions tab");
+    console.log(`[Paradex] ✓ Already on Positions tab - ready to find Limit button`);
   }
   
   // Wait a bit more for the table to fully render
   await delay(500);
+  
+  // CRITICAL: After TP/SL is set, we MUST find and click Limit button
+  // Do NOT navigate to Orders tab - stay on Positions tab
+  console.log(`[Paradex] 🔍 Now searching for Limit button in Positions table (after TP/SL setup)...`);
+  console.log(`[Paradex] ⚠️  IMPORTANT: Must stay on Positions tab - DO NOT navigate to Orders tab`);
   
   // Try multiple strategies to find and click Limit button (similar to Close All button detection)
   let limitBtn = null;
   let limitBtnClicked = false;
   
   // Strategy 1: Find by text "Limit" using existing function (same as Close All Strategy 1)
+  console.log(`[Paradex] Strategy 1: Searching for Limit button by text...`);
   limitBtn = await findByText(page, "Limit", ["button", "div", "a"]);
   
   if (limitBtn) {
@@ -3628,17 +4227,21 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null) {
     }, limitBtn);
     
     if (isInCloseColumn) {
-      console.log(`✓ Found Limit button by text in Close column`);
+      console.log(`[Paradex] ✓ Found Limit button by text in Close column - clicking now...`);
       await limitBtn.click();
       limitBtnClicked = true;
+      console.log(`[Paradex] ✅ Successfully clicked Limit button!`);
     } else {
-      console.log(`⚠ Found Limit button but not in Close column, trying other strategies...`);
+      console.log(`[Paradex] ⚠️  Found Limit button but not in Close column, trying other strategies...`);
       limitBtn = null; // Reset to try other strategies
     }
+  } else {
+    console.log(`[Paradex] ⚠️  Strategy 1: Limit button not found by text, trying other strategies...`);
   }
   
   // Strategy 2: If not found, try to find by evaluating the page and click directly (same as Close All Strategy 2)
   if (!limitBtn && !limitBtnClicked) {
+    console.log(`[Paradex] Strategy 2: Searching for Limit button via page.evaluate...`);
     const clicked = await page.evaluate(() => {
       const buttons = Array.from(
         document.querySelectorAll(
@@ -6470,8 +7073,9 @@ async function handleTpSlAddButtonClick(page, email) {
     
     console.log(`[${email}] ✓ Form validated - Stop Loss USD value is ready, clicking Confirm...`);
     
-    // Click Confirm button - make sure we're clicking in TP/SL modal, not leverage modal
-    console.log(`[${email}] Clicking Confirm button...`);
+    // CRITICAL: For TP/SL modal, ONLY click "Confirm" button - NEVER look for "close" button
+    // The TP/SL modal should be submitted using "Confirm", not closed
+    console.log(`[${email}] Clicking Confirm button in TP/SL modal (NOT looking for close button)...`);
     const confirmClicked = await page.evaluate(() => {
       // Find TP/SL modal specifically
       const modals = Array.from(document.querySelectorAll('[class*="modal"], [role="dialog"]'));
@@ -6490,16 +7094,24 @@ async function handleTpSlAddButtonClick(page, email) {
         }
       }
       
-      if (!tpslModal) return false;
+      if (!tpslModal) {
+        console.log('TP/SL modal not found');
+        return false;
+      }
       
+      // ONLY look for "Confirm" button - NEVER look for "close" button in TP/SL modal
       const buttons = Array.from(tpslModal.querySelectorAll('button'));
       for (const btn of buttons) {
         const text = btn.textContent?.trim() || '';
-        if (text === 'Confirm' || text.includes('Confirm')) {
+        const isVisible = btn.offsetParent !== null && btn.offsetWidth > 0 && btn.offsetHeight > 0;
+        // Only click Confirm button - ignore any close/X buttons
+        if (isVisible && (text === 'Confirm' || text.includes('Confirm'))) {
           btn.click();
+          console.log(`Clicked Confirm button: "${text}"`);
           return true;
         }
       }
+      console.log('Confirm button not found in TP/SL modal');
       return false;
     });
   
@@ -6892,10 +7504,12 @@ async function launchAccount(accountConfig, exchangeConfig) {
       // Start the API server for this account
       startApiServer(page, apiPort, email);
 
-      // Set up TP/SL add button click listener (only for Paradex for now)
-      if (exchange.name === 'Paradex') {
-        await setupTpSlAddButtonListener(page, email);
-      }
+      // DISABLED: Auto-click TP/SL listener - now using manual flow in closeAllPositions
+      // The manual flow goes to Positions tab, finds TP/SL button, clicks it, fills value, confirms, then clicks Limit
+      // This gives us better control over the sequence: TP/SL -> Confirm -> Wait -> Limit -> Close
+      // if (exchange.name === 'Paradex') {
+      //   await setupTpSlAddButtonListener(page, email);
+      // }
 
       return { browser, page, email, success: true, exchange: exchange.name };
     } else {
@@ -7048,6 +7662,9 @@ async function automatedTradingLoop(account1Result, account2Result) {
   console.log(`\n✓ Leverage configured. Starting trading cycles...\n`);
   await delay(1000); // Reduced from 2000ms
 
+  // Track if Extended Exchange just completed post-trade flow (cleanup + leverage set)
+  let extendedExchangeJustCompletedPostTrade = false;
+
   while (!isShuttingDown) {
     cycleCount++;
     console.log(
@@ -7055,66 +7672,78 @@ async function automatedTradingLoop(account1Result, account2Result) {
     );
 
     try {
-      // Step 0: Cancel all open orders FIRST (to free up locked funds)
-      console.log(`\n[CYCLE ${cycleCount}] Canceling all open orders first...`);
-      const cancelPromises = [
-        cancelAllOrders(page1),
-        cancelAllOrders(page2),
-      ];
-
-      const cancelResults = await Promise.all(cancelPromises);
-
-      if (cancelResults[0].success) {
-        console.log(`✓ [${email1}] Open orders checked/canceled`);
-      }
-      if (cancelResults[1].success) {
-        console.log(`✓ [${email2}] Open orders checked/canceled`);
-      }
-
-      // Small delay to ensure orders are fully canceled and funds are freed
-      // Reduced from 2000ms - cancelAllOrders() already waits internally
-      await delay(500);
-
-      // Step 1: Close any existing positions
-      // NOTE: For Extended Exchange, DON'T close positions here - let clickOrdersTab handle it (including TP/SL)
-      console.log(`\n[CYCLE ${cycleCount}] Checking for existing positions...`);
-      const initialClosePromises = [];
-      
-      // Only close positions for Paradex (Extended Exchange will handle it in clickOrdersTab)
-      if (exchange1Name !== 'Extended Exchange') {
-        initialClosePromises.push((async () => {
-          const result = await closeAllPositions(page1, 100, exchange1);
-          return { email: email1, result };
-        })());
+      // Skip cleanup if Extended Exchange just completed post-trade flow (which already did cleanup + leverage)
+      let skipCleanupAndPreTrade = false;
+      if (extendedExchangeJustCompletedPostTrade) {
+        console.log(`\n[CYCLE ${cycleCount}] Skipping cleanup and pre-trade - Extended Exchange just completed post-trade flow (cleanup + leverage already done)`);
+        extendedExchangeJustCompletedPostTrade = false; // Reset flag
+        skipCleanupAndPreTrade = true; // Skip both cleanup and pre-trade, go directly to trade execution
       }
       
-      if (exchange2Name !== 'Extended Exchange') {
-        initialClosePromises.push((async () => {
-          const result = await closeAllPositions(page2, 100, exchange2);
-          return { email: email2, result };
-        })());
-      }
+      if (!skipCleanupAndPreTrade) {
+        // Step 0: Cancel all open orders FIRST (to free up locked funds)
+        console.log(`\n[CYCLE ${cycleCount}] Canceling all open orders first...`);
+        const cancelPromises = [
+          cancelAllOrders(page1),
+          cancelAllOrders(page2),
+        ];
 
-      if (initialClosePromises.length > 0) {
-        const initialCloseResults = await Promise.all(initialClosePromises);
-        for (const { email, result } of initialCloseResults) {
-          if (result.success) {
-            console.log(`✓ [${email}] Existing positions checked/closed`);
-          }
+        const cancelResults = await Promise.all(cancelPromises);
+
+        if (cancelResults[0].success) {
+          console.log(`✓ [${email1}] Open orders checked/canceled`);
         }
-        // Small delay to ensure positions are fully closed
-        await delay(300);
-      } else {
-        console.log(`[CYCLE ${cycleCount}] Skipping position close - Extended Exchange will handle it in clickOrdersTab`);
-      }
+        if (cancelResults[1].success) {
+          console.log(`✓ [${email2}] Open orders checked/canceled`);
+        }
+
+        // Small delay to ensure orders are fully canceled and funds are freed
+        // Reduced from 2000ms - cancelAllOrders() already waits internally
+        await delay(500);
+
+        // Step 1: Close any existing positions
+        // NOTE: For Extended Exchange, DON'T close positions here - let clickOrdersTab handle it (including TP/SL)
+        console.log(`\n[CYCLE ${cycleCount}] Checking for existing positions...`);
+        const initialClosePromises = [];
+        
+        // Only close positions for Paradex (Extended Exchange will handle it in clickOrdersTab)
+        if (exchange1Name !== 'Extended Exchange') {
+          initialClosePromises.push((async () => {
+            const result = await closeAllPositions(page1, 100, exchange1);
+            return { email: email1, result };
+          })());
+        }
+        
+        if (exchange2Name !== 'Extended Exchange') {
+          initialClosePromises.push((async () => {
+            const result = await closeAllPositions(page2, 100, exchange2);
+            return { email: email2, result };
+          })());
+        }
+
+        if (initialClosePromises.length > 0) {
+          const initialCloseResults = await Promise.all(initialClosePromises);
+          for (const { email, result } of initialCloseResults) {
+            if (result.success) {
+              console.log(`✓ [${email}] Existing positions checked/closed`);
+            }
+          }
+          // Small delay to ensure positions are fully closed
+          await delay(300);
+        } else {
+          console.log(`[CYCLE ${cycleCount}] Skipping position close - Extended Exchange will handle it in clickOrdersTab`);
+        }
+      } // End of else block for skip cleanup check
 
       // Step 0.5: For Extended Exchange, run PRE-trade flow BEFORE executing trades
       // Use clickOrdersTab() which does: cancel orders, positions, TP/SL, close positions, set leverage
       // This is the SAME flow as Phase 3 (initial setup) - no duplication
       // IMPORTANT: Don't close positions before this - clickOrdersTab needs to see positions to add TP/SL
-      const hasExtendedExchange = exchange1Name === 'Extended Exchange' || exchange2Name === 'Extended Exchange';
-      
-      if (hasExtendedExchange) {
+      // Skip pre-trade if we just completed post-trade (cleanup + leverage already done)
+      if (!skipCleanupAndPreTrade) {
+        const hasExtendedExchange = exchange1Name === 'Extended Exchange' || exchange2Name === 'Extended Exchange';
+        
+        if (hasExtendedExchange) {
         console.log(`\n[CYCLE ${cycleCount}] Extended Exchange detected - running PRE-trade flow (clickOrdersTab)...`);
         console.log(`[CYCLE ${cycleCount}] NOTE: clickOrdersTab will handle cancel orders, TP/SL, close positions (leverage will be set in post-trade)`);
         
@@ -7127,11 +7756,12 @@ async function automatedTradingLoop(account1Result, account2Result) {
           preTradePromises.push(clickOrdersTab(page2, email2, true)); // skipLeverage = true
         }
         
-        if (preTradePromises.length > 0) {
-          await Promise.all(preTradePromises);
-          console.log(`[CYCLE ${cycleCount}] Extended Exchange pre-trade flow completed`);
+          if (preTradePromises.length > 0) {
+            await Promise.all(preTradePromises);
+            console.log(`[CYCLE ${cycleCount}] Extended Exchange pre-trade flow completed`);
+          }
+          await delay(2000); // Small delay before trade execution
         }
-        await delay(2000); // Small delay before trade execution
       }
 
       // Step 1: Execute trades in parallel with limit orders at market price
@@ -7218,11 +7848,13 @@ async function automatedTradingLoop(account1Result, account2Result) {
         
         if (postTradePromises.length > 0) {
           await Promise.all(postTradePromises);
-          console.log(`[CYCLE ${cycleCount}] Extended Exchange post-trade flow completed`);
+          console.log(`[CYCLE ${cycleCount}] Extended Exchange post-trade flow completed (cleanup + leverage set)`);
         }
         
         // For Extended Exchange, skip wait/close steps and go directly to next cycle
-        console.log(`[CYCLE ${cycleCount}] Extended Exchange cycle complete - proceeding to next cycle immediately`);
+        // Set flag to skip cleanup in next cycle since it was just done in post-trade flow
+        extendedExchangeJustCompletedPostTrade = true;
+        console.log(`[CYCLE ${cycleCount}] Extended Exchange cycle complete - next cycle will skip cleanup and go directly to trade execution`);
         await delay(2000); // Small delay before next cycle
         continue; // Skip to next cycle (bypass wait and close steps)
       }
