@@ -12,46 +12,9 @@ dotenv.config();
 puppeteer.use(StealthPlugin());
 
 // ---------- CONFIG ----------
+const PARADEX_URL = "https://app.paradex.trade/trade/BTC-USD-PERP";
+const PARADEX_REFERRAL_URL = "https://app.paradex.trade/r/instantcrypto";
 const HEADLESS = process.argv.includes('--headless');
-
-// Exchange configurations
-const EXCHANGE_CONFIGS = {
-  paradex: {
-    name: "Paradex",
-    url: "https://app.paradex.trade/trade/BTC-USD-PERP",
-    referralUrl: "https://app.paradex.trade/r/instantcrypto",
-    urlPattern: "app.paradex.trade/trade",
-    // UI selectors - using same as current (Paradex-specific)
-    selectors: {
-      loginButton: 'button[data-dd-action-name="Connect wallet"]',
-      buyButton: "Buy",
-      sellButton: "Sell",
-      marketButton: "Market",
-      limitButton: "Limit",
-      confirmBuy: "Confirm Buy",
-      confirmSell: "Confirm Sell",
-      positionsTab: "Positions",
-    }
-  },
-  extended: {
-    name: "Extended Exchange",
-    url: "https://app.extended.exchange/perp",
-    referralUrl: "https://app.extended.exchange/perp",
-    urlPattern: "app.extended.exchange/perp",
-    // UI selectors - will need to be updated after inspecting Extended Exchange UI
-    // For now, using generic text-based selectors (same as Paradex)
-    selectors: {
-      loginButton: null, // Will use text-based search
-      buyButton: "Buy",
-      sellButton: "Sell",
-      marketButton: "Market",
-      limitButton: "Limit",
-      confirmBuy: "Confirm Buy", // May need to change
-      confirmSell: "Sell", // Extended Exchange uses "Sell" button, not "Confirm Sell"
-      positionsTab: "Positions", // May need to change
-    }
-  }
-};
 
 // Multiple accounts configuration - read from environment variable
 const getAccountsFromEnv = () => {
@@ -74,10 +37,9 @@ const getAccountsFromEnv = () => {
     const emailHash = Buffer.from(email).toString('base64').replace(/[^a-zA-Z0-9]/g, '').substring(0, 10);
     return {
       email: email,
-      cookiesPath: `./paradex-cookies-account${index + 1}.json`, // Keep same name for compatibility
+      cookiesPath: `./paradex-cookies-account${index + 1}.json`,
       profileDir: `/tmp/puppeteer-chrome-profile-${index + 1}-${emailHash}`,
-      apiPort: 3001 + index,
-      exchange: null // Will be set based on trading mode
+      apiPort: 3001 + index
     };
   });
 };
@@ -100,38 +62,6 @@ async function prompt(question) {
       resolve(answer);
     });
   });
-}
-
-// Prompt user to choose trading mode
-async function chooseTradingMode() {
-  console.log(`\n========================================`);
-  console.log(`Select Trading Mode:`);
-  console.log(`========================================`);
-  console.log(`1. Buy from Paradex, Sell from Paradex (Both accounts on Paradex)`);
-  console.log(`2. Buy from Paradex, Sell from Extended Exchange`);
-  console.log(`========================================\n`);
-  
-  const answer = await prompt(`Enter option (1 or 2): `);
-  const mode = answer.trim();
-  
-  if (mode === '1') {
-    return {
-      mode: 1,
-      buyExchange: 'paradex',
-      sellExchange: 'paradex',
-      description: 'Buy from Paradex, Sell from Paradex'
-    };
-  } else if (mode === '2') {
-    return {
-      mode: 2,
-      buyExchange: 'paradex',
-      sellExchange: 'extended',
-      description: 'Buy from Paradex, Sell from Extended Exchange'
-    };
-  } else {
-    console.log(`\n✗ Invalid option. Please enter 1 or 2.`);
-    process.exit(1);
-  }
 }
 
 async function findByText(page, text, tagNames = ['button', 'a', 'div', 'span']) {
@@ -188,2287 +118,10 @@ async function loadCookies(page, cookiesPath, expectedEmail) {
   return false;
 }
 
-// Check if Extended Exchange cookies exist
-async function hasExtendedExchangeCookies(page) {
-  const cookies = await page.cookies();
-  const hasAccessToken = cookies.some(c => c.name === 'x10_access_token');
-  const hasRefreshToken = cookies.some(c => c.name === 'x10_refresh_token');
-  return hasAccessToken && hasRefreshToken;
-}
-
-// Clear Extended Exchange cookies
-async function clearExtendedExchangeCookies(page) {
-  console.log(`Clearing Extended Exchange cookies...`);
-  try {
-    const cookies = await page.cookies();
-    const extendedCookies = cookies.filter(c => 
-      c.name === 'x10_access_token' || c.name === 'x10_refresh_token'
-    );
-    
-    if (extendedCookies.length > 0) {
-      // Delete cookies by setting them with past expiry
-      for (const cookie of extendedCookies) {
-        await page.deleteCookie({
-          name: cookie.name,
-          domain: cookie.domain
-        });
-      }
-      console.log(`Cleared ${extendedCookies.length} Extended Exchange cookie(s)`);
-      return true;
-    }
-    console.log(`No Extended Exchange cookies to clear`);
-    return false;
-  } catch (error) {
-    console.log(`Error clearing Extended Exchange cookies: ${error.message}`);
-    return false;
-  }
-}
-
-// Click on Orders tab for Extended Exchange
-async function clickOrdersTab(page, email, skipLeverage = false) {
-  console.log(`[${email}] Looking for Orders tab...`);
-  if (skipLeverage) {
-    console.log(`[${email}] NOTE: Leverage setting will be skipped (already set or will be set later)`);
-  }
-  
-  try {
-    let ordersTabClicked = false;
-    
-    // Strategy 1: Find by exact text "Orders"
-    const ordersTab = await findByExactText(page, "Orders", ["button", "div", "span", "a"]);
-    if (ordersTab) {
-      const isVisible = await page.evaluate((el) => {
-        return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
-      }, ordersTab);
-      if (isVisible) {
-        await ordersTab.click();
-        console.log(`[${email}] Clicked Orders tab (exact text)`);
-        ordersTabClicked = true;
-        await delay(1000);
-      }
-    }
-    
-    // Strategy 2: Find by text containing "orders" (case insensitive)
-    if (!ordersTabClicked) {
-      const ordersTab2 = await findByText(page, "orders", ["button", "div", "span", "a"]);
-      if (ordersTab2) {
-        const isVisible = await page.evaluate((el) => {
-          return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
-        }, ordersTab2);
-        if (isVisible) {
-          await ordersTab2.click();
-          console.log(`[${email}] Clicked Orders tab (text search)`);
-          ordersTabClicked = true;
-          await delay(1000);
-        }
-      }
-    }
-    
-    // Strategy 3: Use evaluate to find Orders tab
-    if (!ordersTabClicked) {
-      const clicked = await page.evaluate(() => {
-        // Look for tabs or navigation elements
-        const allElements = Array.from(document.querySelectorAll('button, div[role="tab"], span[role="tab"], a[role="tab"], div, span, a'));
-        for (const el of allElements) {
-          const text = el.textContent?.trim();
-          const isVisible = el.offsetParent !== null;
-          if (isVisible && text && text.toLowerCase() === 'orders') {
-            el.click();
-            return true;
-          }
-        }
-        return false;
-      });
-      
-      if (clicked) {
-        console.log(`[${email}] Clicked Orders tab (via evaluate)`);
-        ordersTabClicked = true;
-        await delay(1000);
-      }
-    }
-    
-    if (!ordersTabClicked) {
-      console.log(`[${email}] Orders tab not found`);
-      return false;
-    }
-    
-    // After clicking Orders tab, check for buttons in Orders tab
-    console.log(`[${email}] Checking for buttons in Orders tab (Login, Connect Wallet, CANCEL ALL, Positions)...`);
-    await delay(1500); // Wait for Orders tab content to load
-    
-    // Step 1: Check for Login OR Connect Wallet button simultaneously (whichever found first)
-    // This is more efficient than checking sequentially
-    const authButtonResult = await page.evaluate(() => {
-      const buttons = Array.from(document.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"]'));
-      
-      for (const btn of buttons) {
-        const text = btn.textContent?.trim().toLowerCase();
-        const isVisible = btn.offsetParent !== null && btn.offsetWidth > 0 && btn.offsetHeight > 0;
-        
-        if (!isVisible) continue;
-        
-        // Check for Login button first (priority)
-        if (text === 'log in' || text === 'login') {
-          btn.click();
-          return { found: true, type: 'login', text: btn.textContent?.trim() };
-        }
-        
-        // Check for Connect Wallet button
-        if (text === 'connect wallet' || text.includes('connect wallet')) {
-          btn.click();
-          return { found: true, type: 'connectWallet', text: btn.textContent?.trim() };
-        }
-      }
-      
-      return { found: false };
-    });
-    
-    if (authButtonResult.found) {
-      if (authButtonResult.type === 'login') {
-        console.log(`[${email}] Clicked ${authButtonResult.text} button in Orders tab`);
-        console.log(`[${email}] Login button clicked, waiting for authentication...`);
-        await delay(2000);
-        return ordersTabClicked;
-      } else if (authButtonResult.type === 'connectWallet') {
-        console.log(`[${email}] Clicked ${authButtonResult.text} button in Orders tab`);
-        // Wait for modal to appear
-        console.log(`[${email}] Connect Wallet button clicked, waiting for modal to appear...`);
-        await delay(2000);
-        
-        // Look for WalletConnect button in modal
-        console.log(`[${email}] Looking for WalletConnect button in modal...`);
-        const walletConnectClicked = await page.evaluate(() => {
-          // Look for modal/dialog
-          const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="Modal"]');
-          if (!modal) return false;
-          
-          // Find WalletConnect button in modal
-          const buttons = Array.from(modal.querySelectorAll('button, div[role="button"], span[role="button"]'));
-          for (const btn of buttons) {
-            const text = btn.textContent?.trim();
-            const isVisible = btn.offsetParent !== null;
-            if (isVisible && text && (text.includes('WalletConnect') || text.includes('Wallet Connect'))) {
-              btn.click();
-              return true;
-            }
-          }
-          return false;
-        });
-        
-        if (walletConnectClicked) {
-          console.log(`[${email}] Clicked WalletConnect button in modal`);
-          console.log(`[${email}] WalletConnect button clicked, waiting for wallet connection...`);
-          await delay(3000);
-        } else {
-          console.log(`[${email}] Could not find WalletConnect button in modal`);
-          console.log(`[${email}] User will need to manually connect wallet`);
-        }
-      }
-    } else {
-      console.log(`[${email}] No Login or Connect Wallet button found in Orders tab`);
-    }
-    
-    // Step 2: Check if there are open orders before looking for CANCEL ALL
-    console.log(`[${email}] Checking for open orders in Orders tab...`);
-    const hasOpenOrders = await page.evaluate(() => {
-      // Find tables in Orders tab
-      const tables = Array.from(document.querySelectorAll('table'));
-      for (const table of tables) {
-        const dataRows = Array.from(table.querySelectorAll('tbody tr, tr:not(:first-child)'));
-        // Check if there are any data rows (indicating open orders)
-        if (dataRows.length > 0) {
-          const rowsWithData = dataRows.filter(row => {
-            const cells = Array.from(row.querySelectorAll('td, th'));
-            return cells.length > 0 && row.offsetParent !== null;
-          });
-          return rowsWithData.length > 0;
-        }
-      }
-      return false;
-    });
-    
-    // Only check for CANCEL ALL if there are open orders
-    let cancelAllClicked = false;
-    if (hasOpenOrders) {
-      console.log(`[${email}] Open orders detected, checking for CANCEL ALL button...`);
-    
-    // Strategy 1: Find by exact text "CANCEL ALL" or "Cancel All"
-    const cancelAllBtn = await findByExactText(page, "CANCEL ALL", ["button", "div", "span", "a"]);
-    if (cancelAllBtn) {
-      const isVisible = await page.evaluate((el) => {
-        return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
-      }, cancelAllBtn);
-      if (isVisible) {
-        await cancelAllBtn.click();
-        cancelAllClicked = true;
-        console.log(`[${email}] Clicked CANCEL ALL button in Orders tab (exact text)`);
-      }
-    }
-    
-    if (!cancelAllClicked) {
-      const cancelAllBtn2 = await findByExactText(page, "Cancel All", ["button", "div", "span", "a"]);
-      if (cancelAllBtn2) {
-        const isVisible = await page.evaluate((el) => {
-          return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
-        }, cancelAllBtn2);
-        if (isVisible) {
-          await cancelAllBtn2.click();
-          cancelAllClicked = true;
-          console.log(`[${email}] Clicked Cancel All button in Orders tab (exact text)`);
-        }
-      }
-    }
-    
-    // Strategy 2: Find by text containing "cancel all" (case insensitive)
-    if (!cancelAllClicked) {
-      const cancelAllBtn3 = await findByText(page, "cancel all", ["button", "div", "span", "a"]);
-      if (cancelAllBtn3) {
-        const isVisible = await page.evaluate((el) => {
-          return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
-        }, cancelAllBtn3);
-        if (isVisible) {
-          await cancelAllBtn3.click();
-          cancelAllClicked = true;
-          console.log(`[${email}] Clicked Cancel All button in Orders tab (text search)`);
-        }
-      }
-    }
-    
-    // Strategy 3: Use evaluate to find CANCEL ALL button
-    if (!cancelAllClicked) {
-      const clicked = await page.evaluate(() => {
-        const buttons = Array.from(document.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"]'));
-        for (const btn of buttons) {
-          const text = btn.textContent?.trim().toLowerCase();
-          const isVisible = btn.offsetParent !== null;
-          if (isVisible && text && (
-            text === 'cancel all' || 
-            text === 'cancelall' ||
-            text.includes('cancel all')
-          )) {
-            btn.click();
-            return true;
-          }
-        }
-        return false;
-      });
-      
-      if (clicked) {
-        cancelAllClicked = true;
-        console.log(`[${email}] Clicked Cancel All button in Orders tab (via evaluate)`);
-      }
-    }
-    } else {
-      console.log(`[${email}] No open orders found, skipping CANCEL ALL`);
-    }
-    
-    // Step 3: Switch to Positions tab (either after CANCEL ALL or if no orders)
-    let positionsTabClicked = false;
-    if (cancelAllClicked) {
-      // If CANCEL ALL was clicked, wait then switch to Positions
-      console.log(`[${email}] Cancel All button clicked, waiting before clicking Positions tab...`);
-      await delay(2000); // Wait for cancel operation to complete
-    }
-    
-    // Click on Positions tab
-    console.log(`[${email}] Looking for Positions tab...`);
-    
-    // Strategy 1: Find by exact text "Positions"
-    const positionsTab = await findByExactText(page, "Positions", ["button", "div", "span", "a"]);
-    if (positionsTab) {
-      const isVisible = await page.evaluate((el) => {
-        return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
-      }, positionsTab);
-      if (isVisible) {
-        await positionsTab.click();
-        positionsTabClicked = true;
-        console.log(`[${email}] Clicked Positions tab (exact text)`);
-      }
-    }
-    
-    // Strategy 2: Find by text containing "positions" (case insensitive)
-    if (!positionsTabClicked) {
-      const positionsTab2 = await findByText(page, "positions", ["button", "div", "span", "a"]);
-      if (positionsTab2) {
-        const isVisible = await page.evaluate((el) => {
-          return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
-        }, positionsTab2);
-        if (isVisible) {
-          await positionsTab2.click();
-          positionsTabClicked = true;
-          console.log(`[${email}] Clicked Positions tab (text search)`);
-        }
-      }
-    }
-    
-    // Strategy 3: Use evaluate to find Positions tab
-    if (!positionsTabClicked) {
-      const clicked = await page.evaluate(() => {
-        const allElements = Array.from(document.querySelectorAll('button, div[role="tab"], span[role="tab"], a[role="tab"], div, span, a'));
-        for (const el of allElements) {
-          const text = el.textContent?.trim().toLowerCase();
-          const isVisible = el.offsetParent !== null;
-          if (isVisible && text && text === 'positions') {
-            el.click();
-            return true;
-          }
-        }
-        return false;
-      });
-      
-      if (clicked) {
-        positionsTabClicked = true;
-        console.log(`[${email}] Clicked Positions tab (via evaluate)`);
-      }
-    }
-    
-    // Step 4: Check for open positions and handle accordingly
-    if (positionsTabClicked) {
-      console.log(`[${email}] Positions tab clicked`);
-      await delay(2000); // Wait for Positions tab content to load
-      
-      // Check if there are open positions
-      const hasOpenPositions = await page.evaluate(() => {
-        const tables = Array.from(document.querySelectorAll('table'));
-        for (const table of tables) {
-          const dataRows = Array.from(table.querySelectorAll('tbody tr, tr:not(:first-child)'));
-          if (dataRows.length > 0) {
-            const rowsWithData = dataRows.filter(row => {
-              const cells = Array.from(row.querySelectorAll('td, th'));
-              return cells.length > 0 && row.offsetParent !== null;
-            });
-            return rowsWithData.length > 0;
-          }
-        }
-        return false;
-      });
-      
-      if (hasOpenPositions) {
-        console.log(`[${email}] Open positions detected, proceeding with TP/SL flow...`);
-        
-        // First, check if TP/SL modal is already open (from auto-click listener)
-        console.log(`[${email}] Checking if TP/SL modal is already open...`);
-        const tpSlModalAlreadyOpen = await page.evaluate(() => {
-          const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]'));
-          for (const modal of modals) {
-            const style = window.getComputedStyle(modal);
-            const isVisible = modal.offsetParent !== null && 
-                             style.display !== 'none' && 
-                             style.visibility !== 'hidden';
-            if (isVisible) {
-              const text = modal.textContent || '';
-              if (text.includes('TP/SL') || text.includes('Take Profit') || text.includes('Stop Loss')) {
-                return true; // TP/SL modal is already open
-              }
-            }
-          }
-          return false;
-        });
-        
-        if (tpSlModalAlreadyOpen) {
-          console.log(`[${email}] ✅ TP/SL modal is already open (likely from auto-click listener), proceeding to fill it...`);
-          // Don't click TP/SL button again, just proceed to fill the modal
-        } else {
-          // Step 4a: Find TP/SL column and click element to add TP/SL
-          // Look for TP/SL column in table and click any element/button in that column
-          console.log(`[${email}] TP/SL modal not open, looking for TP/SL column in Positions table...`);
-        }
-        
-        const tpSlClicked = await page.evaluate((skipClick) => {
-          if (skipClick) return false; // Skip clicking if modal is already open
-          
-          // Find all table elements
-          const tables = Array.from(document.querySelectorAll('table'));
-          
-          for (const table of tables) {
-            // Find header row
-            const headerRow = table.querySelector('thead tr, thead > tr, tr:first-child');
-            if (!headerRow) continue;
-            
-            // Find TP/SL column header
-            const headers = Array.from(headerRow.querySelectorAll('th, td'));
-            let tpSlColumnIndex = -1;
-            
-            for (let i = 0; i < headers.length; i++) {
-              const headerText = headers[i].textContent?.trim().toLowerCase();
-              if (headerText && (headerText.includes('tp/sl') || headerText.includes('tp / sl') || headerText.includes('tpsl'))) {
-                tpSlColumnIndex = i;
-                console.log(`Found TP/SL column at index ${i}`);
-                break;
-              }
-            }
-            
-            if (tpSlColumnIndex === -1) continue;
-            
-            // Find data rows (skip header row)
-            const dataRows = Array.from(table.querySelectorAll('tbody tr, tr:not(:first-child)'));
-            
-            // Find first data row and click any clickable element in TP/SL column
-            for (const row of dataRows) {
-              const cells = Array.from(row.querySelectorAll('td, th'));
-              if (cells.length > tpSlColumnIndex) {
-                const tpSlCell = cells[tpSlColumnIndex];
-                
-                // Look for any clickable element in this cell (button, icon, div, span, etc.)
-                const clickableElements = tpSlCell.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"], a, div, span, svg, [onclick], [class*="icon"], [class*="Icon"]');
-                
-                for (const element of clickableElements) {
-                  // Check if element is visible
-                  if (element.offsetParent !== null && element.offsetWidth > 0 && element.offsetHeight > 0) {
-                    // Click the first visible clickable element found
-                    element.click();
-                    return true;
-                  }
-                }
-                
-                // If no clickable element found, try clicking the cell itself
-                if (tpSlCell.offsetParent !== null) {
-                  tpSlCell.click();
-                  return true;
-                }
-              }
-            }
-          }
-          
-          return false;
-        }, tpSlModalAlreadyOpen);
-        
-        if (tpSlClicked || tpSlModalAlreadyOpen) {
-          if (tpSlModalAlreadyOpen) {
-            console.log(`[${email}] ✅ TP/SL modal already open (from auto-click listener), proceeding to fill it...`);
-            await delay(1000); // Brief delay to ensure modal is ready
-          } else {
-            console.log(`[${email}] Clicked TP/SL button to add TP/SL`);
-            console.log(`[${email}] Clicked element in TP/SL column of Positions table`);
-            console.log(`[${email}] Waiting after TP/SL button click...`);
-            await delay(2000); // Wait for modal to appear
-            console.log(`[${email}] ✓ Delay completed after TP/SL button click`);
-          }
-          
-          // Detect exchange type to use appropriate TP/SL input finding method
-          const currentUrl = page.url();
-          const isExtendedExchange = currentUrl.includes('extended.exchange');
-          const isParadex = currentUrl.includes('paradex.trade') || !isExtendedExchange;
-          
-          if (isParadex) {
-            // For Paradex: Use method from handleTpSlAddButtonClick - find input with "Loss" and "%" in nearby text
-            console.log(`[${email}] Paradex detected - using Paradex-specific TP/SL input finding method...`);
-            const stopLossValue = process.env.STOP_LOSS || '';
-            
-            if (!stopLossValue) {
-              console.log(`[${email}] ⚠️  STOP_LOSS env variable not set!`);
-              return ordersTabClicked;
-            }
-            
-            // Find the input element using evaluateHandle (Paradex method)
-            const slInputHandle = await page.evaluateHandle(() => {
-              // Find TP/SL modal specifically
-              const modals = Array.from(document.querySelectorAll('[class*="modal"], [role="dialog"]'));
-              let modal = null;
-              for (const m of modals) {
-                const style = window.getComputedStyle(m);
-                const isVisible = m.offsetParent !== null && 
-                                 style.display !== 'none' && 
-                                 style.visibility !== 'hidden';
-                if (isVisible) {
-                  const text = m.textContent || '';
-                  if (text.includes('TP/SL') || text.includes('Take Profit') || text.includes('Stop Loss')) {
-                    modal = m;
-                    break;
-                  }
-                }
-              }
-              
-              if (!modal) return null;
-              
-              // Find all inputs in modal
-              const inputs = Array.from(modal.querySelectorAll('input'));
-              
-              // Find input with "Loss" and "%" in nearby text (Paradex-specific)
-              for (const input of inputs) {
-                const parentText = input.parentElement?.textContent || '';
-                const nearbyText = parentText + ' ' + (input.previousElementSibling?.textContent || '') + ' ' + (input.nextElementSibling?.textContent || '');
-                
-                // Look for input near "Loss" label with "%" dropdown
-                if (nearbyText.includes('Loss') && nearbyText.includes('%') && !nearbyText.includes('USD')) {
-                  return input;
-                }
-              }
-              return null;
-            });
-            
-            if (slInputHandle && slInputHandle.asElement()) {
-              try {
-                const inputElement = slInputHandle.asElement();
-                
-                // Focus and clear the input
-                await inputElement.click({ clickCount: 3 }); // Triple click to select all
-                await page.keyboard.press('Backspace'); // Clear selected text
-                await inputElement.type(stopLossValue, { delay: 30 }); // Use exact string value from env
-                await page.keyboard.press('Tab'); // Trigger blur to calculate USD
-                await delay(300);
-                console.log(`[${email}] ✅ Successfully filled Stop Loss percentage using Paradex method`);
-                
-                // Wait 100ms after entering value
-                await delay(100);
-              } catch (error) {
-                console.log(`[${email}] ⚠️  Error filling Stop Loss input: ${error.message}`);
-                return ordersTabClicked;
-              }
-            } else {
-              console.log(`[${email}] ⚠️  Could not find Stop Loss input using Paradex method`);
-              return ordersTabClicked;
-            }
-          } else {
-            // For Extended Exchange: Use 5th input method
-            console.log(`[${email}] Extended Exchange detected - using 5th input method...`);
-            const stopLossResult = await page.evaluate((stopLossValue) => {
-              // Find modal/dialog
-              const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]');
-              if (!modal) {
-                console.log('No modal found');
-                return { success: false, reason: 'No modal found' };
-              }
-              
-              // Find all input fields in the modal (excluding hidden inputs)
-              const allInputs = Array.from(modal.querySelectorAll('input[type="text"], input[type="number"], input:not([type="hidden"]), input[data-part="input"]'));
-              
-              // Filter out disabled or readonly inputs that might not be interactive
-              const interactiveInputs = allInputs.filter(input => {
-                return !input.disabled && !input.readOnly && input.offsetParent !== null;
-              });
-              
-              console.log(`Found ${interactiveInputs.length} interactive inputs in modal`);
-              
-              // Get the 5th input (index 4) - Extended Exchange method
-              let stopLossInput = null;
-              if (interactiveInputs.length >= 5) {
-                stopLossInput = interactiveInputs[4]; // 5th input (index 4)
-                console.log(`Found 5th input in modal (index 4 of ${interactiveInputs.length} inputs)`);
-              } else if (interactiveInputs.length > 0) {
-                // If less than 5 inputs, use the last one
-                stopLossInput = interactiveInputs[interactiveInputs.length - 1];
-                console.log(`Only ${interactiveInputs.length} inputs found, using last input (index ${interactiveInputs.length - 1})`);
-              } else {
-                // Try to find any input-like elements
-                const allInputLike = Array.from(modal.querySelectorAll('input, [contenteditable="true"], [role="textbox"]'));
-                const interactiveInputLike = allInputLike.filter(el => {
-                  return !el.disabled && !el.readOnly && el.offsetParent !== null;
-                });
-                
-                if (interactiveInputLike.length >= 5) {
-                  stopLossInput = interactiveInputLike[4];
-                  console.log(`Found 5th input-like element in modal`);
-                } else if (interactiveInputLike.length > 0) {
-                  stopLossInput = interactiveInputLike[interactiveInputLike.length - 1];
-                  console.log(`Using last input-like element (${interactiveInputLike.length} found)`);
-                }
-              }
-              
-              if (!stopLossInput) {
-                console.log(`Could not find 5th input in modal. Total inputs found: ${allInputs.length}`);
-                return { success: false, reason: `Input #5 not found. Only ${allInputs.length} inputs available.` };
-              }
-              
-              // Return the input element info so we can use Puppeteer to type
-              const inputInfo = {
-                id: stopLossInput.id,
-                className: stopLossInput.className,
-                dataPart: stopLossInput.getAttribute('data-part'),
-                placeholder: stopLossInput.placeholder,
-                type: stopLossInput.type
-              };
-              
-              console.log(`Found input to fill:`, inputInfo);
-              return { success: true, inputInfo: inputInfo, inputFound: true };
-            }, process.env.STOP_LOSS || '');
-            
-            if (stopLossResult.success && stopLossResult.inputFound) {
-              // Use Puppeteer to click and type into the input
-              console.log(`[${email}] Clicking and typing into the 5th input (Extended Exchange method)...`);
-              const stopLossValue = process.env.STOP_LOSS || '';
-              
-              try {
-                // Find the input using the info we got
-                let inputElement = null;
-                
-                // Try multiple strategies to find the input
-                if (stopLossResult.inputInfo.id) {
-                  inputElement = await page.$(`#${stopLossResult.inputInfo.id}`);
-                }
-                
-                if (!inputElement && stopLossResult.inputInfo.dataPart) {
-                  inputElement = await page.$(`input[data-part="${stopLossResult.inputInfo.dataPart}"]`);
-                }
-                
-                // Fallback: find 5th input again using Puppeteer
-                if (!inputElement) {
-                  const inputs = await page.$$('input[type="text"], input[type="number"], input:not([type="hidden"]), input[data-part="input"]');
-                  const interactiveInputs = [];
-                  for (const input of inputs) {
-                    const isVisible = await input.evaluate(el => el.offsetParent !== null && !el.disabled && !el.readOnly);
-                    if (isVisible) {
-                      interactiveInputs.push(input);
-                    }
-                  }
-                  if (interactiveInputs.length >= 5) {
-                    inputElement = interactiveInputs[4]; // 5th input
-                  } else if (interactiveInputs.length > 0) {
-                    inputElement = interactiveInputs[interactiveInputs.length - 1];
-                  }
-                }
-                
-                if (inputElement) {
-                  // Click the input to focus it
-                  await inputElement.click({ delay: 100 });
-                  await delay(300);
-                  
-                  // Clear existing value
-                  await inputElement.click({ clickCount: 3 }); // Triple click to select all
-                  await page.keyboard.press('Backspace');
-                  await delay(200);
-                  
-                  // Type the value
-                  await inputElement.type(stopLossValue, { delay: 50 });
-                  
-                  // Trigger additional events
-                  await inputElement.evaluate((el, val) => {
-                    el.dispatchEvent(new Event('input', { bubbles: true }));
-                    el.dispatchEvent(new Event('change', { bubbles: true }));
-                    el.dispatchEvent(new Event('blur', { bubbles: true }));
-                  }, stopLossValue);
-                  
-                  console.log(`[${email}] ✅ Successfully filled stop loss input with value: ${stopLossValue}`);
-                  
-                  // Wait 100ms after entering value
-                  await delay(100);
-                } else {
-                  console.log(`[${email}] ⚠️  Could not find input element to fill`);
-                  return ordersTabClicked;
-                }
-              } catch (error) {
-                console.log(`[${email}] ⚠️  Error filling input: ${error.message}`);
-                return ordersTabClicked;
-              }
-            } else {
-              console.log(`[${email}] ⚠️  Could not find 5th input: ${stopLossResult.reason || 'unknown'}`);
-              return ordersTabClicked;
-            }
-          }
-          
-          // Common code for both exchanges: Find and click Confirm button
-          try {
-            // Find and click Confirm button in modal
-            console.log(`[${email}] Looking for Confirm button in modal...`);
-                const confirmButton = await page.evaluate(() => {
-                  const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]');
-                  if (!modal) {
-                    console.log('No modal found when looking for Confirm button');
-                    return null;
-                  }
-                  const buttons = Array.from(modal.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"]'));
-                  const confirmBtn = buttons.find(btn => {
-                    const text = btn.textContent?.trim().toLowerCase();
-                    const isVisible = btn.offsetParent !== null;
-                    return isVisible && (text === 'confirm' || text === 'apply' || text === 'save');
-                  });
-                  if (confirmBtn) {
-                    console.log('Found Confirm button');
-                    return true; // Return true to indicate button was found
-                  }
-                  console.log('Confirm button not found');
-                  return false;
-                });
-                
-                if (confirmButton) {
-                  // CRITICAL: Click the TP/SL Confirm button and wait for it to complete
-                  // This MUST happen BEFORE clicking Limit button
-                  console.log(`[${email}] Clicking TP/SL Confirm button...`);
-                  const confirmClicked = await page.evaluate(() => {
-                    // Find TP/SL modal specifically (not Limit modal)
-                    const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]'));
-                    let tpslModal = null;
-                    for (const m of modals) {
-                      const style = window.getComputedStyle(m);
-                      const isVisible = m.offsetParent !== null && 
-                                       style.display !== 'none' && 
-                                       style.visibility !== 'hidden';
-                      if (isVisible) {
-                        const text = m.textContent || '';
-                        // Make sure this is TP/SL modal, not Limit modal
-                        if ((text.includes('TP/SL') || text.includes('Take Profit') || text.includes('Stop Loss')) && 
-                            !text.includes('Close Position') && !text.includes('Limit')) {
-                          tpslModal = m;
-                          break;
-                        }
-                      }
-                    }
-                    
-                    if (!tpslModal) {
-                      console.log('TP/SL modal not found when trying to click Confirm');
-                      return false;
-                    }
-                    
-                    // Find Confirm button in TP/SL modal
-                    const buttons = Array.from(tpslModal.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"]'));
-                    const confirmBtn = buttons.find(btn => {
-                      const text = btn.textContent?.trim().toLowerCase();
-                      const isVisible = btn.offsetParent !== null && btn.offsetWidth > 0 && btn.offsetHeight > 0;
-                      return isVisible && (text === 'confirm' || text === 'apply' || text === 'save');
-                    });
-                    
-                    if (confirmBtn) {
-                      confirmBtn.click();
-                      console.log('Clicked TP/SL Confirm button');
-                      return true;
-                    }
-                    
-                    console.log('Confirm button not found in TP/SL modal');
-                    return false;
-                  });
-                  
-                  if (!confirmClicked) {
-                    console.log(`[${email}] ⚠️  Failed to click TP/SL Confirm button - NOT proceeding to Limit button`);
-                    // Don't proceed to Limit if Confirm wasn't clicked
-                    return ordersTabClicked;
-                  }
-                  
-                  console.log(`[${email}] ✅ Successfully clicked TP/SL Confirm button`);
-                  console.log(`[${email}] Waiting 3-4 seconds after TP/SL confirm click before proceeding to Limit...`);
-                  await delay(3500); // Wait 3.5 seconds after confirming TP/SL (3-4 second range)
-                  console.log(`[${email}] ✓ 3.5 second delay completed after TP/SL confirm`);
-                  
-                  // CRITICAL: Verify TP/SL modal is actually closed before clicking Limit button
-                  console.log(`[${email}] Verifying TP/SL modal is closed before proceeding to Limit button...`);
-                  let tpSlModalClosed = false;
-                  let modalCheckAttempts = 0;
-                  const maxModalChecks = 15; // Check up to 15 times (15 seconds)
-                  
-                  while (!tpSlModalClosed && modalCheckAttempts < maxModalChecks) {
-                    await delay(1000); // Wait 1 second between checks
-                    modalCheckAttempts++;
-                    
-                    tpSlModalClosed = await page.evaluate(() => {
-                      const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]'));
-                      // Check if any modal contains TP/SL related text
-                      for (const modal of modals) {
-                        const style = window.getComputedStyle(modal);
-                        const isVisible = modal.offsetParent !== null && 
-                                         style.display !== 'none' && 
-                                         style.visibility !== 'hidden';
-                        if (isVisible) {
-                          const text = modal.textContent || '';
-                          if (text.includes('TP/SL') || text.includes('Take Profit') || text.includes('Stop Loss')) {
-                            return false; // TP/SL modal still open
-                          }
-                        }
-                      }
-                      return true; // No TP/SL modal found, it's closed
-                    });
-                    
-                    if (!tpSlModalClosed) {
-                      console.log(`[${email}] TP/SL modal still open (attempt ${modalCheckAttempts}/${maxModalChecks}), waiting...`);
-                    }
-                  }
-                  
-                  if (tpSlModalClosed) {
-                    console.log(`[${email}] ✅ TP/SL modal is confirmed closed, proceeding to Limit button...`);
-                  } else {
-                    console.log(`[${email}] ⚠️  TP/SL modal may still be open after ${maxModalChecks} seconds, but proceeding to Limit button...`);
-                  }
-                  
-                  // Only proceed to click Limit button after TP/SL modal is confirmed closed
-                  // After TP/SL modal is closed, find and click Limit button in the same row as TP/SL button
-                  console.log(`[${email}] Looking for Limit button in Positions table (same row as TP/SL)...`);
-                  const limitButtonResult = await page.evaluate(() => {
-                    // Find all table elements
-                    const tables = Array.from(document.querySelectorAll('table'));
-                    
-                    for (const table of tables) {
-                      // Find header row
-                      const headerRow = table.querySelector('thead tr, thead > tr, tr:first-child');
-                      if (!headerRow) continue;
-                      
-                      // Find TP/SL column header
-                      const headers = Array.from(headerRow.querySelectorAll('th, td'));
-                      let tpSlColumnIndex = -1;
-                      
-                      for (let i = 0; i < headers.length; i++) {
-                        const headerText = headers[i].textContent?.trim().toLowerCase();
-                        if (headerText && (headerText.includes('tp/sl') || headerText.includes('tp / sl') || headerText.includes('tpsl'))) {
-                          tpSlColumnIndex = i;
-                          break;
-                        }
-                      }
-                      
-                      if (tpSlColumnIndex === -1) continue;
-                      
-                      // Find data rows
-                      const dataRows = Array.from(table.querySelectorAll('tbody tr, tr:not(:first-child)'));
-                      
-                      // Find first data row that has a TP/SL column
-                      for (const row of dataRows) {
-                        const cells = Array.from(row.querySelectorAll('td, th'));
-                        if (cells.length > tpSlColumnIndex) {
-                          const tpSlCell = cells[tpSlColumnIndex];
-                          
-                          // Check if this row has a TP/SL element (indicating it's the row we clicked)
-                          const hasTpSlElement = tpSlCell.querySelector('button, div[role="button"], span[role="button"], a, svg, [onclick], [class*="icon"]');
-                          
-                          if (hasTpSlElement) {
-                            // Now find Limit button in this same row (with capital L)
-                            const limitButton = Array.from(row.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"], a')).find(btn => {
-                              const text = btn.textContent?.trim();
-                              const isVisible = btn.offsetParent !== null && btn.offsetWidth > 0 && btn.offsetHeight > 0;
-                              return isVisible && (text === 'Limit' || text.includes('Limit'));
-                            });
-                            
-                            if (limitButton) {
-                              limitButton.click();
-                              console.log('Found and clicked Limit button in same row as TP/SL');
-                              return true;
-                            }
-                          }
-                        }
-                      }
-                    }
-                    
-                    return false;
-                  });
-                  
-                  if (limitButtonResult) {
-                    console.log(`[${email}] ✅ Successfully clicked Limit button in Positions table`);
-                    console.log(`[${email}] Waiting after Limit button click...`);
-                    await delay(2000); // Wait for modal to appear
-                    console.log(`[${email}] ✓ Delay completed after Limit button click`);
-                    
-                    // Find and click Close Position button in the modal
-                    console.log(`[${email}] Looking for Close Position button in modal...`);
-                    const closePositionClicked = await page.evaluate(() => {
-                      // Find modal/dialog
-                      const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]');
-                      if (!modal) {
-                        console.log('No modal found when looking for Close Position button');
-                        return false;
-                      }
-                      
-                      // Find Close Position button
-                      const buttons = Array.from(modal.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"]'));
-                      const closePositionBtn = buttons.find(btn => {
-                        const text = btn.textContent?.trim();
-                        const isVisible = btn.offsetParent !== null && btn.offsetWidth > 0 && btn.offsetHeight > 0;
-                        return isVisible && (text === 'Close Position' || text.includes('Close Position'));
-                      });
-                      
-                      if (closePositionBtn) {
-                        closePositionBtn.click();
-                        console.log('Found and clicked Close Position button');
-                        return true;
-                      }
-                      
-                      console.log('Close Position button not found in modal');
-                      return false;
-                    });
-                    
-                    if (closePositionClicked) {
-                      console.log(`[${email}] ✅ Successfully clicked Close Position button in modal`);
-                      await delay(1000); // Brief delay before looking for Confirm button
-                      
-                      // Find and click Confirm button in the Limit modal (after Close Position)
-                      console.log(`[${email}] Looking for Confirm button in Limit modal...`);
-                      const confirmInLimitModal = await page.evaluate(() => {
-                        const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]');
-                        if (!modal) return false;
-                        const buttons = Array.from(modal.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"]'));
-                        const confirmBtn = buttons.find(btn => {
-                          const text = btn.textContent?.trim().toLowerCase();
-                          const isVisible = btn.offsetParent !== null && btn.offsetWidth > 0 && btn.offsetHeight > 0;
-                          return isVisible && (text === 'confirm' || text === 'apply' || text === 'save');
-                        });
-                        if (confirmBtn) {
-                          confirmBtn.click();
-                          return true;
-                        }
-                        return false;
-                      });
-                      
-                      if (confirmInLimitModal) {
-                        console.log(`[${email}] ✅ Successfully clicked Confirm button in Limit modal`);
-                        await delay(2000);
-                      } else {
-                        console.log(`[${email}] ⚠️  Could not find Confirm button in Limit modal, continuing...`);
-                        await delay(1000);
-                      }
-                      
-                      // Wait 10 seconds after confirming Limit close, then check if positions are still open
-                      console.log(`[${email}] Waiting 10 seconds after confirming Limit close...`);
-                      await delay(10000); // Wait 10 seconds
-                      console.log(`[${email}] ✓ 10 second wait completed after Limit close`);
-                      
-                      // Now check if there are any open positions still remaining
-                      console.log(`[${email}] Checking if positions are still open after 10 seconds...`);
-                      const hasOpenPositions = await page.evaluate(() => {
-                        // Find Positions table
-                        const tables = Array.from(document.querySelectorAll('table'));
-                        for (const table of tables) {
-                          const dataRows = Array.from(table.querySelectorAll('tbody tr, tr:not(:first-child)'));
-                          // Check if there are any data rows (indicating open positions)
-                          if (dataRows.length > 0) {
-                            // Check if rows have actual position data (not just empty rows)
-                            const rowsWithData = dataRows.filter(row => {
-                              const cells = Array.from(row.querySelectorAll('td, th'));
-                              return cells.length > 0 && row.offsetParent !== null;
-                            });
-                            return rowsWithData.length > 0;
-                          }
-                        }
-                        return false;
-                      });
-                      
-                      if (hasOpenPositions) {
-                        console.log(`[${email}] Positions still open after 10 seconds, clicking CLOSE ALL POSITIONS...`);
-                        
-                        // Find and click CLOSE ALL POSITIONS button in Positions tab
-                        console.log(`[${email}] Looking for CLOSE ALL POSITIONS button...`);
-                        const closeAllClicked = await page.evaluate(() => {
-                          // Find button with text "CLOSE ALL POSITIONS" or "Close All Positions"
-                          const allButtons = Array.from(document.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"]'));
-                          const closeAllBtn = allButtons.find(btn => {
-                            const text = btn.textContent?.trim();
-                            const isVisible = btn.offsetParent !== null && btn.offsetWidth > 0 && btn.offsetHeight > 0;
-                            return isVisible && (
-                              text === 'CLOSE ALL POSITIONS' || 
-                              text === 'Close All Positions' ||
-                              text.toLowerCase() === 'close all positions' ||
-                              text.includes('CLOSE ALL POSITIONS') ||
-                              text.includes('Close All Positions')
-                            );
-                          });
-                          
-                          if (closeAllBtn) {
-                            closeAllBtn.click();
-                            console.log('Found and clicked CLOSE ALL POSITIONS button');
-                            return true;
-                          }
-                          
-                          console.log('CLOSE ALL POSITIONS button not found');
-                          return false;
-                        });
-                        
-                        if (closeAllClicked) {
-                          console.log(`[${email}] ✅ Successfully clicked CLOSE ALL POSITIONS button`);
-                          await delay(2000); // Wait for modal to appear and render
-                          
-                          // Find and click Close Positions button in the modal
-                          console.log(`[${email}] Looking for Close Positions button in modal...`);
-                          const closePositionsClicked = await page.evaluate(() => {
-                            // Find modal/dialog
-                            const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]');
-                            if (!modal) {
-                              console.log('No modal found when looking for Close Positions button');
-                              return false;
-                            }
-                            
-                            // Find Close Positions button
-                            const buttons = Array.from(modal.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"]'));
-                            const closePositionsBtn = buttons.find(btn => {
-                              const text = btn.textContent?.trim();
-                              const isVisible = btn.offsetParent !== null && btn.offsetWidth > 0 && btn.offsetHeight > 0;
-                              return isVisible && (
-                                text === 'Close Positions' || 
-                                text.includes('Close Positions')
-                              );
-                            });
-                            
-                            if (closePositionsBtn) {
-                              closePositionsBtn.click();
-                              console.log('Found and clicked Close Positions button');
-                              return true;
-                            }
-                            
-                            console.log('Close Positions button not found in modal');
-                            return false;
-                          });
-                          
-                          if (closePositionsClicked) {
-                            console.log(`[${email}] ✅ Successfully clicked Close Positions button in modal`);
-                            await delay(2000); // Wait for modal to close
-                            
-                            // Find and click leverage button (e.g., "10x") in right sidebar (only if not skipping)
-                            if (skipLeverage) {
-                              console.log(`[${email}] Skipping leverage setting after CLOSE ALL (will be set in post-trade flow)`);
-                            } else {
-                              console.log(`[${email}] Looking for leverage button (e.g., "10x") in right sidebar...`);
-                              const leverageButtonClicked = await page.evaluate(() => {
-                              // Find button with text matching pattern like "10x", "20x", etc.
-                              const allButtons = Array.from(document.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"]'));
-                              const leverageBtn = allButtons.find(btn => {
-                                const text = btn.textContent?.trim();
-                                const isVisible = btn.offsetParent !== null && btn.offsetWidth > 0 && btn.offsetHeight > 0;
-                                // Match pattern: number followed by "x" (e.g., "10x", "20x", "5x")
-                                return isVisible && /^\d+x$/i.test(text);
-                              });
-                              
-                              if (leverageBtn) {
-                                leverageBtn.click();
-                                console.log(`Found and clicked leverage button: ${leverageBtn.textContent?.trim()}`);
-                                return true;
-                              }
-                              
-                              console.log('Leverage button not found');
-                              return false;
-                            });
-                            
-                            if (leverageButtonClicked) {
-                              console.log(`[${email}] ✅ Successfully clicked leverage button`);
-                              await delay(2000); // Wait for modal to appear
-                              
-                              // Find input in modal and set LEVERAGE value, then click Confirm
-                              console.log(`[${email}] Looking for leverage input in modal...`);
-                              const leverageValue = process.env.LEVERAGE || '20';
-                              
-                              const leverageSet = await page.evaluate((leverageVal) => {
-                                // Find modal/dialog
-                                const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]');
-                                if (!modal) {
-                                  console.log('No modal found when looking for leverage input');
-                                  return { success: false, reason: 'No modal found' };
-                                }
-                                
-                                // Find input field in modal
-                                const inputs = Array.from(modal.querySelectorAll('input[type="text"], input[type="number"], input:not([type="hidden"])'));
-                                const leverageInput = inputs.find(input => {
-                                  return !input.disabled && !input.readOnly && input.offsetParent !== null;
-                                });
-                                
-                                if (!leverageInput) {
-                                  console.log('Leverage input not found in modal');
-                                  return { success: false, reason: 'Input not found' };
-                                }
-                                
-                                // Clear and set value
-                                leverageInput.focus();
-                                leverageInput.click();
-                                leverageInput.value = '';
-                                leverageInput.value = leverageVal;
-                                
-                                // Trigger events
-                                leverageInput.dispatchEvent(new Event('input', { bubbles: true }));
-                                leverageInput.dispatchEvent(new Event('change', { bubbles: true }));
-                                
-                                console.log(`Set leverage input to: ${leverageVal}`);
-                                
-                                // Find and click Confirm button
-                                const buttons = Array.from(modal.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"]'));
-                                const confirmBtn = buttons.find(btn => {
-                                  const text = btn.textContent?.trim().toLowerCase();
-                                  const isVisible = btn.offsetParent !== null && btn.offsetWidth > 0 && btn.offsetHeight > 0;
-                                  return isVisible && (text === 'confirm' || text === 'apply' || text === 'save');
-                                });
-                                
-                                if (confirmBtn) {
-                                  confirmBtn.click();
-                                  console.log('Clicked Confirm button in leverage modal');
-                                  return { success: true, inputSet: true, confirmed: true };
-                                }
-                                
-                                console.log('Confirm button not found in leverage modal');
-                                return { success: true, inputSet: true, confirmed: false, reason: 'Confirm button not found' };
-                              }, leverageValue);
-                              
-                              if (leverageSet.success && leverageSet.inputSet) {
-                                console.log(`[${email}] ✅ Successfully set leverage to: ${leverageValue}`);
-                                if (leverageSet.confirmed) {
-                                  console.log(`[${email}] ✅ Successfully clicked Confirm button in leverage modal`);
-                                  await delay(2000);
-                                } else {
-                                  console.log(`[${email}] ⚠️  Could not find Confirm button: ${leverageSet.reason || 'unknown'}`);
-                                }
-                              } else {
-                                console.log(`[${email}] ⚠️  Could not set leverage: ${leverageSet.reason || 'unknown'}`);
-                              }
-                            } else {
-                              console.log(`[${email}] ⚠️  Could not find leverage button in right sidebar`);
-                            }
-                            } // End of else block for skipLeverage check
-                          } else {
-                            console.log(`[${email}] ⚠️  Could not find Close Positions button in modal`);
-                          }
-                        } else {
-                          console.log(`[${email}] ⚠️  Could not find CLOSE ALL POSITIONS button`);
-                        }
-                      } else {
-                        console.log(`[${email}] No open positions found, skipping CLOSE ALL POSITIONS`);
-                      }
-                    } else {
-                      console.log(`[${email}] ⚠️  Could not find Close Position button in modal`);
-                    }
-                  } else {
-                    console.log(`[${email}] ⚠️  Could not find Limit button in same row as TP/SL`);
-                    // If Limit button not found, try to close all positions
-                    if (!skipLeverage) {
-                      await handleClosePositionsAndSetLeverage(page, email);
-                    }
-                  }
-                } else {
-                  console.log(`[${email}] ⚠️  Could not find Confirm button in modal`);
-                  // If Confirm not found, try to close all positions
-                  if (!skipLeverage) {
-                    await handleClosePositionsAndSetLeverage(page, email);
-                  }
-                }
-          } catch (error) {
-            console.log(`[${email}] ⚠️  Error in TP/SL flow: ${error.message}`);
-            // On error, try to close all positions
-            if (!skipLeverage) {
-              await handleClosePositionsAndSetLeverage(page, email);
-            }
-          }
-        } else {
-          console.log(`[${email}] No open positions found${skipLeverage ? ', skipping leverage (will be set later)' : ', proceeding to set leverage...'}`);
-          // No positions found, directly set leverage (unless skipped)
-          if (!skipLeverage) {
-            await handleSetLeverage(page, email);
-          }
-        }
-      } else {
-        console.log(`[${email}] Positions tab not found${skipLeverage ? ', skipping leverage (will be set later)' : ', trying to set leverage...'}`);
-        // Try to set leverage anyway (unless skipped)
-        if (!skipLeverage) {
-          await handleSetLeverage(page, email);
-        }
-      }
-    } else {
-      // If we didn't switch to Positions tab, try to set leverage (unless skipped)
-      console.log(`[${email}] Could not switch to Positions tab${skipLeverage ? ', skipping leverage (will be set later)' : ', trying to set leverage...'}`);
-      if (!skipLeverage) {
-        await handleSetLeverage(page, email);
-      }
-    }
-    
-    return ordersTabClicked;
-  } catch (error) {
-    console.log(`[${email}] Error clicking Orders tab: ${error.message}`);
-    return false;
-  }
-}
-
-// Extended Exchange pre/post-trade flow: cancel orders, positions, TP/SL, close positions, set leverage
-// This runs both BEFORE and AFTER trade execution for Extended Exchange
-async function extendedExchangePrePostTradeFlow(page, email) {
-  console.log(`[${email}] Starting Extended Exchange pre/post-trade flow...`);
-  
-  try {
-    // Step 1: Cancel all open orders first
-    console.log(`[${email}] Step 1: Canceling all open orders...`);
-    const cancelResult = await cancelAllOrders(page);
-    if (cancelResult.success) {
-      console.log(`[${email}] ✅ Orders canceled: ${cancelResult.message || 'completed'}`);
-    } else {
-      console.log(`[${email}] ⚠️  Order cancellation: ${cancelResult.error || 'check failed'}`);
-    }
-    await delay(1000);
-    
-    // Step 2: Click Orders tab (skip login checks - we're already logged in)
-    console.log(`[${email}] Step 2: Clicking Orders tab...`);
-    let ordersTabClicked = false;
-    
-    const ordersTab = await findByExactText(page, "Orders", ["button", "div", "span", "a"]);
-    if (ordersTab) {
-      const isVisible = await page.evaluate((el) => {
-        return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
-      }, ordersTab);
-      if (isVisible) {
-        await ordersTab.click();
-        ordersTabClicked = true;
-        console.log(`[${email}] ✅ Clicked Orders tab`);
-        await delay(1500);
-      }
-    }
-    
-    if (!ordersTabClicked) {
-      console.log(`[${email}] ⚠️  Could not click Orders tab, trying alternative...`);
-      const clicked = await page.evaluate(() => {
-        const allElements = Array.from(document.querySelectorAll('button, div[role="tab"], span[role="tab"], a[role="tab"], div, span, a'));
-        for (const el of allElements) {
-          const text = el.textContent?.trim().toLowerCase();
-          const isVisible = el.offsetParent !== null;
-          if (isVisible && text === 'orders') {
-            el.click();
-            return true;
-          }
-        }
-        return false;
-      });
-      if (clicked) {
-        ordersTabClicked = true;
-        await delay(1500);
-      }
-    }
-    
-    if (!ordersTabClicked) {
-      console.log(`[${email}] ⚠️  Could not click Orders tab, continuing to Positions...`);
-    }
-    
-    // Step 3: Check for open orders and click CANCEL ALL if found
-    console.log(`[${email}] Step 3: Checking for open orders...`);
-    const hasOpenOrders = await page.evaluate(() => {
-      const tables = Array.from(document.querySelectorAll('table'));
-      for (const table of tables) {
-        const dataRows = Array.from(table.querySelectorAll('tbody tr, tr:not(:first-child)'));
-        if (dataRows.length > 0) {
-          const rowsWithData = dataRows.filter(row => {
-            const cells = Array.from(row.querySelectorAll('td, th'));
-            return cells.length > 0 && row.offsetParent !== null;
-          });
-          return rowsWithData.length > 0;
-        }
-      }
-      return false;
-    });
-    
-    if (hasOpenOrders) {
-      console.log(`[${email}] Open orders detected, clicking CANCEL ALL...`);
-      const cancelAllClicked = await page.evaluate(() => {
-        const buttons = Array.from(document.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"]'));
-        for (const btn of buttons) {
-          const text = btn.textContent?.trim().toLowerCase();
-          const isVisible = btn.offsetParent !== null;
-          if (isVisible && (text === 'cancel all' || text === 'cancelall' || text.includes('cancel all'))) {
-            btn.click();
-            return true;
-          }
-        }
-        return false;
-      });
-      
-      if (cancelAllClicked) {
-        console.log(`[${email}] ✅ Clicked CANCEL ALL`);
-        await delay(2000);
-      }
-    } else {
-      console.log(`[${email}] No open orders found`);
-    }
-    
-    // Step 4: Switch to Positions tab
-    console.log(`[${email}] Step 4: Switching to Positions tab...`);
-    let positionsTabClicked = false;
-    
-    const positionsTab = await findByExactText(page, "Positions", ["button", "div", "span", "a"]);
-    if (positionsTab) {
-      const isVisible = await page.evaluate((el) => {
-        return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
-      }, positionsTab);
-      if (isVisible) {
-        await positionsTab.click();
-        positionsTabClicked = true;
-        console.log(`[${email}] ✅ Clicked Positions tab`);
-        await delay(2000);
-      }
-    }
-    
-    if (!positionsTabClicked) {
-      const clicked = await page.evaluate(() => {
-        const allElements = Array.from(document.querySelectorAll('button, div[role="tab"], span[role="tab"], a[role="tab"], div, span, a'));
-        for (const el of allElements) {
-          const text = el.textContent?.trim().toLowerCase();
-          const isVisible = el.offsetParent !== null;
-          if (isVisible && text === 'positions') {
-            el.click();
-            return true;
-          }
-        }
-        return false;
-      });
-      if (clicked) {
-        positionsTabClicked = true;
-        await delay(2000);
-      }
-    }
-    
-    if (positionsTabClicked) {
-      // Step 5: Check for open positions and handle TP/SL, close positions flow
-      console.log(`[${email}] Step 5: Checking for open positions...`);
-      
-      // Wait a bit for positions to load after clicking Positions tab
-      await delay(1500);
-      
-      // Retry checking for positions (they might take time to load)
-      let hasOpenPositions = false;
-      for (let retry = 0; retry < 3; retry++) {
-        hasOpenPositions = await page.evaluate(() => {
-          const tables = Array.from(document.querySelectorAll('table'));
-          for (const table of tables) {
-            const dataRows = Array.from(table.querySelectorAll('tbody tr, tr:not(:first-child)'));
-            if (dataRows.length > 0) {
-              const rowsWithData = dataRows.filter(row => {
-                const cells = Array.from(row.querySelectorAll('td, th'));
-                const isVisible = row.offsetParent !== null;
-                // More specific check: look for position-related content
-                const rowText = row.textContent?.toLowerCase() || '';
-                const hasPositionIndicators = (
-                  rowText.includes('position') || 
-                  rowText.includes('pnl') || 
-                  rowText.includes('size') ||
-                  rowText.includes('entry') ||
-                  cells.length >= 3 // Positions table typically has multiple columns
-                );
-                return isVisible && cells.length > 0 && hasPositionIndicators;
-              });
-              if (rowsWithData.length > 0) {
-                console.log(`Found ${rowsWithData.length} position row(s)`);
-                return true;
-              }
-            }
-          }
-          return false;
-        });
-        
-        if (hasOpenPositions) {
-          console.log(`[${email}] ✅ Open positions detected (attempt ${retry + 1}/3)`);
-          break;
-        }
-        
-        if (retry < 2) {
-          console.log(`[${email}] No positions found yet (attempt ${retry + 1}/3), waiting...`);
-          await delay(1000);
-        }
-      }
-      
-      if (hasOpenPositions) {
-        console.log(`[${email}] ✅ Open positions detected, proceeding with TP/SL flow...`);
-        console.log(`[${email}] [POST-TRADE] CRITICAL: TP/SL MUST be added before closing positions!`);
-        
-        // Step 5a: Find TP/SL column and click element to add TP/SL
-        // CRITICAL: This MUST run before Limit button - positions cannot be closed without TP/SL
-        // Using EXACT same method as clickOrdersTab flow (initial bot startup)
-        console.log(`[${email}] [POST-TRADE] Step 5a: Looking for TP/SL column in Positions table...`);
-        let tpSlClicked = false;
-        try {
-          // Add timeout protection for evaluate call (30 second timeout)
-          tpSlClicked = await Promise.race([
-            page.evaluate(() => {
-              // Find all table elements
-              const tables = Array.from(document.querySelectorAll('table'));
-              
-              for (const table of tables) {
-                // Find header row
-                const headerRow = table.querySelector('thead tr, thead > tr, tr:first-child');
-                if (!headerRow) continue;
-                
-                // Find TP/SL column header
-                const headers = Array.from(headerRow.querySelectorAll('th, td'));
-                let tpSlColumnIndex = -1;
-                
-                for (let i = 0; i < headers.length; i++) {
-                  const headerText = headers[i].textContent?.trim().toLowerCase();
-                  if (headerText && (headerText.includes('tp/sl') || headerText.includes('tp / sl') || headerText.includes('tpsl'))) {
-                    tpSlColumnIndex = i;
-                    console.log(`Found TP/SL column at index ${i}`);
-                    break;
-                  }
-                }
-                
-                if (tpSlColumnIndex === -1) continue;
-                
-                // Find data rows (skip header row)
-                const dataRows = Array.from(table.querySelectorAll('tbody tr, tr:not(:first-child)'));
-                
-                // Find first data row and click any clickable element in TP/SL column
-                for (const row of dataRows) {
-                  const cells = Array.from(row.querySelectorAll('td, th'));
-                  if (cells.length > tpSlColumnIndex) {
-                    const tpSlCell = cells[tpSlColumnIndex];
-                    
-                    // Look for any clickable element in this cell (button, icon, div, span, etc.)
-                    const clickableElements = tpSlCell.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"], a, div, span, svg, [onclick], [class*="icon"], [class*="Icon"]');
-                    
-                    for (const element of clickableElements) {
-                      // Check if element is visible
-                      if (element.offsetParent !== null && element.offsetWidth > 0 && element.offsetHeight > 0) {
-                        // Click the first visible clickable element found
-                        element.click();
-                        return true;
-                      }
-                    }
-                    
-                    // If no clickable element found, try clicking the cell itself
-                    if (tpSlCell.offsetParent !== null) {
-                      tpSlCell.click();
-                      return true;
-                    }
-                  }
-                }
-              }
-              
-              return false;
-            }),
-            new Promise((_, reject) => 
-              setTimeout(() => reject(new Error('TP/SL search timeout after 30s')), 30000)
-            )
-          ]);
-        } catch (error) {
-          console.log(`[${email}] [POST-TRADE] ⚠️  Error or timeout finding TP/SL button: ${error.message}`);
-          tpSlClicked = false;
-        }
-        
-        console.log(`[${email}] [POST-TRADE] TP/SL button click result: ${tpSlClicked ? 'SUCCESS' : 'FAILED'}`);
-        
-        if (tpSlClicked) {
-          console.log(`[${email}] [POST-TRADE] ✅ TP/SL button clicked successfully, proceeding with TP/SL modal flow...`);
-          console.log(`[${email}] [POST-TRADE] Clicked TP/SL button to add TP/SL`);
-          console.log(`[${email}] [POST-TRADE] Clicked element in TP/SL column of Positions table`);
-          await delay(2000); // Wait for modal to appear (same as clickOrdersTab flow)
-          
-          // Handle TP/SL modal: Find the 5th input and fill with STOP_LOSS value
-          console.log(`[${email}] [POST-TRADE] Looking for TP/SL modal and 5th input...`);
-          const stopLossResult = await page.evaluate((stopLossValue) => {
-            const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]');
-            if (!modal) {
-              return { success: false, reason: 'No modal found' };
-            }
-            
-            const allInputs = Array.from(modal.querySelectorAll('input[type="text"], input[type="number"], input:not([type="hidden"]), input[data-part="input"]'));
-            const interactiveInputs = allInputs.filter(input => {
-              return !input.disabled && !input.readOnly && input.offsetParent !== null;
-            });
-            
-            let stopLossInput = null;
-            if (interactiveInputs.length >= 5) {
-              stopLossInput = interactiveInputs[4];
-            } else if (interactiveInputs.length > 0) {
-              stopLossInput = interactiveInputs[interactiveInputs.length - 1];
-            } else {
-              const allInputLike = Array.from(modal.querySelectorAll('input, [contenteditable="true"], [role="textbox"]'));
-              const interactiveInputLike = allInputLike.filter(el => {
-                return !el.disabled && !el.readOnly && el.offsetParent !== null;
-              });
-              
-              if (interactiveInputLike.length >= 5) {
-                stopLossInput = interactiveInputLike[4];
-              } else if (interactiveInputLike.length > 0) {
-                stopLossInput = interactiveInputLike[interactiveInputLike.length - 1];
-              }
-            }
-            
-            if (!stopLossInput) {
-              return { success: false, reason: `Input #5 not found. Only ${allInputs.length} inputs available.` };
-            }
-            
-            const inputInfo = {
-              id: stopLossInput.id,
-              className: stopLossInput.className,
-              dataPart: stopLossInput.getAttribute('data-part'),
-              placeholder: stopLossInput.placeholder,
-              type: stopLossInput.type
-            };
-            
-            return { success: true, inputInfo: inputInfo, inputFound: true };
-          }, process.env.STOP_LOSS || '');
-          
-          if (stopLossResult.success && stopLossResult.inputFound) {
-            console.log(`[${email}] [POST-TRADE] ✅ Found TP/SL modal and 5th input, filling STOP_LOSS value...`);
-            const stopLossValue = process.env.STOP_LOSS || '';
-            
-            if (!stopLossValue) {
-              console.log(`[${email}] [POST-TRADE] ❌ STOP_LOSS env variable not set! Cannot proceed without STOP_LOSS value`);
-              await handleSetLeverage(page, email);
-              return { success: false, error: 'STOP_LOSS env variable not set' };
-            }
-            
-            try {
-              let inputElement = null;
-              
-              if (stopLossResult.inputInfo.id) {
-                inputElement = await page.$(`#${stopLossResult.inputInfo.id}`);
-              }
-              
-              if (!inputElement && stopLossResult.inputInfo.dataPart) {
-                inputElement = await page.$(`input[data-part="${stopLossResult.inputInfo.dataPart}"]`);
-              }
-              
-              if (!inputElement) {
-                const inputs = await page.$$('input[type="text"], input[type="number"], input:not([type="hidden"]), input[data-part="input"]');
-                const interactiveInputs = [];
-                for (const input of inputs) {
-                  const isVisible = await input.evaluate(el => el.offsetParent !== null && !el.disabled && !el.readOnly);
-                  if (isVisible) {
-                    interactiveInputs.push(input);
-                  }
-                }
-                if (interactiveInputs.length >= 5) {
-                  inputElement = interactiveInputs[4];
-                } else if (interactiveInputs.length > 0) {
-                  inputElement = interactiveInputs[interactiveInputs.length - 1];
-                }
-              }
-              
-              if (inputElement) {
-                await inputElement.click({ delay: 100 });
-                await delay(300);
-                await inputElement.click({ clickCount: 3 });
-                await page.keyboard.press('Backspace');
-                await delay(200);
-                await inputElement.type(stopLossValue, { delay: 50 });
-                await inputElement.evaluate((el, val) => {
-                  el.dispatchEvent(new Event('input', { bubbles: true }));
-                  el.dispatchEvent(new Event('change', { bubbles: true }));
-                  el.dispatchEvent(new Event('blur', { bubbles: true }));
-                }, stopLossValue);
-                
-                console.log(`[${email}] ✅ Successfully filled stop loss input with value: ${stopLossValue}`);
-                await delay(100);
-                
-                // Find and click Confirm button in modal
-                console.log(`[${email}] Looking for Confirm button in modal...`);
-                const confirmButton = await page.evaluate(() => {
-                  const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]');
-                  if (!modal) return null;
-                  const buttons = Array.from(modal.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"]'));
-                  const confirmBtn = buttons.find(btn => {
-                    const text = btn.textContent?.trim().toLowerCase();
-                    const isVisible = btn.offsetParent !== null;
-                    return isVisible && (text === 'confirm' || text === 'apply' || text === 'save');
-                  });
-                  if (confirmBtn) {
-                    return true;
-                  }
-                  return false;
-                });
-                
-                if (confirmButton) {
-                  await page.evaluate(() => {
-                    const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]');
-                    if (!modal) return;
-                    const buttons = Array.from(modal.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"]'));
-                    const confirmBtn = buttons.find(btn => {
-                      const text = btn.textContent?.trim().toLowerCase();
-                      const isVisible = btn.offsetParent !== null;
-                      return isVisible && (text === 'confirm' || text === 'apply' || text === 'save');
-                    });
-                    if (confirmBtn) {
-                      confirmBtn.click();
-                    }
-                  });
-                  console.log(`[${email}] [POST-TRADE] ✅ Successfully clicked Confirm button in TP/SL modal`);
-                  await delay(2000);
-                  
-                  // Verify TP/SL modal closed before proceeding to Limit
-                  const tpSlModalClosed = await page.evaluate(() => {
-                    const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]');
-                    return modal === null;
-                  });
-                  
-                  if (!tpSlModalClosed) {
-                    console.log(`[${email}] [POST-TRADE] ⚠️  TP/SL modal still open after Confirm, waiting...`);
-                    await delay(2000);
-                  }
-                  
-                  // Find and click Limit button in the same row as TP/SL button
-                  // CRITICAL: Only proceed to Limit AFTER TP/SL has been successfully added
-                  console.log(`[${email}] [POST-TRADE] TP/SL added successfully, now looking for Limit button in Positions table (same row as TP/SL)...`);
-                  const limitButtonClicked = await page.evaluate(() => {
-                    const tables = Array.from(document.querySelectorAll('table'));
-                    
-                    for (const table of tables) {
-                      const headerRow = table.querySelector('thead tr, thead > tr, tr:first-child');
-                      if (!headerRow) continue;
-                      
-                      const headers = Array.from(headerRow.querySelectorAll('th, td'));
-                      let tpSlColumnIndex = -1;
-                      
-                      for (let i = 0; i < headers.length; i++) {
-                        const headerText = headers[i].textContent?.trim().toLowerCase();
-                        if (headerText && (headerText.includes('tp/sl') || headerText.includes('tp / sl') || headerText.includes('tpsl'))) {
-                          tpSlColumnIndex = i;
-                          break;
-                        }
-                      }
-                      
-                      if (tpSlColumnIndex === -1) continue;
-                      
-                      const dataRows = Array.from(table.querySelectorAll('tbody tr, tr:not(:first-child)'));
-                      
-                      for (const row of dataRows) {
-                        const cells = Array.from(row.querySelectorAll('td, th'));
-                        if (cells.length > tpSlColumnIndex) {
-                          const tpSlCell = cells[tpSlColumnIndex];
-                          const hasTpSlElement = tpSlCell.querySelector('button, div[role="button"], span[role="button"], a, svg, [onclick], [class*="icon"]');
-                          
-                          if (hasTpSlElement) {
-                            const limitButton = Array.from(row.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"], a')).find(btn => {
-                              const text = btn.textContent?.trim();
-                              const isVisible = btn.offsetParent !== null && btn.offsetWidth > 0 && btn.offsetHeight > 0;
-                              return isVisible && (text === 'Limit' || text.includes('Limit'));
-                            });
-                            
-                            if (limitButton) {
-                              limitButton.click();
-                              return true;
-                            }
-                          }
-                        }
-                      }
-                    }
-                    
-                    return false;
-                  });
-                  
-                  if (limitButtonClicked) {
-                    console.log(`[${email}] ✅ Successfully clicked Limit button`);
-                    await delay(2000);
-                    
-                    // Find and click Close Position button in the modal
-                    console.log(`[${email}] Looking for Close Position button in modal...`);
-                    const closePositionClicked = await page.evaluate(() => {
-                      const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]');
-                      if (!modal) return false;
-                      
-                      const buttons = Array.from(modal.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"]'));
-                      const closePositionBtn = buttons.find(btn => {
-                        const text = btn.textContent?.trim();
-                        const isVisible = btn.offsetParent !== null && btn.offsetWidth > 0 && btn.offsetHeight > 0;
-                        return isVisible && (text === 'Close Position' || text.includes('Close Position'));
-                      });
-                      
-                      if (closePositionBtn) {
-                        closePositionBtn.click();
-                        return true;
-                      }
-                      
-                      return false;
-                    });
-                    
-                    if (closePositionClicked) {
-                      console.log(`[${email}] ✅ Successfully clicked Close Position button`);
-                      await delay(1000);
-                      
-                      // Find and click Confirm button in the Limit modal (after Close Position)
-                      console.log(`[${email}] Looking for Confirm button in Limit modal...`);
-                      const confirmInLimitModal = await page.evaluate(() => {
-                        const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]');
-                        if (!modal) return false;
-                        const buttons = Array.from(modal.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"]'));
-                        const confirmBtn = buttons.find(btn => {
-                          const text = btn.textContent?.trim().toLowerCase();
-                          const isVisible = btn.offsetParent !== null && btn.offsetWidth > 0 && btn.offsetHeight > 0;
-                          return isVisible && (text === 'confirm' || text === 'apply' || text === 'save');
-                        });
-                        if (confirmBtn) {
-                          confirmBtn.click();
-                          return true;
-                        }
-                        return false;
-                      });
-                      
-                      if (confirmInLimitModal) {
-                        console.log(`[${email}] ✅ Successfully clicked Confirm button in Limit modal`);
-                        await delay(2000);
-                      } else {
-                        console.log(`[${email}] ⚠️  Could not find Confirm button in Limit modal, continuing...`);
-                        await delay(1000);
-                      }
-                      
-                      // Wait 10 seconds after closing position, then check if positions are still open
-                      console.log(`[${email}] Waiting 10 seconds after closing position...`);
-                      await delay(10000);
-                      
-                      // Check if positions are still open
-                      console.log(`[${email}] Checking if positions are still open after 10 seconds...`);
-                      const hasOpenPositions = await page.evaluate(() => {
-                        const tables = Array.from(document.querySelectorAll('table'));
-                        for (const table of tables) {
-                          const dataRows = Array.from(table.querySelectorAll('tbody tr, tr:not(:first-child)'));
-                          if (dataRows.length > 0) {
-                            const rowsWithData = dataRows.filter(row => {
-                              const cells = Array.from(row.querySelectorAll('td, th'));
-                              return cells.length > 0 && row.offsetParent !== null;
-                            });
-                            return rowsWithData.length > 0;
-                          }
-                        }
-                        return false;
-                      });
-                      
-                      if (hasOpenPositions) {
-                        console.log(`[${email}] Positions still open after 10 seconds, clicking CLOSE ALL POSITIONS...`);
-                        
-                        const closeAllClicked = await page.evaluate(() => {
-                          const allButtons = Array.from(document.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"]'));
-                          const closeAllBtn = allButtons.find(btn => {
-                            const text = btn.textContent?.trim();
-                            const isVisible = btn.offsetParent !== null && btn.offsetWidth > 0 && btn.offsetHeight > 0;
-                            return isVisible && (
-                              text === 'CLOSE ALL POSITIONS' || 
-                              text === 'Close All Positions' ||
-                              text.toLowerCase() === 'close all positions' ||
-                              text.includes('CLOSE ALL POSITIONS') ||
-                              text.includes('Close All Positions')
-                            );
-                          });
-                          
-                          if (closeAllBtn) {
-                            closeAllBtn.click();
-                            return true;
-                          }
-                          
-                          return false;
-                        });
-                        
-                        if (closeAllClicked) {
-                          console.log(`[${email}] ✅ Successfully clicked CLOSE ALL POSITIONS button`);
-                          await delay(2000);
-                          
-                          // Find and click Close Positions button in the modal
-                          const closePositionsClicked = await page.evaluate(() => {
-                            const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]');
-                            if (!modal) return false;
-                            const buttons = Array.from(modal.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"]'));
-                            const closePositionsBtn = buttons.find(btn => {
-                              const text = btn.textContent?.trim();
-                              const isVisible = btn.offsetParent !== null && btn.offsetWidth > 0 && btn.offsetHeight > 0;
-                              return isVisible && (text === 'Close Positions' || text.includes('Close Positions'));
-                            });
-                            if (closePositionsBtn) {
-                              closePositionsBtn.click();
-                              return true;
-                            }
-                            return false;
-                          });
-                          
-                          if (closePositionsClicked) {
-                            console.log(`[${email}] ✅ Successfully clicked Close Positions button in modal`);
-                            await delay(2000);
-                          }
-                        }
-                      } else {
-                        console.log(`[${email}] No open positions found after 10 seconds`);
-                      }
-                    } else {
-                      console.log(`[${email}] ⚠️  Could not find Close Position button in modal`);
-                    }
-                  } else {
-                    console.log(`[${email}] ⚠️  Could not find Limit button`);
-                  }
-                } else {
-                  console.log(`[${email}] ⚠️  Could not find Confirm button in modal`);
-                }
-              } else {
-                console.log(`[${email}] ⚠️  Could not find input element to fill`);
-              }
-            } catch (error) {
-              console.log(`[${email}] ⚠️  Error filling input: ${error.message}`);
-            }
-          } else {
-            console.log(`[${email}] ⚠️  Could not find 5th input: ${stopLossResult.reason || 'unknown'}`);
-          }
-        } else {
-          console.log(`[${email}] [POST-TRADE] ❌ CRITICAL: Could not find TP/SL button!`);
-          console.log(`[${email}] [POST-TRADE] Retrying TP/SL search with more specific method...`);
-          
-          // Retry with a more aggressive search - wait and try again
-          await delay(2000);
-          
-          // Try one more time with the exact same method as clickOrdersTab
-          let retryTpSlClicked = false;
-          try {
-            retryTpSlClicked = await page.evaluate(() => {
-              const tables = Array.from(document.querySelectorAll('table'));
-              for (const table of tables) {
-                const headerRow = table.querySelector('thead tr, thead > tr, tr:first-child');
-                if (!headerRow) continue;
-                const headers = Array.from(headerRow.querySelectorAll('th, td'));
-                let tpSlColumnIndex = -1;
-                for (let i = 0; i < headers.length; i++) {
-                  const headerText = headers[i].textContent?.trim().toLowerCase();
-                  if (headerText && (headerText.includes('tp/sl') || headerText.includes('tp / sl') || headerText.includes('tpsl'))) {
-                    tpSlColumnIndex = i;
-                    break;
-                  }
-                }
-                if (tpSlColumnIndex === -1) continue;
-                const dataRows = Array.from(table.querySelectorAll('tbody tr, tr:not(:first-child)'));
-                for (const row of dataRows) {
-                  const cells = Array.from(row.querySelectorAll('td, th'));
-                  if (cells.length > tpSlColumnIndex) {
-                    const tpSlCell = cells[tpSlColumnIndex];
-                    const clickableElements = tpSlCell.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"], a, div, span, svg, [onclick], [class*="icon"], [class*="Icon"]');
-                    for (const element of clickableElements) {
-                      if (element.offsetParent !== null && element.offsetWidth > 0 && element.offsetHeight > 0) {
-                        element.click();
-                        return true;
-                      }
-                    }
-                    if (tpSlCell.offsetParent !== null) {
-                      tpSlCell.click();
-                      return true;
-                    }
-                  }
-                }
-              }
-              return false;
-            });
-          } catch (error) {
-            console.log(`[${email}] [POST-TRADE] Retry also failed: ${error.message}`);
-          }
-          
-          if (!retryTpSlClicked) {
-            console.log(`[${email}] [POST-TRADE] ❌ CRITICAL: Could not find TP/SL button after retry!`);
-            console.log(`[${email}] [POST-TRADE] Will NOT proceed to Limit or close positions without TP/SL`);
-            console.log(`[${email}] [POST-TRADE] Positions will remain open - TP/SL must be added first`);
-            // Do NOT proceed to close positions if TP/SL button was not found
-            // Set leverage anyway so next cycle can try again
-            await handleSetLeverage(page, email);
-            return { success: false, error: 'TP/SL button not found - positions remain open, cannot proceed without TP/SL' };
-          } else {
-            console.log(`[${email}] [POST-TRADE] ✅ TP/SL button found on retry! Continuing with TP/SL flow...`);
-            await delay(2000); // Wait for modal
-            
-            // Execute the full TP/SL modal flow here since retry succeeded
-            // This is the same flow as in the main if (tpSlClicked) block
-            console.log(`[${email}] [POST-TRADE] Looking for TP/SL modal and 5th input...`);
-            const stopLossResult = await page.evaluate((stopLossValue) => {
-              const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]');
-              if (!modal) {
-                return { success: false, reason: 'No modal found' };
-              }
-              
-              const allInputs = Array.from(modal.querySelectorAll('input[type="text"], input[type="number"], input:not([type="hidden"]), input[data-part="input"]'));
-              const interactiveInputs = allInputs.filter(input => {
-                return !input.disabled && !input.readOnly && input.offsetParent !== null;
-              });
-              
-              let stopLossInput = null;
-              if (interactiveInputs.length >= 5) {
-                stopLossInput = interactiveInputs[4];
-              } else if (interactiveInputs.length > 0) {
-                stopLossInput = interactiveInputs[interactiveInputs.length - 1];
-              } else {
-                const allInputLike = Array.from(modal.querySelectorAll('input, [contenteditable="true"], [role="textbox"]'));
-                const interactiveInputLike = allInputLike.filter(el => {
-                  return !el.disabled && !el.readOnly && el.offsetParent !== null;
-                });
-                
-                if (interactiveInputLike.length >= 5) {
-                  stopLossInput = interactiveInputLike[4];
-                } else if (interactiveInputLike.length > 0) {
-                  stopLossInput = interactiveInputLike[interactiveInputLike.length - 1];
-                }
-              }
-              
-              if (!stopLossInput) {
-                return { success: false, reason: `Input #5 not found. Only ${allInputs.length} inputs available.` };
-              }
-              
-              const inputInfo = {
-                id: stopLossInput.id,
-                className: stopLossInput.className,
-                dataPart: stopLossInput.getAttribute('data-part'),
-                placeholder: stopLossInput.placeholder,
-                type: stopLossInput.type
-              };
-              
-              return { success: true, inputInfo: inputInfo, inputFound: true };
-            }, process.env.STOP_LOSS || '');
-            
-            if (stopLossResult.success && stopLossResult.inputFound) {
-              console.log(`[${email}] [POST-TRADE] ✅ Found TP/SL modal and 5th input, filling STOP_LOSS value...`);
-              const stopLossValue = process.env.STOP_LOSS || '';
-              
-              if (!stopLossValue) {
-                console.log(`[${email}] [POST-TRADE] ❌ STOP_LOSS env variable not set! Cannot proceed without STOP_LOSS value`);
-                await handleSetLeverage(page, email);
-                return { success: false, error: 'STOP_LOSS env variable not set' };
-              }
-              
-              try {
-                let inputElement = null;
-                
-                if (stopLossResult.inputInfo.id) {
-                  inputElement = await page.$(`#${stopLossResult.inputInfo.id}`);
-                }
-                
-                if (!inputElement && stopLossResult.inputInfo.dataPart) {
-                  inputElement = await page.$(`input[data-part="${stopLossResult.inputInfo.dataPart}"]`);
-                }
-                
-                if (!inputElement) {
-                  const inputs = await page.$$('input[type="text"], input[type="number"], input:not([type="hidden"]), input[data-part="input"]');
-                  const interactiveInputs = [];
-                  for (const input of inputs) {
-                    const isVisible = await input.evaluate(el => el.offsetParent !== null && !el.disabled && !el.readOnly);
-                    if (isVisible) {
-                      interactiveInputs.push(input);
-                    }
-                  }
-                  if (interactiveInputs.length >= 5) {
-                    inputElement = interactiveInputs[4];
-                  } else if (interactiveInputs.length > 0) {
-                    inputElement = interactiveInputs[interactiveInputs.length - 1];
-                  }
-                }
-                
-                if (inputElement) {
-                  await inputElement.click({ delay: 100 });
-                  await delay(300);
-                  await inputElement.click({ clickCount: 3 });
-                  await page.keyboard.press('Backspace');
-                  await delay(200);
-                  await inputElement.type(stopLossValue, { delay: 50 });
-                  await inputElement.evaluate((el, val) => {
-                    el.dispatchEvent(new Event('input', { bubbles: true }));
-                    el.dispatchEvent(new Event('change', { bubbles: true }));
-                    el.dispatchEvent(new Event('blur', { bubbles: true }));
-                  }, stopLossValue);
-                  
-                  console.log(`[${email}] ✅ Successfully filled stop loss input with value: ${stopLossValue}`);
-                  await delay(100);
-                  
-                  // Find and click Confirm button in modal
-                  console.log(`[${email}] Looking for Confirm button in modal...`);
-                  const confirmButton = await page.evaluate(() => {
-                    const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]');
-                    if (!modal) return null;
-                    const buttons = Array.from(modal.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"]'));
-                    const confirmBtn = buttons.find(btn => {
-                      const text = btn.textContent?.trim().toLowerCase();
-                      const isVisible = btn.offsetParent !== null;
-                      return isVisible && (text === 'confirm' || text === 'apply' || text === 'save');
-                    });
-                    if (confirmBtn) {
-                      return true;
-                    }
-                    return false;
-                  });
-                  
-                  if (confirmButton) {
-                    await page.evaluate(() => {
-                      const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]');
-                      if (!modal) return;
-                      const buttons = Array.from(modal.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"]'));
-                      const confirmBtn = buttons.find(btn => {
-                        const text = btn.textContent?.trim().toLowerCase();
-                        const isVisible = btn.offsetParent !== null;
-                        return isVisible && (text === 'confirm' || text === 'apply' || text === 'save');
-                      });
-                      if (confirmBtn) {
-                        confirmBtn.click();
-                      }
-                    });
-                    console.log(`[${email}] [POST-TRADE] ✅ Successfully clicked Confirm button in TP/SL modal`);
-                    await delay(2000);
-                    
-                    // Verify TP/SL modal closed before proceeding to Limit
-                    const tpSlModalClosed = await page.evaluate(() => {
-                      const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]');
-                      return modal === null;
-                    });
-                    
-                    if (!tpSlModalClosed) {
-                      console.log(`[${email}] [POST-TRADE] ⚠️  TP/SL modal still open after Confirm, waiting...`);
-                      await delay(2000);
-                    }
-                    
-                    // Now continue with Limit button flow (same as main flow)
-                    console.log(`[${email}] [POST-TRADE] TP/SL added successfully, now looking for Limit button in Positions table (same row as TP/SL)...`);
-                    // ... continue with Limit button code from the main flow
-                    // (I'll need to extract this into a reusable function or duplicate the logic)
-                  } else {
-                    console.log(`[${email}] ⚠️  Could not find Confirm button in modal`);
-                  }
-                } else {
-                  console.log(`[${email}] ⚠️  Could not find input element to fill`);
-                }
-              } catch (error) {
-                console.log(`[${email}] ⚠️  Error filling input: ${error.message}`);
-              }
-            } else {
-              console.log(`[${email}] ⚠️  Could not find 5th input: ${stopLossResult.reason || 'unknown'}`);
-            }
-          }
-        }
-        
-        // Set leverage after handling positions (only reached if TP/SL flow completed)
-        await handleSetLeverage(page, email);
-      } else {
-        console.log(`[${email}] No open positions found, setting leverage...`);
-        // No positions, just set leverage
-        await handleSetLeverage(page, email);
-      }
-    } else {
-      console.log(`[${email}] ⚠️  Could not click Positions tab, trying to set leverage anyway...`);
-      await handleSetLeverage(page, email);
-    }
-    
-    console.log(`[${email}] ✅ Extended Exchange pre/post-trade flow completed`);
-    return { success: true };
-  } catch (error) {
-    console.log(`[${email}] ⚠️  Error in Extended Exchange pre/post-trade flow: ${error.message}`);
-    return { success: false, error: error.message };
-  }
-}
-
-// Helper function to handle closing positions and setting leverage
-async function handleClosePositionsAndSetLeverage(page, email) {
-  console.log(`[${email}] Attempting to close all positions...`);
-  
-  // Check if there are still open positions
-  const hasOpenPositions = await page.evaluate(() => {
-    const tables = Array.from(document.querySelectorAll('table'));
-    for (const table of tables) {
-      const dataRows = Array.from(table.querySelectorAll('tbody tr, tr:not(:first-child)'));
-      if (dataRows.length > 0) {
-        const rowsWithData = dataRows.filter(row => {
-          const cells = Array.from(row.querySelectorAll('td, th'));
-          return cells.length > 0 && row.offsetParent !== null;
-        });
-        return rowsWithData.length > 0;
-      }
-    }
-    return false;
-  });
-  
-  if (hasOpenPositions) {
-    // Find and click CLOSE ALL POSITIONS button
-    const closeAllClicked = await page.evaluate(() => {
-      const allButtons = Array.from(document.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"]'));
-      const closeAllBtn = allButtons.find(btn => {
-        const text = btn.textContent?.trim();
-        const isVisible = btn.offsetParent !== null && btn.offsetWidth > 0 && btn.offsetHeight > 0;
-        return isVisible && (
-          text === 'CLOSE ALL POSITIONS' || 
-          text === 'Close All Positions' ||
-          text.toLowerCase() === 'close all positions' ||
-          text.includes('CLOSE ALL POSITIONS') ||
-          text.includes('Close All Positions')
-        );
-      });
-      
-      if (closeAllBtn) {
-        closeAllBtn.click();
-        return true;
-      }
-      return false;
-    });
-    
-    if (closeAllClicked) {
-      console.log(`[${email}] ✅ Clicked CLOSE ALL POSITIONS button`);
-      await delay(2000);
-      
-      // Click Close Positions in modal
-      const closePositionsClicked = await page.evaluate(() => {
-        const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]');
-        if (!modal) return false;
-        const buttons = Array.from(modal.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"]'));
-        const closePositionsBtn = buttons.find(btn => {
-          const text = btn.textContent?.trim();
-          const isVisible = btn.offsetParent !== null && btn.offsetWidth > 0 && btn.offsetHeight > 0;
-          return isVisible && (text === 'Close Positions' || text.includes('Close Positions'));
-        });
-        if (closePositionsBtn) {
-          closePositionsBtn.click();
-          return true;
-        }
-        return false;
-      });
-      
-      if (closePositionsClicked) {
-        console.log(`[${email}] ✅ Clicked Close Positions in modal`);
-        await delay(2000);
-      }
-    }
-  }
-  
-  // Set leverage after closing positions
-  await handleSetLeverage(page, email);
-}
-
-// Helper function to set leverage
-async function handleSetLeverage(page, email) {
-  console.log(`[${email}] Setting leverage...`);
-  
-  // Find and click leverage button
-  const leverageButtonClicked = await page.evaluate(() => {
-    const allButtons = Array.from(document.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"]'));
-    const leverageBtn = allButtons.find(btn => {
-      const text = btn.textContent?.trim();
-      const isVisible = btn.offsetParent !== null && btn.offsetWidth > 0 && btn.offsetHeight > 0;
-      return isVisible && /^\d+x$/i.test(text);
-    });
-    
-    if (leverageBtn) {
-      leverageBtn.click();
-      return true;
-    }
-    return false;
-  });
-  
-  if (leverageButtonClicked) {
-    console.log(`[${email}] ✅ Clicked leverage button`);
-    await delay(2000);
-    
-    // Set leverage value using Puppeteer for better control
-    const leverageValue = process.env.LEVERAGE || '20';
-    
-    // Find the input element first
-    const leverageInputFound = await page.evaluate(() => {
-      const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]');
-      if (!modal) return null;
-      
-      const inputs = Array.from(modal.querySelectorAll('input[type="text"], input[type="number"], input:not([type="hidden"])'));
-      const leverageInput = inputs.find(input => {
-        return !input.disabled && !input.readOnly && input.offsetParent !== null;
-      });
-      
-      if (leverageInput) {
-        return {
-          id: leverageInput.id,
-          className: leverageInput.className,
-          type: leverageInput.type
-        };
-      }
-      return null;
-    });
-    
-    if (!leverageInputFound) {
-      console.log(`[${email}] ⚠️  Could not find leverage input in modal`);
-      return;
-    }
-    
-    // Find input using Puppeteer
-    let inputElement = null;
-    if (leverageInputFound.id) {
-      inputElement = await page.$(`#${leverageInputFound.id}`);
-    }
-    
-    if (!inputElement) {
-      const inputs = await page.$$('input[type="text"], input[type="number"], input:not([type="hidden"])');
-      for (const input of inputs) {
-        const isVisible = await input.evaluate(el => el.offsetParent !== null && !el.disabled && !el.readOnly);
-        if (isVisible) {
-          inputElement = input;
-          break;
-        }
-      }
-    }
-    
-    if (inputElement) {
-      // Click and focus the input
-      await inputElement.click({ delay: 100 });
-      await delay(200);
-      
-      // Clear existing value
-      await inputElement.click({ clickCount: 3 }); // Triple click to select all
-      await page.keyboard.press('Backspace');
-      await delay(100);
-      
-      // Type the leverage value
-      await inputElement.type(leverageValue, { delay: 50 });
-      await delay(200);
-      
-      // Press Enter
-      await page.keyboard.press('Enter');
-      await delay(500);
-      
-      console.log(`[${email}] ✅ Entered leverage value: ${leverageValue} and pressed Enter`);
-      
-      // Check if leverage modal is still open (meaning leverage was unchanged)
-      const leverageModalStillOpen = await page.evaluate(() => {
-        const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]');
-        return modal !== null;
-      });
-      
-      // Find and click Confirm or Cancel button based on whether leverage changed
-      const leverageSet = await page.evaluate((modalStillOpen) => {
-        const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]');
-        if (!modal) return { success: false, reason: 'No modal found' };
-        
-        const buttons = Array.from(modal.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"]'));
-        
-        // If modal is still open, leverage might be unchanged, so click Cancel
-        if (modalStillOpen) {
-          const cancelBtn = buttons.find(btn => {
-            const text = btn.textContent?.trim().toLowerCase();
-            const isVisible = btn.offsetParent !== null && btn.offsetWidth > 0 && btn.offsetHeight > 0;
-            return isVisible && (text === 'cancel' || text === 'close' || text === 'x');
-          });
-          
-          if (cancelBtn) {
-            cancelBtn.click();
-            return { success: true, cancelled: true, reason: 'Leverage unchanged, clicked Cancel' };
-          }
-        }
-        
-        // Otherwise, try to click Confirm
-        const confirmBtn = buttons.find(btn => {
-          const text = btn.textContent?.trim().toLowerCase();
-          const isVisible = btn.offsetParent !== null && btn.offsetWidth > 0 && btn.offsetHeight > 0;
-          return isVisible && (text === 'confirm' || text === 'apply' || text === 'save');
-        });
-        
-        if (confirmBtn) {
-          confirmBtn.click();
-          return { success: true, confirmed: true };
-        }
-        
-        return { success: false, reason: 'Confirm/Cancel button not found' };
-      }, leverageModalStillOpen);
-      
-      if (leverageSet.success) {
-        if (leverageSet.cancelled) {
-          console.log(`[${email}] ⚠️  Leverage unchanged, clicked Cancel button: ${leverageSet.reason || 'unknown'}`);
-        } else if (leverageSet.confirmed) {
-          console.log(`[${email}] ✅ Clicked Confirm button in leverage modal`);
-        }
-        await delay(1000); // Reduced from 2000ms
-        // NOTE: Size input filling and Sell button clicking is now handled in executeTrade() function
-        // This ensures trades only execute when explicitly called, not during leverage setting
-      } else {
-        console.log(`[${email}] ⚠️  Could not find Confirm button: ${leverageSet.reason || 'unknown'}`);
-      }
-    } else {
-      console.log(`[${email}] ⚠️  Could not find leverage input element`);
-    }
-  } else {
-    console.log(`[${email}] ⚠️  Could not find leverage button`);
-  }
-}
-
-async function isLoggedIn(page, exchangeConfig = null) {
-  const exchange = exchangeConfig || EXCHANGE_CONFIGS.paradex; // Default to Paradex
-  
-  // For Extended Exchange, check for specific cookies first
-  if (exchange.name === 'Extended Exchange') {
-    const hasCookies = await hasExtendedExchangeCookies(page);
-    if (hasCookies) {
-      console.log(`[Extended Exchange] Found x10_access_token and x10_refresh_token cookies`);
-      // Also check if trading interface is visible
-      await delay(1000);
-      const hasTradingInterface = await page.evaluate(() => {
-        const text = document.body.innerText;
-        const hasAccountInfo = text.includes('Available to trade') ||
-                              text.includes('Account Value') ||
-                              text.includes('Portfolio Value') ||
-                              text.includes('Unrealized P&L') ||
-                              text.includes('Balance') ||
-                              text.includes('Equity');
-        const hasTradingButtons = Array.from(document.querySelectorAll('button')).some(
-          b => {
-            const btnText = b.textContent?.trim();
-            return btnText === 'Buy' || btnText === 'Sell' || btnText === 'Long' || btnText === 'Short';
-          }
-        );
-        return hasAccountInfo || hasTradingButtons;
-      });
-      return hasTradingInterface;
-    }
-    return false;
-  }
-  
-  // For Paradex, use original logic
+async function isLoggedIn(page) {
   // Check if user is logged in by looking for account/portfolio elements
   await delay(2000);
-  const loggedInIndicators = await page.evaluate((exchangeName) => {
+  const loggedInIndicators = await page.evaluate(() => {
     const text = document.body.innerText;
 
     // Check for "Log in" button - if exists, we're NOT logged in
@@ -2477,25 +130,22 @@ async function isLoggedIn(page, exchangeConfig = null) {
     );
 
     // Check for actual trading interface elements that only appear when logged in
-    // Generic indicators that work for both exchanges
     const hasAccountInfo = text.includes('Available to trade') ||
                           text.includes('Account Value') ||
                           text.includes('Portfolio Value') ||
-                          text.includes('Unrealized P&L') ||
-                          text.includes('Balance') ||
-                          text.includes('Equity');
+                          text.includes('Unrealized P&L');
 
     // More specific check - look for the trading form (Buy/Sell buttons in trading panel)
     const hasTradingInterface = Array.from(document.querySelectorAll('button')).some(
       b => {
         const btnText = b.textContent?.trim();
-        return btnText === 'Buy' || btnText === 'Sell' || btnText === 'Long' || btnText === 'Short';
+        return btnText === 'Buy' || btnText === 'Sell';
       }
     );
 
     // We're only logged in if we DON'T see login button AND we DO see trading interface
     return !hasLoginBtn && (hasAccountInfo || hasTradingInterface);
-  }, exchange.name);
+  });
   return loggedInIndicators;
 }
 
@@ -2590,115 +240,21 @@ async function handleWalletConnectionError(page, email) {
   }
 }
 
-async function login(page, browser, email, cookiesPath, isNewAccount = false, exchangeConfig = null) {
-  const exchange = exchangeConfig || EXCHANGE_CONFIGS.paradex; // Default to Paradex
-  console.log(`[${email}] Starting login process for ${exchange.name}...`);
+async function login(page, browser, email, cookiesPath, isNewAccount = false) {
+  console.log(`[${email}] Starting login process...`);
 
   try {
-    // Extended Exchange specific login flow
-    if (exchange.name === 'Extended Exchange') {
-      console.log(`[${email}] Extended Exchange - starting login flow...`);
-      
-      // Step 1: Clear cookies when bot starts
-      console.log(`[${email}] Clearing Extended Exchange cookies...`);
-      await clearExtendedExchangeCookies(page);
-      await delay(1000);
-      
-      // Step 2: Look for Connect Wallet or Start Trading button
-      console.log(`[${email}] Looking for Connect Wallet or Start Trading button...`);
-      await delay(2000);
-      
-      let connectButtonClicked = false;
-      
-      // Strategy 1: Find "Connect Wallet" button
-      const connectWalletBtn = await findByText(page, "Connect Wallet", ["button", "div", "span"]);
-      if (connectWalletBtn) {
-        const isVisible = await page.evaluate((el) => {
-          return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
-        }, connectWalletBtn);
-        if (isVisible) {
-          await connectWalletBtn.click();
-          connectButtonClicked = true;
-          console.log(`[${email}] Clicked Connect Wallet button`);
-        }
-      }
-      
-      // Strategy 2: Find "Start Trading" button
-      if (!connectButtonClicked) {
-        const startTradingBtn = await findByText(page, "Start Trading", ["button", "div", "span"]);
-        if (startTradingBtn) {
-          const isVisible = await page.evaluate((el) => {
-            return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
-          }, startTradingBtn);
-          if (isVisible) {
-            await startTradingBtn.click();
-            connectButtonClicked = true;
-            console.log(`[${email}] Clicked Start Trading button`);
-          }
-        }
-      }
-      
-      // Strategy 3: Use evaluate to find button
-      if (!connectButtonClicked) {
-        const clicked = await page.evaluate(() => {
-          const buttons = Array.from(document.querySelectorAll('button, div[role="button"], span[role="button"]'));
-          for (const btn of buttons) {
-            const text = btn.textContent?.trim();
-            const isVisible = btn.offsetParent !== null;
-            if (isVisible && (text === 'Connect Wallet' || text === 'Start Trading')) {
-              btn.click();
-              return true;
-            }
-          }
-          return false;
-        });
-        if (clicked) {
-          connectButtonClicked = true;
-          console.log(`[${email}] Clicked Connect Wallet/Start Trading button (via evaluate)`);
-        }
-      }
-      
-      if (!connectButtonClicked) {
-        console.log(`[${email}] Could not find Connect Wallet or Start Trading button`);
-        return false;
-      }
-      
-      // Wait for modal/QR code to appear
-      console.log(`[${email}] Waiting for modal/QR code to appear...`);
-      console.log(`[${email}] User should scan QR code and connect wallet...`);
-      await delay(3000);
-      
-      // Check if cookies are set (one-time check after waiting)
-      const hasCookiesNow = await hasExtendedExchangeCookies(page);
-      if (hasCookiesNow) {
-        console.log(`[${email}] ✅ Extended Exchange cookies detected!`);
-        
-        // Save cookies
-        await saveCookies(page, cookiesPath, email);
-        
-        // Click on Orders tab
-        console.log(`[${email}] Clicking Orders tab...`);
-        await clickOrdersTab(page, email);
-        
-        return true;
-      }
-      
-      console.log(`[${email}] Extended Exchange login process - user should complete wallet connection`);
-      return true; // Return true to allow manual completion
-    }
-
-    // Paradex login flow (original logic)
     // For new accounts, navigate to referral URL first
     if (isNewAccount) {
       console.log(`[${email}] New account detected - using referral link`);
       try {
-        await page.goto(exchange.referralUrl, {
+        await page.goto(PARADEX_REFERRAL_URL, {
           waitUntil: "domcontentloaded",
           timeout: 30000,
         });
         await delay(3000);
         console.log(
-          `[${email}] Referral link applied: ${exchange.referralUrl}`
+          `[${email}] Referral link applied: ${PARADEX_REFERRAL_URL}`
         );
       } catch (error) {
         console.log(`[${email}] Error loading referral link, continuing...`);
@@ -2710,14 +266,14 @@ async function login(page, browser, email, cookiesPath, isNewAccount = false, ex
     console.log(`[${email}] Looking for Log in button...`);
     let loginClicked = false;
 
-    // Strategy 1: Find by data attribute (most reliable) - Paradex specific
-    if (exchange.selectors.loginButton) {
-      const loginBtnByAttr = await page.$(exchange.selectors.loginButton);
-      if (loginBtnByAttr) {
-        await loginBtnByAttr.click();
-        loginClicked = true;
-        console.log(`[${email}] Clicked Log in button (by data attribute)`);
-      }
+    // Strategy 1: Find by data attribute (most reliable)
+    const loginBtnByAttr = await page.$(
+      'button[data-dd-action-name="Connect wallet"]'
+    );
+    if (loginBtnByAttr) {
+      await loginBtnByAttr.click();
+      loginClicked = true;
+      console.log(`[${email}] Clicked Log in button (by data attribute)`);
     }
 
     // Strategy 2: Find by text "Log in" in button
@@ -2772,7 +328,7 @@ async function login(page, browser, email, cookiesPath, isNewAccount = false, ex
       console.log(
         `[${email}] No Log in button found - might already be logged in`
       );
-      const alreadyLoggedIn = await isLoggedIn(page, exchange);
+      const alreadyLoggedIn = await isLoggedIn(page);
       if (alreadyLoggedIn) {
         return true;
       }
@@ -3217,7 +773,7 @@ async function login(page, browser, email, cookiesPath, isNewAccount = false, ex
       await delay(2000);
 
       // Check if we're logged in (error might be resolved)
-      const loggedIn = await isLoggedIn(page, exchange);
+      const loggedIn = await isLoggedIn(page);
       if (loggedIn) {
         console.log(`[${email}] Login detected after handling wallet error!`);
         break;
@@ -3251,7 +807,7 @@ async function login(page, browser, email, cookiesPath, isNewAccount = false, ex
       }
 
       try {
-        const loggedIn = await isLoggedIn(page, exchange);
+        const loggedIn = await isLoggedIn(page);
         if (loggedIn) {
           console.log(`[${email}] Login detected!`);
           break;
@@ -3705,28 +1261,22 @@ async function checkIfPositionsClosed(page) {
   return checkResult.isClosed; // Returns true if positions are closed
 }
 
-async function closeAllPositions(page, percent = 100, exchangeConfig = null) {
-  const exchange = exchangeConfig || EXCHANGE_CONFIGS.paradex; // Default to Paradex
-  console.log(`\n=== Closing Position (${percent}%) on ${exchange.name} ===`);
+async function closeAllPositions(page, percent = 100) {
+  console.log(`\n=== Closing Position (${percent}%) ===`);
 
   // Wait a moment for any previous actions to complete
   await delay(1000);
 
   // Click on Positions tab to see open positions
-  // IMPORTANT: For Paradex, we need to stay on Positions tab throughout the entire flow
-  // Do NOT navigate to Orders tab - we need Positions tab for TP/SL and Limit button
-  console.log(`[${exchange.name}] Navigating to Positions tab (will stay here for TP/SL and Limit button)...`);
-  const positionsTab = await findByExactText(page, exchange.selectors.positionsTab, [
+  const positionsTab = await findByExactText(page, "Positions", [
     "button",
     "div",
     "span",
   ]);
   if (positionsTab) {
     await positionsTab.click();
-    console.log(`[${exchange.name}] ✓ Clicked Positions tab - will stay here for TP/SL and Limit button`);
+    console.log("Clicked Positions tab");
     await delay(1000); // Reduced from 2000ms - wait for positions to load
-  } else {
-    console.log(`[${exchange.name}] ⚠️  Could not find Positions tab`);
   }
 
   // Check if there are any open positions
@@ -3759,403 +1309,18 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null) {
     return { success: true, message: "No positions to close" };
   }
 
-  // If we reach here, positions exist - FIRST add TP/SL, then close using Limit, then fallback to Close All
-  console.log("✓ Positions found - proceeding to add TP/SL first, then close them...");
+  // If we reach here, positions exist - first try Limit button, then fallback to Close All
+  console.log("✓ Positions found - proceeding to close them...");
   
   // Wait a bit more for UI to fully render
   await delay(500);
 
-  // Step 0: For Paradex - Add TP/SL before closing positions
-  let tpSlCompleted = false; // Track if TP/SL was successfully completed and modal is closed
-  if (exchange.name === 'Paradex') {
-    console.log(`\n[Paradex] Step 0: Adding TP/SL before closing positions...`);
-    
-    // Check if TP/SL modal is already open
-    const tpSlModalAlreadyOpen = await page.evaluate(() => {
-      const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]'));
-      for (const modal of modals) {
-        const style = window.getComputedStyle(modal);
-        const isVisible = modal.offsetParent !== null && 
-                         style.display !== 'none' && 
-                         style.visibility !== 'hidden';
-        if (isVisible) {
-          const text = modal.textContent || '';
-          if (text.includes('TP/SL') || text.includes('Take Profit') || text.includes('Stop Loss')) {
-            return true; // TP/SL modal is already open
-          }
-        }
-      }
-      return false;
-    });
-    
-    if (!tpSlModalAlreadyOpen) {
-      // Find and click TP/SL button in Positions table
-      console.log(`[Paradex] Looking for TP/SL button in Positions table...`);
-      const tpSlClicked = await page.evaluate(() => {
-        // Find all table elements
-        const tables = Array.from(document.querySelectorAll('table'));
-        
-        for (const table of tables) {
-          // Find header row
-          const headerRow = table.querySelector('thead tr, thead > tr, tr:first-child');
-          if (!headerRow) continue;
-          
-          // Find TP/SL column header
-          const headers = Array.from(headerRow.querySelectorAll('th, td'));
-          let tpSlColumnIndex = -1;
-          
-          for (let i = 0; i < headers.length; i++) {
-            const headerText = headers[i].textContent?.trim().toLowerCase();
-            if (headerText && (headerText.includes('tp/sl') || headerText.includes('tp / sl') || headerText.includes('tpsl'))) {
-              tpSlColumnIndex = i;
-              break;
-            }
-          }
-          
-          if (tpSlColumnIndex === -1) continue;
-          
-          // Find data rows
-          const dataRows = Array.from(table.querySelectorAll('tbody tr, tr:not(:first-child)'));
-          
-          // Find first data row and click any clickable element in TP/SL column
-          for (const row of dataRows) {
-            const cells = Array.from(row.querySelectorAll('td, th'));
-            if (cells.length > tpSlColumnIndex) {
-              const tpSlCell = cells[tpSlColumnIndex];
-              
-              // Look for any clickable element in this cell
-              const clickableElements = tpSlCell.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"], a, div, span, svg, [onclick], [class*="icon"], [class*="Icon"]');
-              
-              for (const element of clickableElements) {
-                if (element.offsetParent !== null && element.offsetWidth > 0 && element.offsetHeight > 0) {
-                  element.click();
-                  return true;
-                }
-              }
-              
-              // If no clickable element found, try clicking the cell itself
-              if (tpSlCell.offsetParent !== null) {
-                tpSlCell.click();
-                return true;
-              }
-            }
-          }
-        }
-        
-        return false;
-      });
-      
-      if (tpSlClicked) {
-        console.log(`[Paradex] ✅ Clicked TP/SL button`);
-        await delay(2000); // Wait for modal to appear
-      } else {
-        console.log(`[Paradex] ⚠️  Could not find TP/SL button, proceeding to close positions without TP/SL`);
-      }
-    } else {
-      console.log(`[Paradex] ✅ TP/SL modal already open, proceeding to fill it...`);
-      await delay(1000);
-    }
-    
-    // Fill TP/SL modal with STOP_LOSS value (Paradex method)
-    const stopLossValue = process.env.STOP_LOSS || '';
-    if (stopLossValue) {
-      console.log(`[Paradex] Filling TP/SL modal with STOP_LOSS value: ${stopLossValue}`);
-      
-      // Find the input element using evaluateHandle (Paradex method)
-      const slInputHandle = await page.evaluateHandle(() => {
-        // Find TP/SL modal specifically
-        const modals = Array.from(document.querySelectorAll('[class*="modal"], [role="dialog"]'));
-        let modal = null;
-        for (const m of modals) {
-          const style = window.getComputedStyle(m);
-          const isVisible = m.offsetParent !== null && 
-                           style.display !== 'none' && 
-                           style.visibility !== 'hidden';
-          if (isVisible) {
-            const text = m.textContent || '';
-            if (text.includes('TP/SL') || text.includes('Take Profit') || text.includes('Stop Loss')) {
-              modal = m;
-              break;
-            }
-          }
-        }
-        
-        if (!modal) return null;
-        
-        // Find all inputs in modal
-        const inputs = Array.from(modal.querySelectorAll('input'));
-        
-        // Find input with "Loss" and "%" in nearby text (Paradex-specific)
-        for (const input of inputs) {
-          const parentText = input.parentElement?.textContent || '';
-          const nearbyText = parentText + ' ' + (input.previousElementSibling?.textContent || '') + ' ' + (input.nextElementSibling?.textContent || '');
-          
-          // Look for input near "Loss" label with "%" dropdown
-          if (nearbyText.includes('Loss') && nearbyText.includes('%') && !nearbyText.includes('USD')) {
-            return input;
-          }
-        }
-        return null;
-      });
-      
-      if (slInputHandle && slInputHandle.asElement()) {
-        try {
-          const inputElement = slInputHandle.asElement();
-          
-          // Focus and clear the input
-          await inputElement.click({ clickCount: 3 }); // Triple click to select all
-          await page.keyboard.press('Backspace'); // Clear selected text
-          await inputElement.type(stopLossValue, { delay: 30 }); // Use exact string value from env
-          await page.keyboard.press('Tab'); // Trigger blur to calculate USD
-          await delay(500);
-          console.log(`[Paradex] ✅ Successfully filled Stop Loss percentage`);
-          
-          // Wait for USD calculation
-          await delay(1000);
-        } catch (error) {
-          console.log(`[Paradex] ⚠️  Error filling Stop Loss input: ${error.message}`);
-        }
-      } else {
-        console.log(`[Paradex] ⚠️  Could not find Stop Loss input`);
-      }
-      
-      // Click Confirm button in TP/SL modal
-      console.log(`[Paradex] 🔍 Looking for Confirm button in TP/SL modal...`);
-      await delay(500); // Small delay to ensure modal is fully rendered after value entry
-      
-      // Try multiple strategies to find and click Confirm button
-      let confirmClicked = false;
-      
-      // Strategy 1: Use page.evaluate to find and click
-      const confirmResult = await page.evaluate(() => {
-        // Find TP/SL modal specifically
-        const modals = Array.from(document.querySelectorAll('[class*="modal"], [role="dialog"], [class*="Modal"], [class*="Dialog"]'));
-        let tpslModal = null;
-        
-        for (const m of modals) {
-          const style = window.getComputedStyle(m);
-          const isVisible = m.offsetParent !== null && 
-                           style.display !== 'none' && 
-                           style.visibility !== 'hidden';
-          if (isVisible) {
-            const text = m.textContent || '';
-            if ((text.includes('TP/SL') || text.includes('Take Profit') || text.includes('Stop Loss')) && 
-                !text.includes('Close Position') && !text.includes('Limit')) {
-              tpslModal = m;
-              break;
-            }
-          }
-        }
-        
-        if (!tpslModal) {
-          console.log('TP/SL modal not found when trying to click Confirm');
-          return { found: false, reason: 'Modal not found' };
-        }
-        
-        // Find all buttons in TP/SL modal
-        const buttons = Array.from(tpslModal.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"]'));
-        console.log(`Found ${buttons.length} buttons in TP/SL modal`);
-        
-        // Log all button texts for debugging
-        buttons.forEach((btn, idx) => {
-          const text = btn.textContent?.trim();
-          const isVisible = btn.offsetParent !== null && btn.offsetWidth > 0 && btn.offsetHeight > 0;
-          if (isVisible) {
-            console.log(`  Button ${idx}: "${text}" (visible: ${isVisible})`);
-          }
-        });
-        
-        // Find Confirm button - try exact match first
-        let confirmBtn = buttons.find(btn => {
-          const text = btn.textContent?.trim().toLowerCase();
-          const isVisible = btn.offsetParent !== null && btn.offsetWidth > 0 && btn.offsetHeight > 0;
-          return isVisible && text === 'confirm';
-        });
-        
-        // If not found, try partial match
-        if (!confirmBtn) {
-          confirmBtn = buttons.find(btn => {
-            const text = btn.textContent?.trim().toLowerCase();
-            const isVisible = btn.offsetParent !== null && btn.offsetWidth > 0 && btn.offsetHeight > 0;
-            return isVisible && (text.includes('confirm') || text === 'apply' || text === 'save');
-          });
-        }
-        
-        if (confirmBtn) {
-          console.log(`Found Confirm button: "${confirmBtn.textContent?.trim()}"`);
-          confirmBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          confirmBtn.click();
-          console.log('Clicked TP/SL Confirm button');
-          return { found: true, buttonText: confirmBtn.textContent?.trim() };
-        }
-        
-        console.log('Confirm button not found in TP/SL modal');
-        return { found: false, reason: 'Confirm button not found', buttonCount: buttons.length };
-      });
-      
-      if (confirmResult.found) {
-        confirmClicked = true;
-        console.log(`[Paradex] ✅ Successfully clicked Confirm button: "${confirmResult.buttonText}"`);
-      } else {
-        console.log(`[Paradex] ⚠️  Strategy 1 failed: ${confirmResult.reason || 'unknown'}`);
-        
-        // Strategy 2: Use Puppeteer to find button by text
-        console.log(`[Paradex] Strategy 2: Trying to find Confirm button using Puppeteer...`);
-        try {
-          const confirmButton = await findByText(page, 'Confirm', ['button', 'div', 'span']);
-          if (confirmButton) {
-            const buttonText = await page.evaluate(el => el.textContent?.trim(), confirmButton);
-            console.log(`[Paradex] Found Confirm button via Puppeteer: "${buttonText}"`);
-            await confirmButton.click();
-            confirmClicked = true;
-            console.log(`[Paradex] ✅ Successfully clicked Confirm button via Puppeteer`);
-          }
-        } catch (error) {
-          console.log(`[Paradex] ⚠️  Strategy 2 failed: ${error.message}`);
-        }
-      }
-      
-      if (confirmClicked) {
-        console.log(`[Paradex] ✅ Successfully clicked TP/SL Confirm button`);
-        console.log(`[Paradex] Waiting 2-3 seconds after TP/SL confirm before proceeding to Limit button...`);
-        await delay(2500); // Wait 2.5 seconds (2-3 second range) after confirming TP/SL
-        
-        // Verify TP/SL modal is closed - check more frequently with shorter intervals
-        let tpSlModalClosed = false;
-        const maxChecks = 8; // Reduced from 10 to 8
-        const checkInterval = 500; // Reduced from 1000ms to 500ms for faster checking
-        
-        for (let i = 0; i < maxChecks; i++) {
-          await delay(checkInterval);
-          tpSlModalClosed = await page.evaluate(() => {
-            const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]'));
-            for (const modal of modals) {
-              const style = window.getComputedStyle(modal);
-              const isVisible = modal.offsetParent !== null && 
-                               style.display !== 'none' && 
-                               style.visibility !== 'hidden';
-              if (isVisible) {
-                const text = modal.textContent || '';
-                if (text.includes('TP/SL') || text.includes('Take Profit') || text.includes('Stop Loss')) {
-                  return false; // TP/SL modal still open
-                }
-              }
-            }
-            return true; // No TP/SL modal found, it's closed
-          });
-          
-          if (tpSlModalClosed) {
-            console.log(`[Paradex] ✅ TP/SL modal is confirmed closed! (checked ${i + 1}/${maxChecks})`);
-            tpSlCompleted = true; // Mark TP/SL as completed
-            break;
-          } else {
-            if (i < maxChecks - 1) {
-              console.log(`[Paradex] ⏳ TP/SL modal still open (check ${i + 1}/${maxChecks}), waiting ${checkInterval}ms...`);
-            }
-          }
-        }
-        
-        if (!tpSlModalClosed) {
-          console.log(`[Paradex] ⚠️  TP/SL modal may still be open after ${maxChecks} checks (${(maxChecks * checkInterval) / 1000}s)`);
-          console.log(`[Paradex] ⚠️  Will NOT proceed to Limit button until TP/SL modal is confirmed closed`);
-          // Do NOT set tpSlCompleted = true if modal is still open
-        }
-      } else {
-        console.log(`[Paradex] ⚠️  Failed to click TP/SL Confirm button - TP/SL not completed`);
-      }
-    } else {
-      console.log(`[Paradex] ⚠️  STOP_LOSS env variable not set, skipping TP/SL`);
-    }
-  }
-
-  // CRITICAL: For Paradex, ONLY proceed to Limit button if TP/SL modal is confirmed closed
-  if (exchange.name === 'Paradex' && !tpSlCompleted) {
-    // Final check: Verify TP/SL modal is not open before proceeding
-    console.log(`[Paradex] 🔍 Final check: Verifying TP/SL modal is not open before searching for Limit button...`);
-    const tpSlModalStillOpen = await page.evaluate(() => {
-      const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]'));
-      for (const modal of modals) {
-        const style = window.getComputedStyle(modal);
-        const isVisible = modal.offsetParent !== null && 
-                         style.display !== 'none' && 
-                         style.visibility !== 'hidden';
-        if (isVisible) {
-          const text = modal.textContent || '';
-          if (text.includes('TP/SL') || text.includes('Take Profit') || text.includes('Stop Loss')) {
-            return true; // TP/SL modal is still open
-          }
-        }
-      }
-      return false; // No TP/SL modal found
-    });
-    
-    if (tpSlModalStillOpen) {
-      console.log(`[Paradex] ⚠️  TP/SL modal is STILL OPEN - waiting additional 2 seconds before checking again...`);
-      await delay(2000); // Reduced from 5s to 2s
-      
-      // Check one more time
-      const tpSlModalStillOpen2 = await page.evaluate(() => {
-        const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]'));
-        for (const modal of modals) {
-          const style = window.getComputedStyle(modal);
-          const isVisible = modal.offsetParent !== null && 
-                           style.display !== 'none' && 
-                           style.visibility !== 'hidden';
-          if (isVisible) {
-            const text = modal.textContent || '';
-            if (text.includes('TP/SL') || text.includes('Take Profit') || text.includes('Stop Loss')) {
-              return true; // TP/SL modal is still open
-            }
-          }
-        }
-        return false; // No TP/SL modal found
-      });
-      
-      if (tpSlModalStillOpen2) {
-        console.log(`[Paradex] ❌ TP/SL modal is STILL OPEN after additional wait - NOT proceeding to Limit button`);
-        console.log(`[Paradex] ❌ This will prevent clicking Limit button until TP/SL modal closes`);
-        return { success: false, error: 'TP/SL modal still open, cannot proceed to Limit button' };
-      } else {
-        console.log(`[Paradex] ✅ TP/SL modal is now closed after additional wait`);
-        tpSlCompleted = true;
-      }
-    } else {
-      console.log(`[Paradex] ✅ TP/SL modal is confirmed closed - safe to proceed to Limit button`);
-      tpSlCompleted = true;
-    }
-  }
-
-  // CRITICAL: After TP/SL is set, ensure we're still on Positions tab before looking for Limit button
-  // Do NOT navigate to Orders tab - we need to stay on Positions tab to find Limit button
-  console.log(`[Paradex] TP/SL setup complete. Ensuring we're on Positions tab before looking for Limit button...`);
-  
-  // IMPORTANT: Only look for Limit button if there are still open positions
-  // Check if positions exist before looking for Limit button
-  console.log(`[Paradex] Checking if positions still exist before looking for Limit button...`);
-  const hasPositionsForLimit = await page.evaluate(() => {
-    const text = document.body.innerText;
-    return (
-      text.includes("Current Position") ||
-      text.includes("Unrealized P&L") ||
-      text.includes("Position Size") ||
-      text.includes("Entry Price")
-    );
-  });
-  
-  if (!hasPositionsForLimit) {
-    console.log(`[Paradex] ✅ No open positions found - skipping Limit button search`);
-    return { success: true, message: "No positions to close - TP/SL was set but positions already closed" };
-  }
-  
-  console.log(`[Paradex] ✅ Positions still exist - proceeding to find Limit button...`);
-  
-  // Step 1: Look for Limit button in Positions table Close column BEFORE any Close All button logic
+  // Step 1: FIRST - Look for Limit button in Positions table Close column BEFORE any Close All button logic
   // The Close column has buttons with text "Market" and "Limit" in MarketCloseButton__Container
   // IMPORTANT: This must happen BEFORE looking for "Close All" button
   console.log(`Step 1: Looking for Limit button in Positions table Close column (before Close All button)...`);
   
   // Make sure we're on the Positions tab before looking for Limit button
-  // IMPORTANT: Do NOT navigate to Orders tab - stay on Positions tab
   const isOnPositionsTab = await page.evaluate(() => {
     const text = document.body.innerText;
     return text.includes("Positions") && (
@@ -4167,38 +1332,31 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null) {
   });
   
   if (!isOnPositionsTab) {
-    console.log(`[Paradex] ⚠️  Not on Positions tab after TP/SL setup, switching to Positions tab...`);
-    console.log(`[Paradex] ⚠️  CRITICAL: Must stay on Positions tab to find Limit button - DO NOT navigate to Orders tab`);
-    const positionsTab = await findByExactText(page, exchange.selectors.positionsTab, [
+    console.log(`Not on Positions tab, switching to Positions tab...`);
+    const positionsTab = await findByExactText(page, "Positions", [
       "button",
       "div",
       "span",
     ]);
     if (positionsTab) {
       await positionsTab.click();
-      console.log(`[Paradex] ✓ Clicked Positions tab - staying on Positions tab to find Limit button`);
+      console.log("✓ Clicked Positions tab");
       await delay(1000); // Wait for positions to load
     } else {
-      console.log(`[Paradex] ⚠️  Could not find Positions tab - this will prevent finding Limit button`);
+      console.log("⚠ Could not find Positions tab");
     }
   } else {
-    console.log(`[Paradex] ✓ Already on Positions tab - ready to find Limit button`);
+    console.log("✓ Already on Positions tab");
   }
   
   // Wait a bit more for the table to fully render
   await delay(500);
-  
-  // CRITICAL: After TP/SL is set, we MUST find and click Limit button
-  // Do NOT navigate to Orders tab - stay on Positions tab
-  console.log(`[Paradex] 🔍 Now searching for Limit button in Positions table (after TP/SL setup)...`);
-  console.log(`[Paradex] ⚠️  IMPORTANT: Must stay on Positions tab - DO NOT navigate to Orders tab`);
   
   // Try multiple strategies to find and click Limit button (similar to Close All button detection)
   let limitBtn = null;
   let limitBtnClicked = false;
   
   // Strategy 1: Find by text "Limit" using existing function (same as Close All Strategy 1)
-  console.log(`[Paradex] Strategy 1: Searching for Limit button by text...`);
   limitBtn = await findByText(page, "Limit", ["button", "div", "a"]);
   
   if (limitBtn) {
@@ -4227,21 +1385,17 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null) {
     }, limitBtn);
     
     if (isInCloseColumn) {
-      console.log(`[Paradex] ✓ Found Limit button by text in Close column - clicking now...`);
+      console.log(`✓ Found Limit button by text in Close column`);
       await limitBtn.click();
       limitBtnClicked = true;
-      console.log(`[Paradex] ✅ Successfully clicked Limit button!`);
     } else {
-      console.log(`[Paradex] ⚠️  Found Limit button but not in Close column, trying other strategies...`);
+      console.log(`⚠ Found Limit button but not in Close column, trying other strategies...`);
       limitBtn = null; // Reset to try other strategies
     }
-  } else {
-    console.log(`[Paradex] ⚠️  Strategy 1: Limit button not found by text, trying other strategies...`);
   }
   
   // Strategy 2: If not found, try to find by evaluating the page and click directly (same as Close All Strategy 2)
   if (!limitBtn && !limitBtnClicked) {
-    console.log(`[Paradex] Strategy 2: Searching for Limit button via page.evaluate...`);
     const clicked = await page.evaluate(() => {
       const buttons = Array.from(
         document.querySelectorAll(
@@ -4918,7 +2072,7 @@ async function cancelAllOrders(page) {
   }
 
   if (!hasOrders) {
-    console.log("✅ No open orders found - skipping cancellation");
+    console.log("No open orders found");
     return { success: true, message: "No orders to cancel", canceled: 0 };
   }
 
@@ -4929,35 +2083,7 @@ async function cancelAllOrders(page) {
   let canceledCount = 0;
   let maxAttempts = 10; // Prevent infinite loop
   let attempts = 0;
-  
-  // Get initial order count for accurate reporting
-  const initialOrderCount = await page.evaluate(() => {
-    const tables = Array.from(document.querySelectorAll('table'));
-    for (const table of tables) {
-      const dataRows = Array.from(table.querySelectorAll('tbody tr, tr:not(:first-child)'));
-      const orderRows = dataRows.filter(row => {
-        const isVisible = row.offsetParent !== null;
-        if (!isVisible) return false;
-        const rowText = row.textContent?.toLowerCase() || '';
-        return (rowText.includes('limit') || rowText.includes('market') || rowText.includes('pending')) &&
-               !rowText.includes('canceled') && !rowText.includes('filled');
-      });
-      if (orderRows.length > 0) return orderRows.length;
-    }
-    return 0;
-  });
-  
-  console.log(`📊 Initial open orders detected: ${initialOrderCount}`);
-  
-  // Early exit if no orders found
-  if (initialOrderCount === 0) {
-    console.log("✅ No open orders found - skipping cancellation");
-    return { success: true, message: "No orders to cancel", canceled: 0 };
-  }
 
-  let previousOrderCount = initialOrderCount;
-  let consecutiveNoProgressAttempts = 0;
-  
   while (attempts < maxAttempts) {
     attempts++;
     console.log(`Looking for cancel buttons (attempt ${attempts}/${maxAttempts})...`);
@@ -4975,13 +2101,6 @@ async function cancelAllOrders(page) {
         const text = btn.textContent?.trim().toLowerCase();
         const ariaLabel = btn.getAttribute("aria-label")?.toLowerCase() || "";
         const isVisible = btn.offsetParent !== null;
-        const isDisabled = btn.disabled || btn.getAttribute("disabled") !== null || btn.classList.contains("disabled");
-        
-        // Skip buttons that have been marked as clicked (using data attribute)
-        const alreadyClicked = btn.getAttribute("data-bot-clicked") === "true";
-
-        // Skip disabled buttons or already clicked buttons
-        if (isDisabled || alreadyClicked) continue;
 
         if (
           isVisible &&
@@ -5007,17 +2126,12 @@ async function cancelAllOrders(page) {
         }
       }
 
-      // Click all cancel buttons found (only active ones) and mark them as clicked
+      // Click all cancel buttons found
       let clicked = 0;
       for (const btnInfo of cancelButtons) {
         try {
-          // Double-check it's not disabled before clicking
-          if (!btnInfo.element.disabled && btnInfo.element.offsetParent !== null) {
-            // Mark button as clicked to avoid clicking again
-            btnInfo.element.setAttribute("data-bot-clicked", "true");
-            btnInfo.element.click();
-            clicked++;
-          }
+          btnInfo.element.click();
+          clicked++;
         } catch (e) {
           console.log(`Error clicking cancel button: ${e.message}`);
         }
@@ -5031,148 +2145,34 @@ async function cancelAllOrders(page) {
       console.log(
         `✓ Clicked ${cancelResult.clicked} cancel button(s) (total: ${canceledCount})`
       );
-      
-      // Wait longer for cancellation to process
-      await delay(2000); // Increased from 1000ms - wait for orders to actually be canceled
+      await delay(1000); // Reduced from 1500ms - wait for orders to be canceled
 
-      // Actually verify orders are gone by checking table rows, not just text
-      const actualOrderCount = await page.evaluate(() => {
-        // Find all tables
-        const tables = Array.from(document.querySelectorAll('table'));
-        
-        for (const table of tables) {
-          // Find data rows (skip header)
-          const dataRows = Array.from(table.querySelectorAll('tbody tr, tr:not(:first-child)'));
-          
-          // Filter to only visible rows that contain order-related content
-          const orderRows = dataRows.filter(row => {
-            const isVisible = row.offsetParent !== null && row.offsetWidth > 0 && row.offsetHeight > 0;
-            if (!isVisible) return false;
-            
-            const rowText = row.textContent?.toLowerCase() || '';
-            // Check if row contains order indicators but NOT "canceled" or "filled"
-            const hasOrderIndicators = (
-              rowText.includes('limit') || 
-              rowText.includes('market') || 
-              rowText.includes('pending') ||
-              rowText.includes('order')
-            );
-            const isAlreadyCanceled = (
-              rowText.includes('canceled') || 
-              rowText.includes('filled') ||
-              rowText.includes('executed')
-            );
-            
-            return hasOrderIndicators && !isAlreadyCanceled;
-          });
-          
-          if (orderRows.length > 0) {
-            return orderRows.length;
-          }
-        }
-        
-        // Fallback: check for cancel buttons (if buttons exist, orders likely exist)
-        const cancelButtons = Array.from(document.querySelectorAll('button, div[role="button"], a[role="button"]'));
-        const activeCancelButtons = cancelButtons.filter(btn => {
-          const text = btn.textContent?.trim().toLowerCase();
-          const isVisible = btn.offsetParent !== null;
-          const isDisabled = btn.disabled || btn.getAttribute("disabled") !== null;
-          return isVisible && !isDisabled && (text.includes("cancel") || text === "x");
-        });
-        
-        return activeCancelButtons.length;
+      // Check if there are still orders
+      const stillHasOrders = await page.evaluate(() => {
+        const text = document.body.innerText;
+        return (
+          text.includes("Open Orders") ||
+          text.includes("Pending") ||
+          (text.includes("Cancel") && text.includes("Order"))
+        );
       });
 
-      console.log(`📊 Remaining open orders: ${actualOrderCount}`);
-      
-      if (actualOrderCount === 0) {
-        console.log("✅ All orders successfully canceled!");
+      if (!stillHasOrders) {
+        console.log("All orders canceled!");
         break;
       }
-      
-      // Check if order count actually decreased (progress made)
-      if (actualOrderCount < previousOrderCount) {
-        // Progress made - reset consecutive no-progress counter
-        consecutiveNoProgressAttempts = 0;
-        previousOrderCount = actualOrderCount;
-        console.log(`✅ Progress: Order count decreased from ${previousOrderCount + (previousOrderCount - actualOrderCount)} to ${actualOrderCount}`);
-      } else if (actualOrderCount === previousOrderCount && cancelResult.clicked > 0) {
-        // No progress despite clicking buttons
-        consecutiveNoProgressAttempts++;
-        console.log(`⚠️  No progress: Order count unchanged (${actualOrderCount}) after clicking ${cancelResult.clicked} button(s)`);
-        
-        // If we've tried multiple times with no progress, stop trying
-        if (consecutiveNoProgressAttempts >= 3) {
-          console.log(`⚠️  Stopping: No progress after ${consecutiveNoProgressAttempts} attempts. Orders may require manual cancellation.`);
-          break;
-        }
-      }
-      
-      // If we clicked buttons but order count didn't decrease, wait a bit more
-      if (actualOrderCount > 0 && attempts < maxAttempts && consecutiveNoProgressAttempts < 3) {
-        console.log(`⏳ Waiting for cancellations to process... (${actualOrderCount} orders remaining)`);
-        await delay(1500); // Additional wait for async cancellation
-      }
     } else {
-      // No more cancel buttons found - verify there are actually no orders
-      const finalOrderCount = await page.evaluate(() => {
-        const tables = Array.from(document.querySelectorAll('table'));
-        for (const table of tables) {
-          const dataRows = Array.from(table.querySelectorAll('tbody tr, tr:not(:first-child)'));
-          const orderRows = dataRows.filter(row => {
-            const isVisible = row.offsetParent !== null;
-            if (!isVisible) return false;
-            const rowText = row.textContent?.toLowerCase() || '';
-            return (rowText.includes('limit') || rowText.includes('market') || rowText.includes('pending')) &&
-                   !rowText.includes('canceled') && !rowText.includes('filled');
-          });
-          if (orderRows.length > 0) return orderRows.length;
-        }
-        return 0;
-      });
-      
-      if (finalOrderCount === 0) {
-        console.log("✅ No more orders found - all canceled!");
-      } else {
-        console.log(`⚠️  No cancel buttons found, but ${finalOrderCount} order(s) may still be open`);
-      }
+      console.log("No more cancel buttons found");
       break;
     }
   }
 
-  // Final verification: check actual remaining orders
-  const finalOrderCount = await page.evaluate(() => {
-    const tables = Array.from(document.querySelectorAll('table'));
-    for (const table of tables) {
-      const dataRows = Array.from(table.querySelectorAll('tbody tr, tr:not(:first-child)'));
-      const orderRows = dataRows.filter(row => {
-        const isVisible = row.offsetParent !== null;
-        if (!isVisible) return false;
-        const rowText = row.textContent?.toLowerCase() || '';
-        return (rowText.includes('limit') || rowText.includes('market') || rowText.includes('pending')) &&
-               !rowText.includes('canceled') && !rowText.includes('filled');
-      });
-      if (orderRows.length > 0) return orderRows.length;
-    }
-    return 0;
-  });
-  
-  const actuallyCanceled = initialOrderCount - finalOrderCount;
-  
-  if (finalOrderCount === 0 && initialOrderCount > 0) {
-    console.log(`✅ Successfully canceled all ${initialOrderCount} order(s)`);
+  if (canceledCount > 0) {
+    console.log(`✓ Successfully canceled ${canceledCount} order(s)`);
     return {
       success: true,
-      message: `Canceled ${initialOrderCount} order(s)`,
-      canceled: initialOrderCount,
-    };
-  } else if (finalOrderCount > 0) {
-    console.log(`⚠️  Warning: ${finalOrderCount} order(s) still remain (attempted to cancel ${canceledCount} button clicks)`);
-    return {
-      success: false,
-      message: `${finalOrderCount} order(s) still remain`,
-      canceled: actuallyCanceled,
-      remaining: finalOrderCount,
+      message: `Canceled ${canceledCount} order(s)`,
+      canceled: canceledCount,
     };
   } else {
     console.log("No orders were canceled (none found or already canceled)");
@@ -5458,161 +2458,18 @@ async function setLeverage(page, leverage) {
 
 async function executeTrade(
   page,
-  { side, orderType, price, qty, setLeverageFirst = false, leverage = null },
-  exchangeConfig = null
+  { side, orderType, price, qty, setLeverageFirst = false, leverage = null }
 ) {
-  const exchange = exchangeConfig || EXCHANGE_CONFIGS.paradex; // Default to Paradex
-  console.log(`\n=== Executing Trade on ${exchange.name} ===`);
+  console.log(`\n=== Executing Trade ===`);
 
-  // Set leverage first if requested
+  // Set leverage first if requested (legacy support for API calls)
   if (setLeverageFirst && leverage) {
-    // For Extended Exchange, use modal-based leverage setting
-    if (exchange.name === 'Extended Exchange') {
-      console.log(`Setting leverage for Extended Exchange using modal...`);
-      const leverageValue = String(leverage);
-      
-      // Find and click leverage button
-      const leverageButtonClicked = await page.evaluate(() => {
-        const allButtons = Array.from(document.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"]'));
-        const leverageBtn = allButtons.find(btn => {
-          const text = btn.textContent?.trim();
-          const isVisible = btn.offsetParent !== null && btn.offsetWidth > 0 && btn.offsetHeight > 0;
-          return isVisible && /^\d+x$/i.test(text);
-        });
-        
-        if (leverageBtn) {
-          leverageBtn.click();
-          return true;
-        }
-        return false;
-      });
-      
-      if (leverageButtonClicked) {
-        console.log(`✅ Clicked leverage button`);
-        await delay(2000);
-        
-        // Find leverage input in modal
-        const leverageInputFound = await page.evaluate(() => {
-          const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]');
-          if (!modal) return null;
-          
-          const inputs = Array.from(modal.querySelectorAll('input[type="text"], input[type="number"], input:not([type="hidden"])'));
-          const leverageInput = inputs.find(input => {
-            return !input.disabled && !input.readOnly && input.offsetParent !== null;
-          });
-          
-          if (leverageInput) {
-            return {
-              id: leverageInput.id,
-              className: leverageInput.className,
-              type: leverageInput.type
-            };
-          }
-          return null;
-        });
-        
-        if (leverageInputFound) {
-          // Find input using Puppeteer
-          let inputElement = null;
-          if (leverageInputFound.id) {
-            inputElement = await page.$(`#${leverageInputFound.id}`);
-          }
-          
-          if (!inputElement) {
-            const inputs = await page.$$('input[type="text"], input[type="number"], input:not([type="hidden"])');
-            for (const input of inputs) {
-              const isVisible = await input.evaluate(el => el.offsetParent !== null && !el.disabled && !el.readOnly);
-              if (isVisible) {
-                inputElement = input;
-                break;
-              }
-            }
-          }
-          
-          if (inputElement) {
-            // Click and focus the input
-            await inputElement.click({ delay: 100 });
-            await delay(200);
-            
-            // Clear existing value
-            await inputElement.click({ clickCount: 3 });
-            await page.keyboard.press('Backspace');
-            await delay(100);
-            
-            // Type the leverage value
-            await inputElement.type(leverageValue, { delay: 50 });
-            await delay(200);
-            
-            // Press Enter
-            await page.keyboard.press('Enter');
-            await delay(500);
-            
-            console.log(`✅ Entered leverage value: ${leverageValue} and pressed Enter`);
-            
-            // Check if leverage modal is still open
-            const leverageModalStillOpen = await page.evaluate(() => {
-              const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]');
-              return modal !== null;
-            });
-            
-            // Find and click Confirm or Cancel button
-            const leverageSet = await page.evaluate((modalStillOpen) => {
-              const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]');
-              if (!modal) return { success: false, reason: 'No modal found' };
-              
-              const buttons = Array.from(modal.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"]'));
-              
-              if (modalStillOpen) {
-                const cancelBtn = buttons.find(btn => {
-                  const text = btn.textContent?.trim().toLowerCase();
-                  const isVisible = btn.offsetParent !== null && btn.offsetWidth > 0 && btn.offsetHeight > 0;
-                  return isVisible && (text === 'cancel' || text === 'close' || text === 'x');
-                });
-                
-                if (cancelBtn) {
-                  cancelBtn.click();
-                  return { success: true, cancelled: true };
-                }
-              }
-              
-              const confirmBtn = buttons.find(btn => {
-                const text = btn.textContent?.trim().toLowerCase();
-                const isVisible = btn.offsetParent !== null && btn.offsetWidth > 0 && btn.offsetHeight > 0;
-                return isVisible && (text === 'confirm' || text === 'apply' || text === 'save');
-              });
-              
-              if (confirmBtn) {
-                confirmBtn.click();
-                return { success: true, confirmed: true };
-              }
-              
-              return { success: false, reason: 'Confirm/Cancel button not found' };
-            }, leverageModalStillOpen);
-            
-            if (leverageSet.success) {
-              console.log(`✅ Leverage modal handled: ${leverageSet.cancelled ? 'Cancelled (unchanged)' : 'Confirmed'}`);
-              await delay(1000);
-            } else {
-              console.log(`⚠️  Could not handle leverage modal: ${leverageSet.reason || 'unknown'}`);
-            }
-          } else {
-            console.log(`⚠️  Could not find leverage input element`);
-          }
-        } else {
-          console.log(`⚠️  Could not find leverage input in modal`);
-        }
-      } else {
-        console.log(`⚠️  Could not find leverage button`);
-      }
-    } else {
-      // For Paradex, use existing setLeverage function
-      const leverageResult = await setLeverage(page, leverage);
-      if (!leverageResult.success) {
-        console.log(`⚠ Failed to set leverage: ${leverageResult.error}`);
-        // Continue anyway - leverage setting might not be critical
-      }
-      await delay(1000);
+    const leverageResult = await setLeverage(page, leverage);
+    if (!leverageResult.success) {
+      console.log(`⚠ Failed to set leverage: ${leverageResult.error}`);
+      // Continue anyway - leverage setting might not be critical
     }
+    await delay(1000);
   }
 
   // If limit order without price, fetch current market price
@@ -5635,14 +2492,14 @@ async function executeTrade(
 
   // 1. Select Buy or Sell
   if (side === "sell") {
-    const sellBtn = await findByExactText(page, exchange.selectors.sellButton, ["button", "div"]);
+    const sellBtn = await findByExactText(page, "Sell", ["button", "div"]);
     if (sellBtn) {
       await sellBtn.click();
       console.log("Selected SELL");
       await delay(300); // Reduced from 500ms
     }
   } else {
-    const buyBtn = await findByExactText(page, exchange.selectors.buyButton, ["button", "div"]);
+    const buyBtn = await findByExactText(page, "Buy", ["button", "div"]);
     if (buyBtn) {
       await buyBtn.click();
       console.log("Selected BUY");
@@ -5652,14 +2509,14 @@ async function executeTrade(
 
   // 2. Select Market or Limit order type
   if (orderType === "limit") {
-    const limitBtn = await findByExactText(page, exchange.selectors.limitButton, ["button", "div"]);
+    const limitBtn = await findByExactText(page, "Limit", ["button", "div"]);
     if (limitBtn) {
       await limitBtn.click();
       console.log("Selected LIMIT order");
       await delay(300); // Reduced from 500ms
     }
   } else {
-    const marketBtn = await findByExactText(page, exchange.selectors.marketButton, ["button", "div"]);
+    const marketBtn = await findByExactText(page, "Market", ["button", "div"]);
     if (marketBtn) {
       await marketBtn.click();
       console.log("Selected MARKET order");
@@ -5670,23 +2527,18 @@ async function executeTrade(
   await delay(500); // Reduced from 1000ms
 
   // 3. Find and fill inputs - Look for the Size input in the trading panel
-  const inputs = await page.$$('input[type="text"], input[type="number"], input:not([type])');
+  const inputs = await page.$$('input[type="text"], input:not([type])');
   let sizeInput = null;
   let priceInput = null;
 
   console.log(`Found ${inputs.length} text input elements on page`);
-
-  // Get screen width for percentage-based filtering (works for all screen sizes)
-  const screenWidth = await page.evaluate(() => window.innerWidth);
-  const rightSideThreshold = screenWidth * 0.5; // Right half of screen
 
   for (const input of inputs) {
     const rect = await input.boundingBox();
     if (!rect) continue;
 
     // Look for inputs in the right panel (trading panel is on the right side)
-    // Use percentage-based approach for screen-size independence
-    if (rect.x < rightSideThreshold) continue;
+    if (rect.x < 1100) continue;
 
     const inputInfo = await page.evaluate((el) => {
       // Get all text content around this input
@@ -5732,15 +2584,13 @@ async function executeTrade(
     );
     console.log(`  Current value: "${inputInfo.value}"`);
 
-    // Check if this is the Size input (case-insensitive for better matching)
+    // Check if this is the Size input
     const isSizeInput =
-      inputInfo.parentText.toLowerCase().includes("size") ||
-      inputInfo.labelText.toLowerCase().includes("size") ||
-      inputInfo.placeholder.toLowerCase().includes("size") ||
-      inputInfo.id.toLowerCase().includes("size") ||
-      inputInfo.name.toLowerCase().includes("size") ||
-      inputInfo.parentText.toLowerCase().includes("quantity") ||
-      inputInfo.placeholder.toLowerCase().includes("quantity");
+      inputInfo.parentText.includes("Size") ||
+      inputInfo.labelText.includes("Size") ||
+      inputInfo.placeholder.includes("Size") ||
+      inputInfo.id.includes("size") ||
+      inputInfo.name.includes("size");
 
     // Check if this is the Price input
     const isPriceInput =
@@ -5871,241 +2721,24 @@ async function executeTrade(
   console.log(`✓ Successfully set size to: ${actualValue}`);
   await delay(500); // Reduced from 1000ms
   
-  // NOTE: Order cancellation is already done before executeTrade() is called in the trading loop
-  // No need to cancel orders here - just proceed to click confirm button
-  
-  // 4. Click Confirm button (use exchange-specific selectors)
-  // For Extended Exchange, the sell button is just "Sell", not "Confirm Sell"
-  let confirmText = side === "buy" ? exchange.selectors.confirmBuy : exchange.selectors.confirmSell;
-  
-  // Extended Exchange uses "Sell" button directly (no "Confirm Sell")
-  // Check both exact name match and case-insensitive match
-  const isExtendedExchange = exchange.name === 'Extended Exchange' || 
-                              exchange.name?.toLowerCase() === 'extended exchange' ||
-                              exchange.name?.includes('Extended');
-  
-  console.log(`[DEBUG] Exchange detection: name="${exchange.name}", isExtendedExchange=${isExtendedExchange}, side=${side}`);
-  
-  if (isExtendedExchange && side === 'sell') {
-    confirmText = "Sell";
-    console.log(`✓ Extended Exchange detected - using "Sell" button instead of "Confirm Sell"`);
+  // 4. Cancel any open orders RIGHT BEFORE clicking confirm (to free up locked funds)
+  console.log("Canceling any open orders before confirming trade...");
+  const cancelResult = await cancelAllOrders(page);
+  if (cancelResult.success) {
+    console.log("✓ Open orders canceled before trade confirmation");
   }
+  // Reduced from 500ms - cancelAllOrders() already waits internally
+  await delay(300); // Wait for orders to be fully canceled and funds freed
   
-  // For Extended Exchange, use a more robust method to find the confirm button
-  // We need to find the actual execute button, not the side selector
-  let confirmBtn = null;
-  
-  // CRITICAL: Check if this is Extended Exchange with sell side
-  if (isExtendedExchange && side === 'sell') {
-    console.log(`[EXTENDED EXCHANGE] ✅ Entering Extended Exchange Sell button finding logic...`);
-    console.log(`[EXTENDED EXCHANGE] Looking for "Sell" button in right 40% of screen (last 40%)...`);
-    
-    // Method 1: Find "Sell" button in the right 40% of screen (from 60% to 100%)
-    const screenWidth = await page.evaluate(() => window.innerWidth);
-    const rightSideThreshold = screenWidth * 0.6; // Start from 60% (last 40% of screen)
-    console.log(`[EXTENDED EXCHANGE] Method 1: Screen width: ${screenWidth}, Right threshold (60%): ${rightSideThreshold}`);
-    
-    const allButtons = await page.$$('button, div[role="button"], span[role="button"], a[role="button"]');
-    console.log(`[EXTENDED EXCHANGE] Method 1: Checking ${allButtons.length} buttons for "Sell" text in right 40%...`);
-    
-    let sellButtonsOnRight = [];
-    for (const btn of allButtons) {
-      const btnText = await page.evaluate((el) => el.textContent?.trim(), btn);
-      const rect = await btn.boundingBox();
-      const isVisible = await page.evaluate((el) => {
-        return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
-      }, btn);
-      
-      // Check if it's the "Sell" button, visible, and in the right 40% of screen
-      if (btnText === "Sell" && isVisible && rect && rect.x >= rightSideThreshold) {
-        const isDisabled = await page.evaluate((el) => {
-          return el.disabled || el.getAttribute('aria-disabled') === 'true' || 
-                 el.classList.contains('disabled') || el.style.pointerEvents === 'none';
-        }, btn);
-        
-        sellButtonsOnRight.push({
-          text: btnText,
-          x: Math.round(rect.x),
-          y: Math.round(rect.y),
-          onRight: true,
-          disabled: isDisabled
-        });
-        
-        if (!isDisabled) {
-          confirmBtn = btn;
-          console.log(`[EXTENDED EXCHANGE] ✓ Method 1 SUCCESS: Found Sell button at (${Math.round(rect.x)}, ${Math.round(rect.y)}) in right 40%`);
-          break;
-        }
-      }
-    }
-    
-    if (!confirmBtn && sellButtonsOnRight.length > 0) {
-      console.log(`[EXTENDED EXCHANGE] Method 1: Found ${sellButtonsOnRight.length} "Sell" button(s) in right 40% but all disabled:`, JSON.stringify(sellButtonsOnRight, null, 2));
-    } else if (sellButtonsOnRight.length === 0) {
-      console.log(`[EXTENDED EXCHANGE] Method 1: No "Sell" buttons found in right 40% of screen`);
-    }
-    
-    // Method 2: Fallback - try findByExactText and filter by right 40%
-    if (!confirmBtn) {
-      console.log(`[EXTENDED EXCHANGE] Method 2: Trying findByExactText("Sell") and filtering by right 40%...`);
-      const foundBtn = await findByExactText(page, "Sell", ["button", "div", "span"]);
-      if (foundBtn) {
-        const isVisible = await page.evaluate((el) => {
-          return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
-        }, foundBtn);
-        const rect = await foundBtn.boundingBox();
-        
-        console.log(`[EXTENDED EXCHANGE] Method 2: Found button - visible: ${isVisible}, x: ${Math.round(rect?.x || 0)}, threshold: ${rightSideThreshold}`);
-        
-        if (isVisible && rect && rect.x >= rightSideThreshold) {
-          const isDisabled = await page.evaluate((el) => {
-            return el.disabled || el.getAttribute('aria-disabled') === 'true' || 
-                   el.classList.contains('disabled') || el.style.pointerEvents === 'none';
-          }, foundBtn);
-          
-          if (!isDisabled) {
-            confirmBtn = foundBtn;
-            console.log(`[EXTENDED EXCHANGE] ✓ Method 2 SUCCESS: Found Sell button via findByExactText at (${Math.round(rect.x)}, ${Math.round(rect.y)})`);
-          } else {
-            console.log(`[EXTENDED EXCHANGE] Method 2: Found button but it's disabled`);
-          }
-        } else {
-          console.log(`[EXTENDED EXCHANGE] Method 2: Found button but not visible or not in right 40%`);
-        }
-      } else {
-        console.log(`[EXTENDED EXCHANGE] Method 2: findByExactText returned null`);
-      }
-    }
-    
-    // Method 3: Final fallback to findByText and filter by right 40%
-    if (!confirmBtn) {
-      console.log(`[EXTENDED EXCHANGE] Method 3: Trying findByText("Sell") and filtering by right 40%...`);
-      confirmBtn = await findByText(page, "Sell", ["button"]); // Use "Sell" not confirmText for Extended Exchange
-      if (confirmBtn) {
-        const isVisible = await page.evaluate((el) => {
-          return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
-        }, confirmBtn);
-        if (!isVisible) {
-          console.log(`[EXTENDED EXCHANGE] Method 3: Found button but it's not visible`);
-          confirmBtn = null;
-        } else {
-          const rect = await confirmBtn.boundingBox();
-          
-          // Check if it's in the right 40%
-          if (rect && rect.x >= rightSideThreshold) {
-            const isDisabled = await page.evaluate((el) => {
-              return el.disabled || el.getAttribute('aria-disabled') === 'true' || 
-                     el.classList.contains('disabled') || el.style.pointerEvents === 'none';
-            }, confirmBtn);
-            
-            if (!isDisabled) {
-              console.log(`[EXTENDED EXCHANGE] ✓ Method 3 SUCCESS: Found Sell button via findByText at (${Math.round(rect.x)}, ${Math.round(rect.y)}) in right 40%`);
-            } else {
-              console.log(`[EXTENDED EXCHANGE] Method 3: Found button but it's disabled`);
-              confirmBtn = null;
-            }
-          } else {
-            console.log(`[EXTENDED EXCHANGE] Method 3: Found Sell button but it's not in right 40% (x: ${Math.round(rect?.x || 0)}, threshold: ${rightSideThreshold}), skipping...`);
-            confirmBtn = null;
-          }
-        }
-      } else {
-        console.log(`[EXTENDED EXCHANGE] Method 3: findByText returned null`);
-      }
-    }
-    
-    // Final check: if we found the button, log it
-    if (confirmBtn) {
-      console.log(`[EXTENDED EXCHANGE] ✅ Sell button found and ready to click!`);
-    } else {
-      console.log(`[EXTENDED EXCHANGE] ❌ FAILED to find Sell button after all methods`);
-    }
-  } else {
-    // For other exchanges (Paradex) or buy side, use improved method
-    console.log(`Looking for "${confirmText}" button on ${exchange.name}...`);
-    
-    // Method 1: Try findByExactText first (more specific)
-    confirmBtn = await findByExactText(page, confirmText, ["button", "div", "span"]);
-    
-    if (confirmBtn) {
-      const isVisible = await page.evaluate((el) => {
-        return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
-      }, confirmBtn);
-      
-      if (!isVisible) {
-        console.log(`⚠️  Found "${confirmText}" button but it's not visible, trying fallback...`);
-        confirmBtn = null;
-      } else {
-        const rect = await confirmBtn.boundingBox();
-        console.log(`✓ Found "${confirmText}" button at (${Math.round(rect?.x || 0)}, ${Math.round(rect?.y || 0)})`);
-      }
-    }
-    
-    // Method 2: Fallback to findByText if exact match failed
-    if (!confirmBtn) {
-      console.log(`Exact text match failed, trying partial match...`);
-      confirmBtn = await findByText(page, confirmText, ["button"]);
-      
-      if (confirmBtn) {
-        const isVisible = await page.evaluate((el) => {
-          return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
-        }, confirmBtn);
-        
-        if (isVisible) {
-          const rect = await confirmBtn.boundingBox();
-          console.log(`✓ Found "${confirmText}" button via partial match at (${Math.round(rect?.x || 0)}, ${Math.round(rect?.y || 0)})`);
-        } else {
-          console.log(`⚠️  Found button but it's not visible`);
-          confirmBtn = null;
-        }
-      }
-    }
-    
-    // Method 3: Try case-insensitive search in evaluate
-    if (!confirmBtn) {
-      console.log(`Partial match failed, trying case-insensitive search...`);
-      const foundBtn = await page.evaluate((searchText) => {
-        const buttons = Array.from(document.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"]'));
-        const searchLower = searchText.toLowerCase();
-        
-        for (const btn of buttons) {
-          const btnText = btn.textContent?.trim() || '';
-          const isVisible = btn.offsetParent !== null && btn.offsetWidth > 0 && btn.offsetHeight > 0;
-          const isDisabled = btn.disabled || btn.getAttribute('aria-disabled') === 'true' || 
-                            btn.classList.contains('disabled') || btn.style.pointerEvents === 'none';
-          
-          if (isVisible && !isDisabled && btnText.toLowerCase().includes(searchLower)) {
-            return {
-              found: true,
-              text: btnText,
-              x: btn.getBoundingClientRect().x,
-              y: btn.getBoundingClientRect().y
-            };
-          }
-        }
-        return { found: false };
-      }, confirmText);
-      
-      if (foundBtn.found) {
-        console.log(`✓ Found button via case-insensitive search: "${foundBtn.text}" at (${Math.round(foundBtn.x)}, ${Math.round(foundBtn.y)})`);
-        // Try to find it again using Puppeteer
-        confirmBtn = await findByText(page, foundBtn.text, ["button"]);
-      }
-    }
-  }
+  // 5. Click Confirm button
+  const confirmText = side === "buy" ? "Confirm Buy" : "Confirm Sell";
+  const confirmBtn = await findByText(page, confirmText, ["button"]);
 
   if (confirmBtn) {
-    // Log which exchange and button before clicking
-    if (isExtendedExchange && side === 'sell') {
-      console.log(`[EXTENDED EXCHANGE] 🖱️  Clicking Sell button now...`);
-    } else {
-      console.log(`[${exchange.name}] 🖱️  Clicking "${confirmText}" button now...`);
-    }
     await confirmBtn.click();
-    console.log(`✓ Successfully clicked "${confirmText}" button`);
-    await delay(2000); // Wait for order submission to process
+    console.log(`Clicked "${confirmText}"`);
+    await delay(1500); // Reduced from 2000ms
 
-    // Check for error messages first
     const errorMsg = await page.evaluate(() => {
       const errors = document.querySelectorAll(
         '[class*="error"], [class*="Error"]'
@@ -6121,168 +2754,12 @@ async function executeTrade(
       return { success: false, error: errorMsg };
     }
 
-    // Verify order was placed and is pending
-    console.log("Verifying order placement...");
-    const orderVerified = await verifyOrderPlaced(page, exchange, side, qty, maxWaitTime = 10000);
-    
-    if (orderVerified.success) {
-      console.log(`✓ Order confirmed as ${orderVerified.status || 'pending'}`);
-      return { success: true, message: "Trade submitted and order confirmed", orderStatus: orderVerified.status };
-    } else {
-      console.log(`⚠️  Order verification: ${orderVerified.reason || 'Could not verify order placement'}`);
-      // Still return success if no error was found (order might be placed but not yet visible)
-      return { success: true, message: "Trade submitted (verification inconclusive)", warning: orderVerified.reason };
-    }
+    console.log("Trade submitted successfully!");
+    return { success: true, message: "Trade submitted" };
   } else {
-    // Enhanced error message with debugging info
-    console.log(`❌ Could not find "${confirmText}" button`);
-    console.log(`   Exchange: ${exchange.name}, Side: ${side}`);
-    
-    // Additional debugging: try to find what buttons are available
-    const availableButtons = await page.evaluate(() => {
-      const buttons = Array.from(document.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"]'));
-      return buttons
-        .filter(btn => {
-          const isVisible = btn.offsetParent !== null && btn.offsetWidth > 0 && btn.offsetHeight > 0;
-          return isVisible;
-        })
-        .map(btn => {
-          const text = btn.textContent?.trim();
-          const rect = btn.getBoundingClientRect();
-          return {
-            text: text,
-            x: Math.round(rect.x),
-            y: Math.round(rect.y),
-            disabled: btn.disabled || btn.getAttribute('aria-disabled') === 'true'
-          };
-        })
-        .filter(btn => btn.text && btn.text.length > 0)
-        .slice(0, 10); // Limit to first 10 for readability
-    });
-    
-    console.log(`   Available buttons (first 10):`, JSON.stringify(availableButtons, null, 2));
-    
-    return { success: false, error: `Confirm button not found. Looking for: "${confirmText}"` };
+    console.log(`Could not find "${confirmText}" button`);
+    return { success: false, error: "Confirm button not found" };
   }
-}
-
-/**
- * Verifies that an order was placed and is pending/active
- * Checks for order in orders table or success confirmation
- */
-async function verifyOrderPlaced(page, exchange, side, qty, maxWaitTime = 10000) {
-  const startTime = Date.now();
-  const checkInterval = 1000; // Check every 1 second
-  const maxChecks = Math.ceil(maxWaitTime / checkInterval);
-  
-  for (let i = 0; i < maxChecks; i++) {
-    // Check if we've exceeded max wait time
-    if (Date.now() - startTime > maxWaitTime) {
-      break;
-    }
-    
-    // Method 1: Check for success message/notification
-    const successMessage = await page.evaluate(() => {
-      const bodyText = document.body.innerText || '';
-      const successIndicators = [
-        'order placed',
-        'order submitted',
-        'order created',
-        'order pending',
-        'success',
-        'submitted successfully'
-      ];
-      
-      for (const indicator of successIndicators) {
-        if (bodyText.toLowerCase().includes(indicator)) {
-          return indicator;
-        }
-      }
-      return null;
-    });
-    
-    if (successMessage) {
-      return { success: true, status: 'pending', method: 'success_message' };
-    }
-    
-    // Method 2: Check orders table for pending order
-    const orderInTable = await page.evaluate((side, qty) => {
-      // Find all tables
-      const tables = Array.from(document.querySelectorAll('table'));
-      
-      for (const table of tables) {
-        // Find data rows (skip header)
-        const dataRows = Array.from(table.querySelectorAll('tbody tr, tr:not(:first-child)'));
-        
-        // Filter to only visible rows
-        const visibleRows = dataRows.filter(row => {
-          return row.offsetParent !== null && row.offsetWidth > 0 && row.offsetHeight > 0;
-        });
-        
-        // Check each row for order indicators
-        for (const row of visibleRows) {
-          const rowText = row.textContent?.toLowerCase() || '';
-          
-          // Check if row contains order indicators
-          const hasOrderIndicators = (
-            rowText.includes('limit') || 
-            rowText.includes('market') || 
-            rowText.includes('pending') ||
-            rowText.includes('open') ||
-            rowText.includes('order')
-          );
-          
-          // Check if row matches the side (buy/sell)
-          const matchesSide = side === 'buy' 
-            ? (rowText.includes('buy') || rowText.includes('long'))
-            : (rowText.includes('sell') || rowText.includes('short'));
-          
-          // Check if NOT already canceled/filled
-          const isActive = !(
-            rowText.includes('canceled') || 
-            rowText.includes('filled') ||
-            rowText.includes('executed') ||
-            rowText.includes('closed')
-          );
-          
-          if (hasOrderIndicators && matchesSide && isActive) {
-            return true;
-          }
-        }
-      }
-      
-      return false;
-    }, side, qty);
-    
-    if (orderInTable) {
-      return { success: true, status: 'pending', method: 'orders_table' };
-    }
-    
-    // Method 3: Check for modal/confirmation dialog closing (indicates success)
-    const modalClosed = await page.evaluate(() => {
-      // Check if any confirmation/trade modal has closed
-      const modals = document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"]');
-      // If no modals or modals are hidden, trade likely succeeded
-      return modals.length === 0 || Array.from(modals).every(m => {
-        const style = window.getComputedStyle(m);
-        return style.display === 'none' || style.visibility === 'hidden';
-      });
-    });
-    
-    if (modalClosed && i > 2) { // Wait at least 2 seconds before checking modal
-      // Modal closed and no errors found - order likely placed
-      return { success: true, status: 'pending', method: 'modal_closed' };
-    }
-    
-    // Wait before next check
-    await delay(checkInterval);
-  }
-  
-  // If we get here, couldn't verify order placement
-  return { 
-    success: false, 
-    reason: `Could not verify order placement within ${maxWaitTime}ms. Order may still be processing.` 
-  };
 }
 
 /**
@@ -7073,9 +3550,8 @@ async function handleTpSlAddButtonClick(page, email) {
     
     console.log(`[${email}] ✓ Form validated - Stop Loss USD value is ready, clicking Confirm...`);
     
-    // CRITICAL: For TP/SL modal, ONLY click "Confirm" button - NEVER look for "close" button
-    // The TP/SL modal should be submitted using "Confirm", not closed
-    console.log(`[${email}] Clicking Confirm button in TP/SL modal (NOT looking for close button)...`);
+    // Click Confirm button - make sure we're clicking in TP/SL modal, not leverage modal
+    console.log(`[${email}] Clicking Confirm button...`);
     const confirmClicked = await page.evaluate(() => {
       // Find TP/SL modal specifically
       const modals = Array.from(document.querySelectorAll('[class*="modal"], [role="dialog"]'));
@@ -7094,33 +3570,21 @@ async function handleTpSlAddButtonClick(page, email) {
         }
       }
       
-      if (!tpslModal) {
-        console.log('TP/SL modal not found');
-        return false;
-      }
+      if (!tpslModal) return false;
       
-      // ONLY look for "Confirm" button - NEVER look for "close" button in TP/SL modal
       const buttons = Array.from(tpslModal.querySelectorAll('button'));
       for (const btn of buttons) {
         const text = btn.textContent?.trim() || '';
-        const isVisible = btn.offsetParent !== null && btn.offsetWidth > 0 && btn.offsetHeight > 0;
-        // Only click Confirm button - ignore any close/X buttons
-        if (isVisible && (text === 'Confirm' || text.includes('Confirm'))) {
+        if (text === 'Confirm' || text.includes('Confirm')) {
           btn.click();
-          console.log(`Clicked Confirm button: "${text}"`);
           return true;
         }
       }
-      console.log('Confirm button not found in TP/SL modal');
       return false;
     });
   
   if (confirmClicked) {
     console.log(`[${email}] ✓ Confirm button clicked`);
-    // Add delay after TP/SL confirm button click for Paradex (especially for buy positions)
-    console.log(`[${email}] Waiting after TP/SL confirm click...`);
-    await delay(2000); // Wait 2 seconds after confirming TP/SL
-    console.log(`[${email}] ✓ Delay completed after TP/SL confirm`);
   } else {
     console.log(`[${email}] ⚠ Confirm button not found`);
   }
@@ -7270,9 +3734,8 @@ function startApiServer(page, apiPort, email) {
   });
 }
 
-async function launchAccount(accountConfig, exchangeConfig) {
+async function launchAccount(accountConfig) {
   const { email, cookiesPath, profileDir, apiPort } = accountConfig;
-  const exchange = exchangeConfig || EXCHANGE_CONFIGS.paradex; // Default to Paradex
 
   try {
     console.log(`\n[${email}] Launching browser instance...`);
@@ -7319,41 +3782,31 @@ async function launchAccount(accountConfig, exchangeConfig) {
         "--window-size=1920,1080",
       ],
       defaultViewport: HEADLESS ? { width: 1920, height: 1080 } : null,
-      protocolTimeout: 180000, // Increase protocol timeout to 180 seconds (default is 30s) - needed for complex DOM queries
+      protocolTimeout: 120000, // Increase protocol timeout to 120 seconds (default is 30s)
     });
 
     const page = await browser.newPage();
 
     // Set default navigation timeout to 60 seconds (increased from default 30s)
     page.setDefaultNavigationTimeout(60000);
-    page.setDefaultTimeout(120000); // Increased to 120 seconds for complex DOM operations
+    page.setDefaultTimeout(60000);
 
     await page.setUserAgent(
       "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     );
 
     // Try to load saved cookies - check if this is a new account
-    // For Extended Exchange, skip loading cookies (we'll clear them anyway)
-    let hasExistingCookies = false;
-    let isNewAccount = true;
-    
-    if (exchange.name !== 'Extended Exchange') {
-      // For non-Extended Exchange, load cookies normally
-      hasExistingCookies = await loadCookies(page, cookiesPath, email);
-      isNewAccount = !hasExistingCookies;
-    } else {
-      // For Extended Exchange, don't load cookies - we'll clear them in login flow
-      console.log(`[${email}] Extended Exchange - skipping cookie load (will clear and re-authenticate)`);
-    }
+    const hasExistingCookies = await loadCookies(page, cookiesPath, email);
+    const isNewAccount = !hasExistingCookies;
 
     if (isNewAccount) {
       console.log(`[${email}] New account detected - no existing cookies`);
     }
 
-    console.log(`[${email}] Opening ${exchange.name}...`);
+    console.log(`[${email}] Opening Paradex...`);
 
     // If new account, use referral URL; otherwise use regular trading URL
-    const targetUrl = isNewAccount ? exchange.referralUrl : exchange.url;
+    const targetUrl = isNewAccount ? PARADEX_REFERRAL_URL : PARADEX_URL;
 
     try {
       await page.goto(targetUrl, {
@@ -7388,7 +3841,7 @@ async function launchAccount(accountConfig, exchangeConfig) {
     let loggedIn = false;
     const maxLoginChecks = hasExistingCookies ? 5 : 1; // More retries if cookies exist
     for (let i = 0; i < maxLoginChecks; i++) {
-      loggedIn = await isLoggedIn(page, exchange);
+      loggedIn = await isLoggedIn(page);
       console.log(
         `[${email}] Logged in:`,
         loggedIn,
@@ -7407,40 +3860,9 @@ async function launchAccount(accountConfig, exchangeConfig) {
       console.log(
         `[${email}] Not logged in after ${maxLoginChecks} check(s), starting login process...`
       );
-      const loginResult = await login(page, browser, email, cookiesPath, isNewAccount, exchange);
-      
-      // For Extended Exchange, if login returns true but cookies aren't set yet,
-      // wait longer for user to complete wallet connection manually
-      if (exchange.name === 'Extended Exchange' && loginResult) {
-        console.log(`[${email}] Extended Exchange login initiated, waiting for wallet connection...`);
-        // Wait up to 2 minutes for cookies to be set (user needs to scan QR and connect)
-        let waitAttempts = 0;
-        const maxWaitAttempts = 40; // 40 * 3s = 2 minutes
-        while (waitAttempts < maxWaitAttempts) {
-          await delay(3000); // Check every 3 seconds
-          loggedIn = await isLoggedIn(page, exchange);
-          if (loggedIn) {
-            console.log(`[${email}] ✅ Extended Exchange cookies detected after wallet connection!`);
-            break;
-          }
-          waitAttempts++;
-          if (waitAttempts % 10 === 0) {
-            console.log(`[${email}] Still waiting for wallet connection... (${waitAttempts * 3}s elapsed)`);
-          }
-        }
-        
-        if (!loggedIn) {
-          console.log(`[${email}] ⚠️  Extended Exchange: Wallet connection not completed after 2 minutes.`);
-          console.log(`[${email}] Browser will remain open for manual connection.`);
-          // Don't close browser - allow user to manually complete connection
-          // Return success: false but keep browser open
-          return { browser, page, email, success: false, exchange: exchange.name, keepBrowserOpen: true };
-        }
-      } else {
-        // For non-Extended Exchange or if login failed
-        await delay(3000);
-        loggedIn = await isLoggedIn(page, exchange);
-      }
+      await login(page, browser, email, cookiesPath, isNewAccount);
+      await delay(3000);
+      loggedIn = await isLoggedIn(page);
     } else {
       console.log(
         `[${email}] Already logged in with existing cookies, skipping login process`
@@ -7450,10 +3872,10 @@ async function launchAccount(accountConfig, exchangeConfig) {
     // If logged in and we were on referral page, navigate to trading page
     if (loggedIn && isNewAccount) {
       const currentUrl = page.url();
-      if (!currentUrl.includes(exchange.urlPattern)) {
+      if (!currentUrl.includes("app.paradex.trade/trade")) {
         console.log(`[${email}] Navigating to trading page after login...`);
         try {
-          await page.goto(exchange.url, {
+          await page.goto(PARADEX_URL, {
             waitUntil: "domcontentloaded",
             timeout: 30000,
           });
@@ -7465,37 +3887,20 @@ async function launchAccount(accountConfig, exchangeConfig) {
     }
 
     if (loggedIn) {
-      console.log(`\n[${email}] *** Successfully logged in to ${exchange.name}! ***\n`);
-
-      // For Extended Exchange, if cookies are set, click on Orders tab
-      if (exchange.name === 'Extended Exchange') {
-        const hasCookies = await hasExtendedExchangeCookies(page);
-        if (hasCookies) {
-          console.log(`[${email}] Extended Exchange cookies detected, clicking Orders tab...`);
-          await clickOrdersTab(page, email);
-        }
-      }
+      console.log(`\n[${email}] *** Successfully logged in! ***\n`);
 
       // Ensure we're on the trading page (not redirected to status page)
       const currentUrl = page.url();
-      if (!currentUrl.includes(exchange.urlPattern)) {
+      if (!currentUrl.includes("app.paradex.trade/trade")) {
         console.log(
           `[${email}] Redirected to ${currentUrl}, navigating back to trading page...`
         );
         try {
-          await page.goto(exchange.url, {
+          await page.goto(PARADEX_URL, {
             waitUntil: "domcontentloaded",
             timeout: 30000,
           });
           await delay(3000);
-          
-          // After navigation, click Orders tab again for Extended Exchange
-          if (exchange.name === 'Extended Exchange') {
-            const hasCookies = await hasExtendedExchangeCookies(page);
-            if (hasCookies) {
-              await clickOrdersTab(page, email);
-            }
-          }
         } catch (error) {
           console.log(`[${email}] Navigation error, continuing...`);
         }
@@ -7504,27 +3909,14 @@ async function launchAccount(accountConfig, exchangeConfig) {
       // Start the API server for this account
       startApiServer(page, apiPort, email);
 
-      // DISABLED: Auto-click TP/SL listener - now using manual flow in closeAllPositions
-      // The manual flow goes to Positions tab, finds TP/SL button, clicks it, fills value, confirms, then clicks Limit
-      // This gives us better control over the sequence: TP/SL -> Confirm -> Wait -> Limit -> Close
-      // if (exchange.name === 'Paradex') {
-      //   await setupTpSlAddButtonListener(page, email);
-      // }
+      // Set up TP/SL add button click listener
+      await setupTpSlAddButtonListener(page, email);
 
-      return { browser, page, email, success: true, exchange: exchange.name };
+      return { browser, page, email, success: true };
     } else {
       console.log(`[${email}] Failed to login.`);
-      // For Extended Exchange, keep browser open to allow manual wallet connection
-      // For other exchanges, close browser on login failure
-      const shouldKeepOpen = exchange.name === 'Extended Exchange';
-      if (!shouldKeepOpen) {
-        await browser.close();
-        return { email, success: false };
-      } else {
-        console.log(`[${email}] Extended Exchange: Keeping browser open for manual wallet connection.`);
-        console.log(`[${email}] Please complete wallet connection manually in the browser window.`);
-        return { browser, page, email, success: false, exchange: exchange.name, keepBrowserOpen: true };
-      }
+      await browser.close();
+      return { email, success: false };
     }
   } catch (error) {
     console.error(`\n✗ [${email}] Error during account launch:`, error.message);
@@ -7544,126 +3936,81 @@ const TRADE_CONFIG = {
 let isShuttingDown = false;
 
 async function automatedTradingLoop(account1Result, account2Result) {
-  const { page: page1, email: email1, exchange: exchange1Name } = account1Result;
-  const { page: page2, email: email2, exchange: exchange2Name } = account2Result;
-  
-  // Get exchange configs - handle both string names and undefined
-  // Map exchange names to config keys: "Extended Exchange" -> "extended", "Paradex" -> "paradex"
-  const getExchangeKey = (exchangeName) => {
-    if (!exchangeName) return 'paradex';
-    const nameLower = exchangeName.toLowerCase();
-    if (nameLower.includes('extended')) return 'extended';
-    if (nameLower.includes('paradex')) return 'paradex';
-    return 'paradex'; // default
-  };
-  
-  const exchange1Key = getExchangeKey(exchange1Name);
-  const exchange2Key = getExchangeKey(exchange2Name);
-  const exchange1 = EXCHANGE_CONFIGS[exchange1Key] || EXCHANGE_CONFIGS.paradex;
-  const exchange2 = EXCHANGE_CONFIGS[exchange2Key] || EXCHANGE_CONFIGS.paradex;
-  
-  console.log(`[DEBUG] Exchange mapping: exchange1Name="${exchange1Name}" -> key="${exchange1Key}" -> config.name="${exchange1.name}"`);
-  console.log(`[DEBUG] Exchange mapping: exchange2Name="${exchange2Name}" -> key="${exchange2Key}" -> config.name="${exchange2.name}"`);
+  const { page: page1, email: email1 } = account1Result;
+  const { page: page2, email: email2 } = account2Result;
 
   let cycleCount = 0;
 
   console.log(`\n========================================`);
   console.log(`Starting Automated Trading Loop`);
-  console.log(`Account 1 (${email1}) on ${exchange1.name}: BUY ${TRADE_CONFIG.buyQty} BTC`);
-  console.log(`Account 2 (${email2}) on ${exchange2.name}: SELL ${TRADE_CONFIG.sellQty} BTC`);
+  console.log(`Account 1 (${email1}): BUY ${TRADE_CONFIG.buyQty} BTC`);
+  console.log(`Account 2 (${email2}): SELL ${TRADE_CONFIG.sellQty} BTC`);
   console.log(`Leverage: ${TRADE_CONFIG.leverage}x`);
   console.log(`Close after: Random time between 10s and 3min`);
   console.log(`========================================\n`);
 
   // Clean up any existing positions and orders BEFORE setting leverage
-  // NOTE: Extended Exchange already did this in clickOrdersTab() during login, so skip it
   console.log(`\n🧹 Cleaning up existing positions and orders...`);
-  const cleanupPromises = [];
-  
-  // Only cleanup Paradex accounts (Extended Exchange already cleaned up in clickOrdersTab)
-  if (exchange1Name !== 'Extended Exchange') {
-    cleanupPromises.push((async () => {
+  const cleanupPromises = [
+    (async () => {
       console.log(`\n[${email1}] Checking for open positions and orders...`);
-      const closeResult = await closeAllPositions(page1, 100, exchange1);
+      const closeResult = await closeAllPositions(page1, 100);
       const cancelResult = await cancelAllOrders(page1);
       return { email: email1, close: closeResult, cancel: cancelResult };
-    })());
-  } else {
-    console.log(`\n[${email1}] Skipping cleanup - already done in clickOrdersTab() during login`);
-  }
-  
-  if (exchange2Name !== 'Extended Exchange') {
-    cleanupPromises.push((async () => {
+    })(),
+    (async () => {
       console.log(`\n[${email2}] Checking for open positions and orders...`);
-      const closeResult = await closeAllPositions(page2, 100, exchange2);
+      const closeResult = await closeAllPositions(page2, 100);
       const cancelResult = await cancelAllOrders(page2);
       return { email: email2, close: closeResult, cancel: cancelResult };
-    })());
-  } else {
-    console.log(`\n[${email2}] Skipping cleanup - already done in clickOrdersTab() during login`);
-  }
+    })(),
+  ];
 
-  if (cleanupPromises.length > 0) {
-    const cleanupResults = await Promise.all(cleanupPromises);
-    
-    // Log cleanup results
-    for (const result of cleanupResults) {
-      if (result.close.success) {
-        console.log(`✓ [${result.email}] Positions: ${result.close.message || 'checked'}`);
-      } else {
-        console.log(`⚠ [${result.email}] Positions: ${result.close.error || 'check failed'}`);
-      }
-      if (result.cancel.success) {
-        console.log(`✓ [${result.email}] Orders: ${result.cancel.message || 'checked'}`);
-      } else {
-        console.log(`⚠ [${result.email}] Orders: ${result.cancel.error || 'check failed'}`);
-      }
+  const cleanupResults = await Promise.all(cleanupPromises);
+
+  // Log cleanup results
+  for (const result of cleanupResults) {
+    if (result.close.success) {
+      console.log(`✓ [${result.email}] Positions: ${result.close.message || 'checked'}`);
+    } else {
+      console.log(`⚠ [${result.email}] Positions: ${result.close.error || 'check failed'}`);
+    }
+    if (result.cancel.success) {
+      console.log(`✓ [${result.email}] Orders: ${result.cancel.message || 'checked'}`);
+    } else {
+      console.log(`⚠ [${result.email}] Orders: ${result.cancel.error || 'check failed'}`);
     }
   }
 
   console.log(`\n✓ Cleanup completed.`);
   
-  // Set leverage ONCE at the beginning (AFTER cleanup)
-  // NOTE: Extended Exchange already set leverage in clickOrdersTab() during login, so skip it
-  console.log(`\n🔧 Setting leverage for accounts...`);
-  const leveragePromises = [];
-  
-  // Only set leverage for Paradex accounts (Extended Exchange already set in clickOrdersTab)
-  if (exchange1Name !== 'Extended Exchange') {
-    leveragePromises.push((async () => {
-      const result = await setLeverage(page1, TRADE_CONFIG.leverage);
-      return { email: email1, result };
-    })());
+  // Set leverage ONCE at the beginning for both accounts (AFTER cleanup)
+  console.log(`\n🔧 Setting leverage for both accounts...`);
+  const leveragePromises = [
+    setLeverage(page1, TRADE_CONFIG.leverage),
+    setLeverage(page2, TRADE_CONFIG.leverage),
+  ];
+
+  const leverageResults = await Promise.all(leveragePromises);
+
+  if (leverageResults[0].success) {
+    console.log(`✓ [${email1}] Leverage set to ${TRADE_CONFIG.leverage}x`);
   } else {
-    console.log(`[${email1}] Skipping leverage - already set in clickOrdersTab() during login`);
-  }
-  
-  if (exchange2Name !== 'Extended Exchange') {
-    leveragePromises.push((async () => {
-      const result = await setLeverage(page2, TRADE_CONFIG.leverage);
-      return { email: email2, result };
-    })());
-  } else {
-    console.log(`[${email2}] Skipping leverage - already set in clickOrdersTab() during login`);
+    console.log(
+      `⚠ [${email1}] Failed to set leverage: ${leverageResults[0].error}`
+    );
   }
 
-  if (leveragePromises.length > 0) {
-    const leverageResults = await Promise.all(leveragePromises);
-    
-    for (const { email, result } of leverageResults) {
-      if (result.success) {
-        console.log(`✓ [${email}] Leverage set to ${TRADE_CONFIG.leverage}x`);
-      } else {
-        console.log(`⚠ [${email}] Failed to set leverage: ${result.error}`);
-      }
-    }
+  if (leverageResults[1].success) {
+    console.log(`✓ [${email2}] Leverage set to ${TRADE_CONFIG.leverage}x`);
+  } else {
+    console.log(
+      `⚠ [${email2}] Failed to set leverage: ${leverageResults[1].error}`
+    );
   }
 
   console.log(`\n✓ Leverage configured. Starting trading cycles...\n`);
   await delay(1000); // Reduced from 2000ms
-
-  // Track if Extended Exchange just completed post-trade flow (cleanup + leverage set)
-  let extendedExchangeJustCompletedPostTrade = false;
 
   while (!isShuttingDown) {
     cycleCount++;
@@ -7672,97 +4019,45 @@ async function automatedTradingLoop(account1Result, account2Result) {
     );
 
     try {
-      // Skip cleanup if Extended Exchange just completed post-trade flow (which already did cleanup + leverage)
-      let skipCleanupAndPreTrade = false;
-      if (extendedExchangeJustCompletedPostTrade) {
-        console.log(`\n[CYCLE ${cycleCount}] Skipping cleanup and pre-trade - Extended Exchange just completed post-trade flow (cleanup + leverage already done)`);
-        extendedExchangeJustCompletedPostTrade = false; // Reset flag
-        skipCleanupAndPreTrade = true; // Skip both cleanup and pre-trade, go directly to trade execution
+      // Step 0: Cancel all open orders FIRST (to free up locked funds)
+      console.log(`\n[CYCLE ${cycleCount}] Canceling all open orders first...`);
+      const cancelPromises = [
+        cancelAllOrders(page1),
+        cancelAllOrders(page2),
+      ];
+
+      const cancelResults = await Promise.all(cancelPromises);
+
+      if (cancelResults[0].success) {
+        console.log(`✓ [${email1}] Open orders checked/canceled`);
       }
-      
-      if (!skipCleanupAndPreTrade) {
-        // Step 0: Cancel all open orders FIRST (to free up locked funds)
-        console.log(`\n[CYCLE ${cycleCount}] Canceling all open orders first...`);
-        const cancelPromises = [
-          cancelAllOrders(page1),
-          cancelAllOrders(page2),
-        ];
-
-        const cancelResults = await Promise.all(cancelPromises);
-
-        if (cancelResults[0].success) {
-          console.log(`✓ [${email1}] Open orders checked/canceled`);
-        }
-        if (cancelResults[1].success) {
-          console.log(`✓ [${email2}] Open orders checked/canceled`);
-        }
-
-        // Small delay to ensure orders are fully canceled and funds are freed
-        // Reduced from 2000ms - cancelAllOrders() already waits internally
-        await delay(500);
-
-        // Step 1: Close any existing positions
-        // NOTE: For Extended Exchange, DON'T close positions here - let clickOrdersTab handle it (including TP/SL)
-        console.log(`\n[CYCLE ${cycleCount}] Checking for existing positions...`);
-        const initialClosePromises = [];
-        
-        // Only close positions for Paradex (Extended Exchange will handle it in clickOrdersTab)
-        if (exchange1Name !== 'Extended Exchange') {
-          initialClosePromises.push((async () => {
-            const result = await closeAllPositions(page1, 100, exchange1);
-            return { email: email1, result };
-          })());
-        }
-        
-        if (exchange2Name !== 'Extended Exchange') {
-          initialClosePromises.push((async () => {
-            const result = await closeAllPositions(page2, 100, exchange2);
-            return { email: email2, result };
-          })());
-        }
-
-        if (initialClosePromises.length > 0) {
-          const initialCloseResults = await Promise.all(initialClosePromises);
-          for (const { email, result } of initialCloseResults) {
-            if (result.success) {
-              console.log(`✓ [${email}] Existing positions checked/closed`);
-            }
-          }
-          // Small delay to ensure positions are fully closed
-          await delay(300);
-        } else {
-          console.log(`[CYCLE ${cycleCount}] Skipping position close - Extended Exchange will handle it in clickOrdersTab`);
-        }
-      } // End of else block for skip cleanup check
-
-      // Step 0.5: For Extended Exchange, run PRE-trade flow BEFORE executing trades
-      // Use clickOrdersTab() which does: cancel orders, positions, TP/SL, close positions, set leverage
-      // This is the SAME flow as Phase 3 (initial setup) - no duplication
-      // IMPORTANT: Don't close positions before this - clickOrdersTab needs to see positions to add TP/SL
-      // Skip pre-trade if we just completed post-trade (cleanup + leverage already done)
-      if (!skipCleanupAndPreTrade) {
-        const hasExtendedExchange = exchange1Name === 'Extended Exchange' || exchange2Name === 'Extended Exchange';
-        
-        if (hasExtendedExchange) {
-        console.log(`\n[CYCLE ${cycleCount}] Extended Exchange detected - running PRE-trade flow (clickOrdersTab)...`);
-        console.log(`[CYCLE ${cycleCount}] NOTE: clickOrdersTab will handle cancel orders, TP/SL, close positions (leverage will be set in post-trade)`);
-        
-        // Run clickOrdersTab for Extended Exchange accounts (skip leverage - will be set post-trade)
-        const preTradePromises = [];
-        if (exchange1Name === 'Extended Exchange') {
-          preTradePromises.push(clickOrdersTab(page1, email1, true)); // skipLeverage = true
-        }
-        if (exchange2Name === 'Extended Exchange') {
-          preTradePromises.push(clickOrdersTab(page2, email2, true)); // skipLeverage = true
-        }
-        
-          if (preTradePromises.length > 0) {
-            await Promise.all(preTradePromises);
-            console.log(`[CYCLE ${cycleCount}] Extended Exchange pre-trade flow completed`);
-          }
-          await delay(2000); // Small delay before trade execution
-        }
+      if (cancelResults[1].success) {
+        console.log(`✓ [${email2}] Open orders checked/canceled`);
       }
+
+      // Small delay to ensure orders are fully canceled and funds are freed
+      // Reduced from 2000ms - cancelAllOrders() already waits internally
+      await delay(500);
+
+      // Step 1: Close any existing positions
+      console.log(`\n[CYCLE ${cycleCount}] Checking for existing positions...`);
+      const initialClosePromises = [
+        closeAllPositions(page1, 100),
+        closeAllPositions(page2, 100),
+      ];
+
+      const initialCloseResults = await Promise.all(initialClosePromises);
+
+      if (initialCloseResults[0].success) {
+        console.log(`✓ [${email1}] Existing positions checked/closed`);
+      }
+      if (initialCloseResults[1].success) {
+        console.log(`✓ [${email2}] Existing positions checked/closed`);
+      }
+
+      // Small delay to ensure positions are fully closed
+      // Reduced from 500ms - closeAllPositions() already waits internally
+      await delay(300); // Reduced from 500ms
 
       // Step 1: Execute trades in parallel with limit orders at market price
       console.log(`\n[CYCLE ${cycleCount}] Opening new positions...`);
@@ -7772,94 +4067,34 @@ async function automatedTradingLoop(account1Result, account2Result) {
           orderType: "limit",
           qty: TRADE_CONFIG.buyQty,
           // Leverage already set at the beginning, price will be fetched automatically
-        }, exchange1),
+        }),
         executeTrade(page2, {
           side: "sell",
           orderType: "limit",
           qty: TRADE_CONFIG.sellQty,
           // Leverage already set at the beginning, price will be fetched automatically
-        }, exchange2),
+        }),
       ];
 
       const tradeResults = await Promise.all(tradePromises);
 
-      // Check if both trades succeeded AND orders are confirmed as pending
+      // Check if both trades succeeded
       const trade1Success = tradeResults[0].success;
       const trade2Success = tradeResults[1].success;
-      
-      // Verify orders are actually placed (pending) before proceeding
-      const order1Confirmed = tradeResults[0].orderStatus || tradeResults[0].success;
-      const order2Confirmed = tradeResults[1].orderStatus || tradeResults[1].success;
 
       if (trade1Success) {
-        if (order1Confirmed) {
-          console.log(`✓ [${email1}] BUY order placed and confirmed as ${tradeResults[0].orderStatus || 'pending'}`);
-        } else {
-          console.log(`⚠️  [${email1}] BUY executed but order confirmation inconclusive: ${tradeResults[0].warning || 'unknown'}`);
-        }
+        console.log(`✓ [${email1}] BUY executed successfully`);
       } else {
         console.log(`✗ [${email1}] BUY failed: ${tradeResults[0].error}`);
       }
 
       if (trade2Success) {
-        if (order2Confirmed) {
-          console.log(`✓ [${email2}] SELL order placed and confirmed as ${tradeResults[1].orderStatus || 'pending'}`);
-        } else {
-          console.log(`⚠️  [${email2}] SELL executed but order confirmation inconclusive: ${tradeResults[1].warning || 'unknown'}`);
-        }
+        console.log(`✓ [${email2}] SELL executed successfully`);
       } else {
         console.log(`✗ [${email2}] SELL failed: ${tradeResults[1].error}`);
       }
 
-      // CRITICAL: Only proceed to post-trade flow (closing orders/positions) AFTER both orders are confirmed as pending
-      // This ensures we don't close positions before orders are actually placed
-      if (trade1Success && trade2Success && (!order1Confirmed || !order2Confirmed)) {
-        console.log(`\n⏳ [CYCLE ${cycleCount}] Waiting for order confirmation before proceeding...`);
-        // Wait a bit more for orders to appear
-        await delay(3000);
-        console.log(`✓ [CYCLE ${cycleCount}] Proceeding with post-trade flow...`);
-      }
-
-      // Step 1.5: For Extended Exchange ONLY, run POST-trade flow AFTER orders are confirmed
-      // IMPORTANT: Extended Exchange runs INDEPENDENTLY - doesn't wait for Paradex trade success
-      // This ensures Extended Exchange proceeds even if Paradex trade fails
-      const hasExtendedExchange1 = exchange1Name === 'Extended Exchange';
-      const hasExtendedExchange2 = exchange2Name === 'Extended Exchange';
-      
-      if (hasExtendedExchange1 || hasExtendedExchange2) {
-        console.log(`\n[CYCLE ${cycleCount}] Extended Exchange detected - running POST-trade flow IMMEDIATELY (independent of Paradex)...`);
-        
-        // Run post-trade flow for Extended Exchange accounts INDEPENDENTLY
-        // Check if Extended Exchange trade succeeded before running post-trade
-        const postTradePromises = [];
-        if (hasExtendedExchange1 && trade1Success) {
-          console.log(`[CYCLE ${cycleCount}] Running post-trade flow for ${email1} (Extended Exchange) - clickOrdersTab flow`);
-          postTradePromises.push(clickOrdersTab(page1, email1));
-        } else if (hasExtendedExchange1 && !trade1Success) {
-          console.log(`[CYCLE ${cycleCount}] ⚠️  Extended Exchange (${email1}) trade failed - skipping post-trade flow`);
-        }
-        
-        if (hasExtendedExchange2 && trade2Success) {
-          console.log(`[CYCLE ${cycleCount}] Running post-trade flow for ${email2} (Extended Exchange) - clickOrdersTab flow`);
-          postTradePromises.push(clickOrdersTab(page2, email2));
-        } else if (hasExtendedExchange2 && !trade2Success) {
-          console.log(`[CYCLE ${cycleCount}] ⚠️  Extended Exchange (${email2}) trade failed - skipping post-trade flow`);
-        }
-        
-        if (postTradePromises.length > 0) {
-          await Promise.all(postTradePromises);
-          console.log(`[CYCLE ${cycleCount}] Extended Exchange post-trade flow completed (cleanup + leverage set)`);
-        }
-        
-        // For Extended Exchange, skip wait/close steps and go directly to next cycle
-        // Set flag to skip cleanup in next cycle since it was just done in post-trade flow
-        extendedExchangeJustCompletedPostTrade = true;
-        console.log(`[CYCLE ${cycleCount}] Extended Exchange cycle complete - next cycle will skip cleanup and go directly to trade execution`);
-        await delay(2000); // Small delay before next cycle
-        continue; // Skip to next cycle (bypass wait and close steps)
-      }
-
-      // Only proceed to wait and close if BOTH trades succeeded (for Paradex-only or mixed setups)
+      // Only proceed to wait and close if BOTH trades succeeded
       if (!trade1Success || !trade2Success) {
         console.log(
           `\n✗ [CYCLE ${cycleCount}] One or both trades failed. Skipping wait and retrying in 5 seconds...`
@@ -7872,7 +4107,7 @@ async function automatedTradingLoop(account1Result, account2Result) {
         `\n✓ [CYCLE ${cycleCount}] Both trades executed successfully!`
       );
 
-      // Step 2: Wait for random time between 10 seconds and 3 minutes (only for non-Extended Exchange or mixed setups)
+      // Step 2: Wait for random time between 10 seconds and 3 minutes (only after both trades succeed)
       const minWaitTime = 10000; // 10 seconds
       const maxWaitTime = 180000; // 3 minutes
       const randomWaitTime =
@@ -7942,8 +4177,8 @@ async function automatedTradingLoop(account1Result, account2Result) {
               console.log(`   Closing positions immediately...`);
 
               // Close both accounts' positions to maintain balance
-              await closeAllPositions(page1, 100, exchange1);
-              await closeAllPositions(page2, 100, exchange2);
+              await closeAllPositions(page1, 100);
+              await closeAllPositions(page2, 100);
 
               console.log(
                 `✓ [CYCLE ${cycleCount}] Positions closed due to stop loss`
@@ -7970,8 +4205,8 @@ async function automatedTradingLoop(account1Result, account2Result) {
               console.log(`   Closing positions immediately...`);
 
               // Close both accounts' positions to maintain balance
-              await closeAllPositions(page1, 100, exchange1);
-              await closeAllPositions(page2, 100, exchange2);
+              await closeAllPositions(page1, 100);
+              await closeAllPositions(page2, 100);
 
               console.log(
                 `✓ [CYCLE ${cycleCount}] Positions closed due to stop loss`
@@ -8014,8 +4249,8 @@ async function automatedTradingLoop(account1Result, account2Result) {
       // Step 3: Close positions in parallel
       console.log(`\n[CYCLE ${cycleCount}] Closing positions...`);
       const closePromises = [
-        closeAllPositions(page1, 100, exchange1),
-        closeAllPositions(page2, 100, exchange2),
+        closeAllPositions(page1, 100),
+        closeAllPositions(page2, 100),
       ];
 
       const closeResults = await Promise.all(closePromises);
@@ -8107,38 +4342,11 @@ async function closeAllPositionsOnShutdown(results) {
 
 async function main() {
   console.log(`\n========================================`);
-  console.log(`Starting Multi-Exchange Trading Bot`);
+  console.log(`Starting Paradex Multi-Account Bot`);
   console.log(`Headless mode: ${HEADLESS}`);
   console.log(`Number of accounts: ${ACCOUNTS.length}`);
+  console.log(`Referral code: instantcrypto (auto-applied for new accounts)`);
   console.log(`========================================\n`);
-
-  // Prompt user to choose trading mode
-  const tradingMode = await chooseTradingMode();
-  console.log(`\n✓ Selected: ${tradingMode.description}\n`);
-
-  // Assign exchanges to accounts based on mode
-  const accountsWithExchanges = ACCOUNTS.map((account, index) => {
-    let exchangeName;
-    if (index === 0) {
-      // First account = BUY account
-      exchangeName = tradingMode.buyExchange;
-    } else {
-      // Second account = SELL account
-      exchangeName = tradingMode.sellExchange;
-    }
-    return {
-      ...account,
-      exchange: exchangeName,
-      exchangeConfig: EXCHANGE_CONFIGS[exchangeName]
-    };
-  });
-
-  console.log(`\n📋 Account Configuration:`);
-  accountsWithExchanges.forEach((acc, idx) => {
-    console.log(`   Account ${idx + 1} (${acc.email}): ${acc.exchangeConfig.name} - ${idx === 0 ? 'BUY' : 'SELL'}`);
-  });
-  console.log(``);
-
   console.log(
     `💡 Tip: If you changed account emails, old cookies will be auto-deleted.`
   );
@@ -8146,10 +4354,8 @@ async function main() {
     `    You can also manually delete paradex-cookies-*.json files to reset.\n`
   );
 
-  // Launch all accounts in parallel with their exchange configs
-  const accountPromises = accountsWithExchanges.map((account) => 
-    launchAccount(account, account.exchangeConfig)
-  );
+  // Launch all accounts in parallel
+  const accountPromises = ACCOUNTS.map((account) => launchAccount(account));
   const results = await Promise.all(accountPromises);
 
   // Summary
@@ -8161,8 +4367,8 @@ async function main() {
   const failed = results.filter((r) => !r.success);
 
   successful.forEach((r) => {
-    const account = accountsWithExchanges.find((a) => a.email === r.email);
-    console.log(`✓ ${r.email} on ${r.exchange || account.exchangeConfig.name} - API on port ${account.apiPort}`);
+    const account = ACCOUNTS.find((a) => a.email === r.email);
+    console.log(`✓ ${r.email} - API on port ${account.apiPort}`);
   });
 
   failed.forEach((r) => {
@@ -8222,68 +4428,12 @@ async function main() {
   process.on("SIGINT", shutdownHandler);
   process.on("SIGTERM", shutdownHandler);
 
-  // Get emails from ACCOUNT_EMAILS in order (first = BUY, second = SELL)
-  const emailsEnv = process.env.ACCOUNT_EMAILS;
-  if (!emailsEnv) {
-    console.log(`\n✗ Error: ACCOUNT_EMAILS not found in .env file.`);
-    process.exit(1);
-  }
-
-  const emails = emailsEnv.split(',').map(e => e.trim()).filter(e => e);
-  
-  if (emails.length < 2) {
-    console.log(`\n✗ Error: ACCOUNT_EMAILS must contain at least 2 emails (comma-separated).`);
-    console.log(`Format: ACCOUNT_EMAILS=email1@example.com,email2@example.com`);
-    console.log(`First email will be used for BUY, second email for SELL.`);
-    process.exit(1);
-  }
-
-  const buyEmail = emails[0];
-  const sellEmail = emails[1];
-
-  console.log(`\n📋 Account assignment from ACCOUNT_EMAILS:`);
-  console.log(`   BUY:  ${buyEmail} (first email)`);
-  console.log(`   SELL: ${sellEmail} (second email)`);
-
-  // Find accounts by email from successful logins
-  // Exchange info should already be stored in the result from launchAccount
-  const buyAccount = successful.find((r) => r.email === buyEmail);
-  const sellAccount = successful.find((r) => r.email === sellEmail);
-  
-  // Ensure exchange info is stored (fallback to trading mode if missing)
-  if (buyAccount && !buyAccount.exchange) {
-    buyAccount.exchange = tradingMode.buyExchange;
-  }
-  if (sellAccount && !sellAccount.exchange) {
-    sellAccount.exchange = tradingMode.sellExchange;
-  }
-
-  if (!buyAccount) {
-    console.log(`\n✗ Error: First email "${buyEmail}" (for BUY) not found in successful accounts.`);
-    console.log(`Available accounts: ${successful.map((r) => r.email).join(", ")}`);
-    process.exit(1);
-  }
-
-  if (!sellAccount) {
-    console.log(`\n✗ Error: Second email "${sellEmail}" (for SELL) not found in successful accounts.`);
-    console.log(`Available accounts: ${successful.map((r) => r.email).join(", ")}`);
-    process.exit(1);
-  }
-
-  if (buyAccount.email === sellAccount.email) {
-    console.log(`\n✗ Error: First and second emails in ACCOUNT_EMAILS must be different.`);
-    process.exit(1);
-  }
-
-  console.log(`\n✓ Using ${buyAccount.email} for BUY orders`);
-  console.log(`✓ Using ${sellAccount.email} for SELL orders`);
-
   // Start automated trading loop
   console.log(`\n🤖 Starting automated trading in 5 seconds...`);
   await delay(5000);
 
-  // Start the trading loop with accounts based on ACCOUNT_EMAILS order
-  automatedTradingLoop(buyAccount, sellAccount).catch((error) => {
+  // Start the trading loop with both accounts
+  automatedTradingLoop(successful[0], successful[1]).catch((error) => {
     console.error(`Trading loop error:`, error);
   });
 }
