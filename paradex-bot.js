@@ -3733,10 +3733,10 @@ async function clickTpSlColumnInPositions(page, exchangeConfig = null) {
     console.log(`[${exchange.name}] ✅ Clicked Positions tab`);
     await delay(1000); // Wait for positions table to load
     
-    // Step 2: Find the column under "TP / SL" header and click it
-    console.log(`[${exchange.name}] Step 2: Looking for column under "TP / SL" header...`);
-    const clicked = await page.evaluate(() => {
-      // Find all table elements
+    // Check if there are open positions by checking if table has data rows (not just header row)
+    console.log(`[${exchange.name}] Checking if there are open positions (checking for data rows in table)...`);
+    const hasPositions = await page.evaluate(() => {
+      // Find all tables
       const tables = Array.from(document.querySelectorAll('table'));
       
       for (const table of tables) {
@@ -3744,8 +3744,62 @@ async function clickTpSlColumnInPositions(page, exchangeConfig = null) {
         const headerRow = table.querySelector('thead tr, thead > tr, tr:first-child');
         if (!headerRow) continue;
         
+        // Find data rows (exclude header row)
+        const dataRows = Array.from(table.querySelectorAll('tbody tr, tr:not(:first-child)'));
+        
+        // Check if there are any data rows with actual content
+        for (const row of dataRows) {
+          const cells = Array.from(row.querySelectorAll('td, th'));
+          // Check if row has cells and is not empty
+          if (cells.length > 0) {
+            const rowText = row.textContent?.trim();
+            // If row has some text content (not just whitespace), it's a data row
+            if (rowText && rowText.length > 0) {
+              console.log(`Found data row with content: "${rowText.substring(0, 50)}..."`);
+              return true; // Found at least one data row = positions exist
+            }
+          }
+        }
+      }
+      
+      return false; // No data rows found = no positions
+    });
+    
+    if (!hasPositions) {
+      console.log(`[${exchange.name}] ✅ No open positions found (only header row in table) - skipping TP/SL flow`);
+      return { success: true, message: "No open positions - TP/SL not needed" };
+    }
+    
+    console.log(`[${exchange.name}] ✅ Open positions found (data rows exist in table) - proceeding with TP/SL flow`);
+    
+    // Step 2: Find the column under "TP / SL" header and click it
+    console.log(`[${exchange.name}] Step 2: Looking for column under "TP / SL" header...`);
+    const clicked = await page.evaluate(() => {
+      // Find all table elements
+      const tables = Array.from(document.querySelectorAll('table'));
+      console.log(`Found ${tables.length} tables on page`);
+      
+      for (let tableIdx = 0; tableIdx < tables.length; tableIdx++) {
+        const table = tables[tableIdx];
+        console.log(`Checking table ${tableIdx + 1}/${tables.length}`);
+        
+        // Find header row
+        const headerRow = table.querySelector('thead tr, thead > tr, tr:first-child');
+        if (!headerRow) {
+          console.log(`  Table ${tableIdx + 1}: No header row found`);
+          continue;
+        }
+        
         // Find TP/SL column header
         const headers = Array.from(headerRow.querySelectorAll('th, td'));
+        console.log(`  Table ${tableIdx + 1}: Found ${headers.length} headers`);
+        
+        // Log all header texts for debugging
+        headers.forEach((h, idx) => {
+          const text = h.textContent?.trim();
+          console.log(`    Header ${idx}: "${text}"`);
+        });
+        
         let tpSlColumnIndex = -1;
         
         for (let i = 0; i < headers.length; i++) {
@@ -3764,7 +3818,10 @@ async function clickTpSlColumnInPositions(page, exchangeConfig = null) {
           }
         }
         
-        if (tpSlColumnIndex === -1) continue;
+        if (tpSlColumnIndex === -1) {
+          console.log(`  Table ${tableIdx + 1}: TP/SL column not found in headers`);
+          continue;
+        }
         
         // Find data rows
         const dataRows = Array.from(table.querySelectorAll('tbody tr, tr:not(:first-child)'));
@@ -4250,24 +4307,43 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null) {
   console.log(`[Paradex] TP/SL setup complete. Ensuring we're on Positions tab before looking for Limit button...`);
   
   // IMPORTANT: Only look for Limit button if there are still open positions
-  // Check if positions exist before looking for Limit button
+  // Check if positions exist by checking for data rows in table (not just header row)
   console.log(`[Paradex] Checking if positions still exist before looking for Limit button...`);
   const hasPositionsForLimit = await page.evaluate(() => {
-    const text = document.body.innerText;
-    return (
-      text.includes("Current Position") ||
-      text.includes("Unrealized P&L") ||
-      text.includes("Position Size") ||
-      text.includes("Entry Price")
-    );
+    // Find all tables
+    const tables = Array.from(document.querySelectorAll('table'));
+    
+    for (const table of tables) {
+      // Find header row
+      const headerRow = table.querySelector('thead tr, thead > tr, tr:first-child');
+      if (!headerRow) continue;
+      
+      // Find data rows (exclude header row)
+      const dataRows = Array.from(table.querySelectorAll('tbody tr, tr:not(:first-child)'));
+      
+      // Check if there are any data rows with actual content
+      for (const row of dataRows) {
+        const cells = Array.from(row.querySelectorAll('td, th'));
+        // Check if row has cells and is not empty
+        if (cells.length > 0) {
+          const rowText = row.textContent?.trim();
+          // If row has some text content (not just whitespace), it's a data row = position exists
+          if (rowText && rowText.length > 0) {
+            return true; // Found at least one data row = positions exist
+          }
+        }
+      }
+    }
+    
+    return false; // No data rows found = no positions
   });
-  
+
   if (!hasPositionsForLimit) {
-    console.log(`[Paradex] ✅ No open positions found - skipping Limit button search`);
+    console.log(`[Paradex] ✅ No open positions found (only header row in table) - skipping Limit button search`);
     return { success: true, message: "No positions to close - TP/SL was set but positions already closed" };
   }
-  
-  console.log(`[Paradex] ✅ Positions still exist - proceeding to find Limit button...`);
+
+  console.log(`[Paradex] ✅ Positions still exist (data rows found in table) - proceeding to find Limit button...`);
   
   // Step 1: Look for Limit button in Positions table Close column BEFORE any Close All button logic
   // The Close column has buttons with text "Market" and "Limit" in MarketCloseButton__Container
@@ -4310,53 +4386,100 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null) {
   
   // CRITICAL: After TP/SL is set, we MUST find and click Limit button
   // Do NOT navigate to Orders tab - stay on Positions tab
-  console.log(`[Paradex] 🔍 Now searching for Limit button in Positions table (after TP/SL setup)...`);
+  console.log(`[Paradex] 🔍 Now searching for Limit button in Positions table Close column (after TP/SL setup)...`);
   console.log(`[Paradex] ⚠️  IMPORTANT: Must stay on Positions tab - DO NOT navigate to Orders tab`);
   
   // Try multiple strategies to find and click Limit button (similar to Close All button detection)
   let limitBtn = null;
   let limitBtnClicked = false;
   
-  // Strategy 1: Find by text "Limit" using existing function (same as Close All Strategy 1)
-  console.log(`[Paradex] Strategy 1: Searching for Limit button by text...`);
-  limitBtn = await findByText(page, "Limit", ["button", "div", "a"]);
-  
-  if (limitBtn) {
-    // Verify it's in the Close column (has Market button nearby)
-    const isInCloseColumn = await page.evaluate((btn) => {
-      let parent = btn.parentElement;
-      for (let i = 0; i < 10 && parent; i++) {
-        if (parent.tagName?.toLowerCase() === "td") {
-          // Check if there's also a "Market" button in the same container or td
-          const container = parent.querySelector('[class*="MarketCloseButton"]');
-          if (container) {
-            const marketBtn = Array.from(container.querySelectorAll('button')).find(
-              b => b.textContent?.trim() === "Market"
-            );
-            if (marketBtn) return true;
-          }
-          // Also check if there's a Market button in the same td
-          const marketBtn = Array.from(parent.querySelectorAll('button')).find(
-            b => b.textContent?.trim() === "Market"
-          );
-          if (marketBtn) return true;
-        }
-        parent = parent.parentElement;
-      }
-      return false;
-    }, limitBtn);
+  // Strategy 1: Find Limit button in the same row as TP/SL button (in Close column)
+  console.log(`[Paradex] Strategy 1: Searching for Limit button in Close column (same row as TP/SL)...`);
+  const limitButtonInCloseColumn = await page.evaluate(() => {
+    // Find all tables
+    const tables = Array.from(document.querySelectorAll('table'));
     
-    if (isInCloseColumn) {
-      console.log(`[Paradex] ✓ Found Limit button by text in Close column - clicking now...`);
-      await limitBtn.click();
-      limitBtnClicked = true;
-      console.log(`[Paradex] ✅ Successfully clicked Limit button!`);
-    } else {
-      console.log(`[Paradex] ⚠️  Found Limit button but not in Close column, trying other strategies...`);
-      limitBtn = null; // Reset to try other strategies
+    for (const table of tables) {
+      // Find header row to locate Close column
+      const headerRow = table.querySelector('thead tr, thead > tr, tr:first-child');
+      if (!headerRow) continue;
+      
+      const headers = Array.from(headerRow.querySelectorAll('th, td'));
+      let closeColumnIndex = -1;
+      
+      // Find Close column (usually has "Market" and "Limit" buttons)
+      for (let i = 0; i < headers.length; i++) {
+        const headerText = headers[i].textContent?.trim().toLowerCase();
+        if (headerText && (headerText.includes('close') || headerText.includes('action'))) {
+          closeColumnIndex = i;
+          break;
+        }
+      }
+      
+      // If Close column not found by header, look for column with Market and Limit buttons
+      if (closeColumnIndex === -1) {
+        const dataRows = Array.from(table.querySelectorAll('tbody tr, tr:not(:first-child)'));
+        for (const row of dataRows) {
+          const cells = Array.from(row.querySelectorAll('td, th'));
+          for (let i = 0; i < cells.length; i++) {
+            const cell = cells[i];
+            const hasMarketBtn = Array.from(cell.querySelectorAll('button')).some(
+              btn => btn.textContent?.trim() === 'Market'
+            );
+            const hasLimitBtn = Array.from(cell.querySelectorAll('button')).some(
+              btn => btn.textContent?.trim() === 'Limit'
+            );
+            if (hasMarketBtn && hasLimitBtn) {
+              closeColumnIndex = i;
+              break;
+            }
+          }
+          if (closeColumnIndex !== -1) break;
+        }
+      }
+      
+      if (closeColumnIndex === -1) {
+        console.log('Close column not found in table');
+        return null;
+      }
+      
+      // Find data rows
+      const dataRows = Array.from(table.querySelectorAll('tbody tr, tr:not(:first-child)'));
+      
+      // Find first data row and get Limit button from Close column
+      for (const row of dataRows) {
+        const cells = Array.from(row.querySelectorAll('td, th'));
+        if (cells.length > closeColumnIndex) {
+          const closeCell = cells[closeColumnIndex];
+          
+          // Find Limit button in this cell
+          const limitBtn = Array.from(closeCell.querySelectorAll('button')).find(
+            btn => {
+              const text = btn.textContent?.trim();
+              const isVisible = btn.offsetParent !== null && btn.offsetWidth > 0 && btn.offsetHeight > 0;
+              return isVisible && text === 'Limit';
+            }
+          );
+          
+          if (limitBtn) {
+            console.log('Found Limit button in Close column');
+            limitBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            limitBtn.click();
+            return { found: true, text: 'Limit' };
+          }
+        }
+      }
     }
+    
+    return null;
+  });
+  
+  if (limitButtonInCloseColumn && limitButtonInCloseColumn.found) {
+    limitBtnClicked = true;
+    console.log(`[Paradex] ✅ Successfully clicked Limit button in Close column!`);
   } else {
-    console.log(`[Paradex] ⚠️  Strategy 1: Limit button not found by text, trying other strategies...`);
+    console.log(`[Paradex] ⚠️  Limit button not found in Close column of Positions table`);
+    console.log(`[Paradex] ⚠️  This likely means no positions exist or table structure is different`);
   }
   
   // Strategy 2: If not found, try to find by evaluating the page and click directly (same as Close All Strategy 2)
@@ -7784,6 +7907,8 @@ async function automatedTradingLoop(account1Result, account2Result) {
 
   // Track if Extended Exchange just completed post-trade flow (cleanup + leverage set)
   let extendedExchangeJustCompletedPostTrade = false;
+  // Track if initial cleanup was done (to skip cleanup on first cycle)
+  let initialCleanupDone = true; // Set to true since cleanup was just done before leverage
 
   while (!isShuttingDown) {
     cycleCount++;
@@ -7792,12 +7917,18 @@ async function automatedTradingLoop(account1Result, account2Result) {
     );
 
     try {
-      // Skip cleanup if Extended Exchange just completed post-trade flow (which already did cleanup + leverage)
+      // Skip cleanup if:
+      // 1. Extended Exchange just completed post-trade flow (which already did cleanup + leverage)
+      // 2. Initial cleanup was just done (first cycle after leverage was set)
       let skipCleanupAndPreTrade = false;
       if (extendedExchangeJustCompletedPostTrade) {
         console.log(`\n[CYCLE ${cycleCount}] Skipping cleanup and pre-trade - Extended Exchange just completed post-trade flow (cleanup + leverage already done)`);
         extendedExchangeJustCompletedPostTrade = false; // Reset flag
         skipCleanupAndPreTrade = true; // Skip both cleanup and pre-trade, go directly to trade execution
+      } else if (initialCleanupDone && cycleCount === 1) {
+        console.log(`\n[CYCLE ${cycleCount}] Skipping cleanup - initial cleanup was already done before leverage was set`);
+        initialCleanupDone = false; // Reset flag after first cycle
+        skipCleanupAndPreTrade = true; // Skip cleanup on first cycle, but still do pre-trade if needed
       }
       
       if (!skipCleanupAndPreTrade) {
@@ -7854,6 +7985,11 @@ async function automatedTradingLoop(account1Result, account2Result) {
           console.log(`[CYCLE ${cycleCount}] Skipping position close - Extended Exchange will handle it in clickOrdersTab`);
         }
       } // End of else block for skip cleanup check
+      
+      // For first cycle, still need to do pre-trade flow for Extended Exchange if needed
+      if (skipCleanupAndPreTrade && cycleCount === 1) {
+        skipCleanupAndPreTrade = false; // Allow pre-trade flow on first cycle
+      }
 
       // Step 0.5: For Extended Exchange, run PRE-trade flow BEFORE executing trades
       // Use clickOrdersTab() which does: cancel orders, positions, TP/SL, close positions, set leverage
