@@ -6505,6 +6505,10 @@ async function handleTpSlAddButtonClick(page, email) {
   
   if (confirmClicked) {
     console.log(`[${email}] ✓ Confirm button clicked`);
+    // Add delay after TP/SL confirm button click for Paradex (especially for buy positions)
+    console.log(`[${email}] Waiting after TP/SL confirm click...`);
+    await delay(2000); // Wait 2 seconds after confirming TP/SL
+    console.log(`[${email}] ✓ Delay completed after TP/SL confirm`);
   } else {
     console.log(`[${email}] ⚠ Confirm button not found`);
   }
