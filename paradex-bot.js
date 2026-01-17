@@ -244,7 +244,7 @@ async function clickOrdersTab(page, email, skipLeverage = false) {
         await ordersTab.click();
         console.log(`[${email}] Clicked Orders tab (exact text)`);
         ordersTabClicked = true;
-        await delay(1000);
+        await delay(300);
       }
     }
     
@@ -259,7 +259,7 @@ async function clickOrdersTab(page, email, skipLeverage = false) {
           await ordersTab2.click();
           console.log(`[${email}] Clicked Orders tab (text search)`);
           ordersTabClicked = true;
-          await delay(1000);
+          await delay(400);
         }
       }
     }
@@ -283,7 +283,7 @@ async function clickOrdersTab(page, email, skipLeverage = false) {
       if (clicked) {
         console.log(`[${email}] Clicked Orders tab (via evaluate)`);
         ordersTabClicked = true;
-        await delay(1000);
+        await delay(300);
       }
     }
     
@@ -294,7 +294,7 @@ async function clickOrdersTab(page, email, skipLeverage = false) {
     
     // After clicking Orders tab, check for buttons in Orders tab
     console.log(`[${email}] Checking for buttons in Orders tab (Login, Connect Wallet, CANCEL ALL, Positions)...`);
-    await delay(1500); // Wait for Orders tab content to load
+    await delay(700); // Wait for Orders tab content to load
     
     // Step 1: Check for Login OR Connect Wallet button simultaneously (whichever found first)
     // This is more efficient than checking sequentially
@@ -327,13 +327,13 @@ async function clickOrdersTab(page, email, skipLeverage = false) {
       if (authButtonResult.type === 'login') {
         console.log(`[${email}] Clicked ${authButtonResult.text} button in Orders tab`);
         console.log(`[${email}] Login button clicked, waiting for authentication...`);
-        await delay(2000);
+        await delay(700);
         return ordersTabClicked;
       } else if (authButtonResult.type === 'connectWallet') {
         console.log(`[${email}] Clicked ${authButtonResult.text} button in Orders tab`);
         // Wait for modal to appear
         console.log(`[${email}] Connect Wallet button clicked, waiting for modal to appear...`);
-        await delay(2000);
+        await delay(700);
         
         // Look for WalletConnect button in modal
         console.log(`[${email}] Looking for WalletConnect button in modal...`);
@@ -358,7 +358,7 @@ async function clickOrdersTab(page, email, skipLeverage = false) {
         if (walletConnectClicked) {
           console.log(`[${email}] Clicked WalletConnect button in modal`);
           console.log(`[${email}] WalletConnect button clicked, waiting for wallet connection...`);
-          await delay(3000);
+          await delay(2000);
         } else {
           console.log(`[${email}] Could not find WalletConnect button in modal`);
           console.log(`[${email}] User will need to manually connect wallet`);
@@ -467,7 +467,7 @@ async function clickOrdersTab(page, email, skipLeverage = false) {
     if (cancelAllClicked) {
       // If CANCEL ALL was clicked, wait then switch to Positions
       console.log(`[${email}] Cancel All button clicked, waiting before clicking Positions tab...`);
-      await delay(2000); // Wait for cancel operation to complete
+      await delay(800); // Wait for cancel operation to complete
     }
     
     // Click on Positions tab
@@ -525,7 +525,7 @@ async function clickOrdersTab(page, email, skipLeverage = false) {
     // Step 4: Check for open positions and handle accordingly
     if (positionsTabClicked) {
       console.log(`[${email}] Positions tab clicked`);
-      await delay(2000); // Wait for Positions tab content to load
+      await delay(800); // Wait for Positions tab content to load
       
       // Check if there are open positions
       const hasOpenPositions = await page.evaluate(() => {
@@ -636,12 +636,12 @@ async function clickOrdersTab(page, email, skipLeverage = false) {
         if (tpSlClicked || tpSlModalAlreadyOpen) {
           if (tpSlModalAlreadyOpen) {
             console.log(`[${email}] ✅ TP/SL modal already open (from auto-click listener), proceeding to fill it...`);
-            await delay(1000); // Brief delay to ensure modal is ready
+            await delay(600); // Brief delay to ensure modal is ready
           } else {
             console.log(`[${email}] Clicked TP/SL button to add TP/SL`);
             console.log(`[${email}] Clicked element in TP/SL column of Positions table`);
             console.log(`[${email}] Waiting after TP/SL button click...`);
-            await delay(2000); // Wait for modal to appear
+            await delay(1000); // Wait for modal to appear
             console.log(`[${email}] ✓ Delay completed after TP/SL button click`);
           }
           
@@ -935,7 +935,7 @@ async function clickOrdersTab(page, email, skipLeverage = false) {
                   
                   console.log(`[${email}] ✅ Successfully clicked TP/SL Confirm button`);
                   console.log(`[${email}] Waiting 3-4 seconds after TP/SL confirm click before proceeding to Limit...`);
-                  await delay(3500); // Wait 3.5 seconds after confirming TP/SL (3-4 second range)
+                  await delay(500); // Wait 3.5 seconds after confirming TP/SL (3-4 second range)
                   console.log(`[${email}] ✓ 3.5 second delay completed after TP/SL confirm`);
                   
                   // CRITICAL: Verify TP/SL modal is actually closed before clicking Limit button
@@ -945,7 +945,7 @@ async function clickOrdersTab(page, email, skipLeverage = false) {
                   const maxModalChecks = 15; // Check up to 15 times (15 seconds)
                   
                   while (!tpSlModalClosed && modalCheckAttempts < maxModalChecks) {
-                    await delay(1000); // Wait 1 second between checks
+                    await delay(700); // Wait 1 second between checks
                     modalCheckAttempts++;
                     
                     tpSlModalClosed = await page.evaluate(() => {
@@ -1072,7 +1072,7 @@ async function clickOrdersTab(page, email, skipLeverage = false) {
                     
                     if (closePositionClicked) {
                       console.log(`[${email}] ✅ Successfully clicked Close Position button in modal`);
-                      await delay(1000); // Brief delay before looking for Confirm button
+                      await delay(300); // Brief delay before looking for Confirm button
                       
                       // Find and click Confirm button in the Limit modal (after Close Position)
                       console.log(`[${email}] Looking for Confirm button in Limit modal...`);
@@ -1094,10 +1094,10 @@ async function clickOrdersTab(page, email, skipLeverage = false) {
                       
                       if (confirmInLimitModal) {
                         console.log(`[${email}] ✅ Successfully clicked Confirm button in Limit modal`);
-                        await delay(2000);
+                        await delay(800);
                       } else {
                         console.log(`[${email}] ⚠️  Could not find Confirm button in Limit modal, continuing...`);
-                        await delay(1000);
+                        await delay(500);
                       }
                       
                       // Wait 10 seconds after confirming Limit close, then check if positions are still open
@@ -3731,7 +3731,7 @@ async function clickTpSlColumnInPositions(page, exchangeConfig = null) {
     
     await positionsTab.click();
     console.log(`[${exchange.name}] ✅ Clicked Positions tab`);
-    await delay(1000); // Wait for positions table to load
+    await delay(300); // Wait for positions table to load
     
     // Check if there are open positions by checking if table has data rows (not just header row)
     console.log(`[${exchange.name}] Checking if there are open positions (checking for data rows in table)...`);
@@ -3871,7 +3871,7 @@ async function clickTpSlColumnInPositions(page, exchangeConfig = null) {
     
     while (!modalFound && modalWaitAttempt < maxModalWaitAttempts) {
       modalWaitAttempt++;
-      await delay(500); // Wait 500ms between checks
+      await delay(300); // Wait 500ms between checks
       
       const modalCheck = await page.evaluate(() => {
         // Find ANY visible modal/dialog
@@ -3909,7 +3909,7 @@ async function clickTpSlColumnInPositions(page, exchangeConfig = null) {
     }
     
     // Wait a bit more for modal to be fully rendered
-    await delay(1000);
+    await delay(500);
     
     // Step 3: Fill STOP_LOSS value in the modal
     const stopLossValue = process.env.STOP_LOSS || '';
@@ -3986,7 +3986,7 @@ async function clickTpSlColumnInPositions(page, exchangeConfig = null) {
       if (!slInputHandle || !slInputHandle.asElement()) {
         if (inputFindAttempt < maxInputFindAttempts) {
           console.log(`[${exchange.name}] ⚠️  Stop Loss input not found (attempt ${inputFindAttempt}), waiting 1 second before retry...`);
-          await delay(1000);
+          await delay(300);
         }
       } else {
         console.log(`[${exchange.name}] ✅ Found Stop Loss input! (attempt ${inputFindAttempt})`);
@@ -4002,7 +4002,7 @@ async function clickTpSlColumnInPositions(page, exchangeConfig = null) {
         await page.keyboard.press('Backspace'); // Clear selected text
         await inputElement.type(stopLossValue, { delay: 30 }); // Use exact string value from env
         await page.keyboard.press('Tab'); // Trigger blur to calculate USD
-        await delay(500);
+        await delay(200);
         console.log(`[${exchange.name}] ✅ Successfully filled Stop Loss percentage`);
         
         // NOTE: Don't press Enter - it might close the modal or trigger unwanted actions
@@ -4017,7 +4017,7 @@ async function clickTpSlColumnInPositions(page, exchangeConfig = null) {
         }
         
         // Wait for USD calculation
-        await delay(1000);
+        await delay(400);
       } catch (error) {
         console.log(`[${exchange.name}] ⚠️  Error filling Stop Loss input: ${error.message}`);
         return { success: false, message: `Error filling input: ${error.message}` };
@@ -4143,7 +4143,7 @@ async function clickTpSlColumnInPositions(page, exchangeConfig = null) {
     if (submitClicked) {
       console.log(`[${exchange.name}] ✅ Successfully clicked Submit button`);
       console.log(`[${exchange.name}] Waiting 2-3 seconds, then verifying TP/SL was added to table...`);
-      await delay(2500); // Wait 2.5 seconds after submitting
+      await delay(900); // Wait 2.5 seconds after submitting
       
       // CRITICAL: Verify TP/SL was actually added to the table
       console.log(`[${exchange.name}] 🔍 Verifying TP/SL value is set in Positions table...`);
@@ -4151,7 +4151,7 @@ async function clickTpSlColumnInPositions(page, exchangeConfig = null) {
       const maxVerificationAttempts = 10; // Try up to 10 times
       
       for (let i = 0; i < maxVerificationAttempts; i++) {
-        await delay(1000); // Wait 1 second between checks
+        await delay(400); // Wait 1 second between checks
         tpSlAddedToTable = await page.evaluate((stopLossValue) => {
           // Find all tables
           const tables = Array.from(document.querySelectorAll('table'));
@@ -4230,7 +4230,7 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null) {
   console.log(`\n=== Closing Position (${percent}%) on ${exchange.name} ===`);
 
   // Wait a moment for any previous actions to complete
-  await delay(1000);
+  await delay(700);
 
   // Click on Positions tab to see open positions
   // IMPORTANT: For Paradex, we need to stay on Positions tab throughout the entire flow
@@ -4244,7 +4244,7 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null) {
   if (positionsTab) {
     await positionsTab.click();
     console.log(`[${exchange.name}] ✓ Clicked Positions tab - will stay here for TP/SL and Limit button`);
-    await delay(1000); // Reduced from 2000ms - wait for positions to load
+    await delay(400); // Reduced from 2000ms - wait for positions to load
   } else {
     console.log(`[${exchange.name}] ⚠️  Could not find Positions tab`);
   }
@@ -4270,7 +4270,7 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null) {
 
     if (i < 2) {
       console.log(`Attempt ${i + 1}/3: No positions found yet, waiting...`);
-      await delay(800); // Reduced from 1500ms
+      await delay(400); // Reduced from 1500ms
     }
   }
 
@@ -4283,7 +4283,7 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null) {
   console.log("✓ Positions found - proceeding to add TP/SL first, then close them...");
   
   // Wait a bit more for UI to fully render
-  await delay(500);
+  await delay(300);
 
   // Step 0: For Paradex - Add TP/SL before closing positions
   let tpSlCompleted = false; // Track if TP/SL was successfully completed
@@ -4373,7 +4373,7 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null) {
     if (positionsTab) {
       await positionsTab.click();
       console.log(`[Paradex] ✓ Clicked Positions tab - staying on Positions tab to find Limit button`);
-      await delay(1000); // Wait for positions to load
+      await delay(300); // Wait for positions to load
     } else {
       console.log(`[Paradex] ⚠️  Could not find Positions tab - this will prevent finding Limit button`);
     }
@@ -4382,7 +4382,7 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null) {
   }
   
   // Wait a bit more for the table to fully render
-  await delay(500);
+  await delay(300);
   
   // CRITICAL: After TP/SL is set, we MUST find and click Limit button
   // Do NOT navigate to Orders tab - stay on Positions tab
@@ -4636,7 +4636,7 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null) {
     console.log(`✓ Clicked Limit button: "${limitButtonClicked.text}"`);
     
     // Wait for modal to appear and find button with text "close"
-    await delay(1500); // Wait for modal to fully load
+    await delay(800); // Wait for modal to fully load
     
     const closeButtonClicked = await page.evaluate(() => {
       // First, find the visible modal
@@ -4705,7 +4705,7 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null) {
       console.log(`✓ Limit close modal submitted. Waiting 10 seconds to check if position closed...`);
       
       const limitWaitTime = 10000; // 10 seconds
-      const checkInterval = 2000; // Check every 2 seconds
+      const checkInterval = 700; // Check every 2 seconds
       const totalChecks = limitWaitTime / checkInterval; // 5 checks
       let positionClosed = false;
       
