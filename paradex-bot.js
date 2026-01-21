@@ -4225,6 +4225,187 @@ async function clickTpSlColumnInPositions(page, exchangeConfig = null) {
   }
 }
 
+async function clickTpSlCheckboxForParadex(page) {
+  try {
+    console.log(`[Paradex] Looking for TP/SL checkbox in right 50% of screen...`);
+    
+    const result = await page.evaluate(() => {
+      const screenWidth = window.innerWidth;
+      const rightSideThreshold = screenWidth * 0.5; // Right 50% of screen
+      
+      // Find all labels that contain "TP/SL" text
+      const labels = Array.from(document.querySelectorAll('label'));
+      
+      for (const label of labels) {
+        const labelText = label.textContent?.trim() || '';
+        
+        // Check if label contains "TP/SL" text (case-insensitive)
+        if (labelText.toLowerCase().includes('tp/sl') || labelText.toLowerCase().includes('tp / sl')) {
+          // Get label position
+          const rect = label.getBoundingClientRect();
+          
+          // Check if label is in the right 50% of screen
+          if (rect.x >= rightSideThreshold) {
+            // Find the button with role="checkbox" inside this label
+            const checkboxButton = label.querySelector('button[role="checkbox"]');
+            
+            if (checkboxButton) {
+              // Check if it's visible and not disabled
+              const isVisible = checkboxButton.offsetParent !== null && 
+                               checkboxButton.offsetWidth > 0 && 
+                               checkboxButton.offsetHeight > 0;
+              
+              if (isVisible) {
+                // Check current state
+                const isChecked = checkboxButton.getAttribute('aria-checked') === 'true' ||
+                                 checkboxButton.getAttribute('data-state') === 'checked';
+                
+                // Click the checkbox button
+                checkboxButton.click();
+                console.log(`Found and clicked TP/SL checkbox. Was ${isChecked ? 'checked' : 'unchecked'}, now ${isChecked ? 'unchecked' : 'checked'}`);
+                return { success: true, wasChecked: isChecked };
+              }
+            }
+          }
+        }
+      }
+      
+      return { success: false, error: 'TP/SL checkbox not found in right 50% of screen' };
+    });
+    
+    if (result.success) {
+      console.log(`[Paradex] ✅ Successfully clicked TP/SL checkbox`);
+      await delay(300); // Brief delay after clicking
+      return { success: true };
+    } else {
+      console.log(`[Paradex] ⚠️  ${result.error || 'Could not find TP/SL checkbox'}`);
+      return { success: false, error: result.error };
+    }
+  } catch (error) {
+    console.log(`[Paradex] ⚠️  Error clicking TP/SL checkbox: ${error.message}`);
+    return { success: false, error: error.message };
+  }
+}
+
+// Function to fill Take Profit and Stop Loss values for Paradex
+async function fillTpSlValuesForParadex(page) {
+  try {
+    const takeProfitValue = process.env.TAKE_PROFIT || '';
+    const stopLossValue = process.env.STOP_LOSS || '';
+    
+    if (!takeProfitValue && !stopLossValue) {
+      console.log(`[Paradex] ⚠️  TAKE_PROFIT and STOP_LOSS env variables not set, skipping TP/SL fill`);
+      return { success: false, error: 'TAKE_PROFIT and STOP_LOSS not set' };
+    }
+    
+    console.log(`[Paradex] Filling TP/SL values - Take Profit: ${takeProfitValue || 'not set'}, Stop Loss: ${stopLossValue || 'not set'}`);
+    
+    let profitFilled = false;
+    let lossFilled = false;
+    const errors = [];
+    
+    // First, fill Take Profit (Profit input)
+    if (takeProfitValue) {
+      try {
+        // Find Profit input by aria-label using Puppeteer
+        const profitInputs = await page.$$('input[aria-label="Profit"]');
+        
+        for (const input of profitInputs) {
+          const isVisible = await input.evaluate(el => {
+            return el.offsetParent !== null && !el.disabled && !el.readOnly;
+          });
+          
+          if (isVisible) {
+            // Triple-click to select all existing text
+            await input.click({ clickCount: 3 });
+            await delay(100);
+            
+            // Clear the selected text
+            await page.keyboard.press('Backspace');
+            await delay(50);
+            
+            // Type the value
+            await input.type(takeProfitValue, { delay: 50 });
+            await delay(100);
+            
+            profitFilled = true;
+            console.log(`[Paradex] ✅ Filled Profit input with value: ${takeProfitValue}`);
+            break;
+          }
+        }
+        
+        if (!profitFilled) {
+          errors.push('Profit input not found or not visible');
+        }
+      } catch (error) {
+        console.log(`[Paradex] ⚠️  Error filling Profit input: ${error.message}`);
+        errors.push(`Profit input error: ${error.message}`);
+      }
+    }
+    
+    // Wait 50ms before filling Stop Loss
+    if (takeProfitValue && profitFilled) {
+      await delay(50);
+    }
+    
+    // Then, fill Stop Loss (Loss input)
+    if (stopLossValue) {
+      try {
+        // Find Loss input by aria-label using Puppeteer
+        const lossInputs = await page.$$('input[aria-label="Loss"]');
+        
+        for (const input of lossInputs) {
+          const isVisible = await input.evaluate(el => {
+            return el.offsetParent !== null && !el.disabled && !el.readOnly;
+          });
+          
+          if (isVisible) {
+            // Triple-click to select all existing text
+            await input.click({ clickCount: 3 });
+            await delay(100);
+            
+            // Clear the selected text
+            await page.keyboard.press('Backspace');
+            await delay(50);
+            
+            // Type the value
+            await input.type(stopLossValue, { delay: 50 });
+            await delay(100);
+            
+            lossFilled = true;
+            console.log(`[Paradex] ✅ Filled Loss input with value: ${stopLossValue}`);
+            break;
+          }
+        }
+        
+        if (!lossFilled) {
+          errors.push('Loss input not found or not visible');
+        }
+      } catch (error) {
+        console.log(`[Paradex] ⚠️  Error filling Loss input: ${error.message}`);
+        errors.push(`Loss input error: ${error.message}`);
+      }
+    }
+    
+    const success = (takeProfitValue ? profitFilled : true) && (stopLossValue ? lossFilled : true);
+    
+    if (success) {
+      const filled = [];
+      if (profitFilled) filled.push('Profit');
+      if (lossFilled) filled.push('Loss');
+      console.log(`[Paradex] ✅ Successfully filled TP/SL values: ${filled.join(', ')}`);
+      return { success: true, profitFilled, lossFilled };
+    } else {
+      const errorMsg = errors.length > 0 ? errors.join(', ') : 'Could not fill TP/SL values';
+      console.log(`[Paradex] ⚠️  ${errorMsg}`);
+      return { success: false, error: errorMsg };
+    }
+  } catch (error) {
+    console.log(`[Paradex] ⚠️  Error filling TP/SL values: ${error.message}`);
+    return { success: false, error: error.message };
+  }
+}
+
 async function closeAllPositions(page, percent = 100, exchangeConfig = null) {
   const exchange = exchangeConfig || EXCHANGE_CONFIGS.paradex; // Default to Paradex
   console.log(`\n=== Closing Position (${percent}%) on ${exchange.name} ===`);
@@ -4286,21 +4467,20 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null) {
   await delay(300);
 
   // Step 0: For Paradex - Add TP/SL before closing positions
-  let tpSlCompleted = false; // Track if TP/SL was successfully completed
-  if (exchange.name === 'Paradex') {
-    console.log(`\n[Paradex] Step 0: Adding TP/SL before closing positions...`);
+  // if (exchange.name === 'Paradex') {
+  //   console.log(`\n[Paradex] Step 0: Adding TP/SL before closing positions...`);
     
-    // Use the new function to handle the complete TP/SL flow
-    const tpSlResult = await clickTpSlColumnInPositions(page, exchange);
+  //   // Use the new function to handle the complete TP/SL flow
+  //   const tpSlResult = await clickTpSlColumnInPositions(page, exchange);
     
-    if (tpSlResult.success) {
-      console.log(`[Paradex] ✅ TP/SL flow completed: ${tpSlResult.message}`);
-      tpSlCompleted = true;
-    } else {
-      console.log(`[Paradex] ⚠️  TP/SL flow failed: ${tpSlResult.message}`);
-      // Continue anyway - might still be able to close positions
-    }
-  }
+  //   if (tpSlResult.success) {
+  //     console.log(`[Paradex] ✅ TP/SL flow completed: ${tpSlResult.message}`);
+  //     tpSlCompleted = true;
+  //   } else {
+  //     console.log(`[Paradex] ⚠️  TP/SL flow failed: ${tpSlResult.message}`);
+  //     // Continue anyway - might still be able to close positions
+  //   }
+  // }
 
   // CRITICAL: After TP/SL is set, ensure we're still on Positions tab before looking for Limit button
   // Do NOT navigate to Orders tab - we need to stay on Positions tab to find Limit button
@@ -4747,7 +4927,9 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null) {
           console.log(`✓ Position closed successfully with Limit order (final check)!`);
           return { success: true, message: `Position closed with Limit order` };
         }
-        console.log(`⚠ Position not closed after 10 seconds with Limit order. Will try Close All flow...`);
+        console.log(`⚠ Position not closed after 10 seconds with Limit order. placing new order`);
+   
+        return { success: false, message: `Position not closed after 10 seconds with Limit order` };
         // Continue to the existing Close All flow below
       }
     } else {
@@ -6113,6 +6295,27 @@ async function executeTrade(
 
   console.log(`✓ Successfully set size to: ${actualValue}`);
   await delay(500); // Reduced from 1000ms
+
+  if (exchange.name === 'Paradex') {
+    console.log(`[Paradex] Clicking TP/SL checkbox before executing trade...`);
+    const tpSlResult = await clickTpSlCheckboxForParadex(page);
+    if (tpSlResult.success) {
+      console.log(`[Paradex] ✅ TP/SL checkbox clicked successfully`);
+      // Wait 100ms before filling TP/SL values
+      await delay(100);
+      // Fill Take Profit and Stop Loss values from environment variables
+      const fillResult = await fillTpSlValuesForParadex(page);
+      if (fillResult.success) {
+        console.log(`[Paradex] ✅ TP/SL values filled successfully`);
+      } else {
+        console.log(`[Paradex] ⚠️  Could not fill TP/SL values: ${fillResult.error || 'unknown error'}`);
+        // Continue anyway - TP/SL values might not be critical
+      }
+    } else {
+      console.log(`[Paradex] ⚠️  Could not click TP/SL checkbox: ${tpSlResult.error || 'unknown error'}`);
+      // Continue anyway - TP/SL checkbox might not be critical
+    }
+  }
   
   // NOTE: Order cancellation is already done before executeTrade() is called in the trading loop
   // No need to cancel orders here - just proceed to click confirm button
