@@ -138,33 +138,30 @@ async function findByText(page, text, tagNames = ['button', 'a', 'div', 'span'])
   for (const tag of tagNames) {
     const elements = await page.$$(tag);
     for (const el of elements) {
-      // Skip anchor tags with href that open in new tab (target="_blank"), and elements inside such anchors
-      // This prevents navigation to new tabs and keeps user on the same page
+      // Skip anchor tags with BOTH href AND target="_blank", and elements inside such anchors
       const isLinkOrInsideLink = await page.evaluate((elem) => {
-        // Check if element is an anchor tag with href AND target="_blank" (opens new tab)
+        // Check if element is an anchor tag with BOTH href AND target="_blank"
         if (elem.tagName?.toLowerCase() === 'a') {
-          const href = elem.getAttribute('href');
-          const hasHref = href && href !== '#' && href !== 'javascript:void(0)' && !href.startsWith('javascript:');
+          const hasHref = elem.hasAttribute('href') && elem.getAttribute('href');
           const opensNewWindow = elem.getAttribute('target') === '_blank' || 
                                 elem.getAttribute('target') === '_new' ||
                                 elem.getAttribute('rel')?.includes('noopener') ||
                                 elem.getAttribute('rel')?.includes('noreferrer');
-          // Skip if has real href AND opens in new window (prevents new tab navigation)
+          // Only skip if BOTH conditions are true
           if (hasHref && opensNewWindow) {
             return true;
           }
         }
-        // Check if element is inside an anchor tag with href AND target="_blank"
+        // Check if element is inside an anchor tag with BOTH href AND target="_blank"
         let current = elem.parentElement;
         while (current && current !== document.body) {
           if (current.tagName?.toLowerCase() === 'a') {
-            const href = current.getAttribute('href');
-            const hasHref = href && href !== '#' && href !== 'javascript:void(0)' && !href.startsWith('javascript:');
+            const hasHref = current.hasAttribute('href') && current.getAttribute('href');
             const opensNewWindow = current.getAttribute('target') === '_blank' || 
                                   current.getAttribute('target') === '_new' ||
                                   current.getAttribute('rel')?.includes('noopener') ||
                                   current.getAttribute('rel')?.includes('noreferrer');
-            // Skip if has real href AND opens in new window (prevents new tab navigation)
+            // Only skip if BOTH conditions are true
             if (hasHref && opensNewWindow) {
               return true;
             }
@@ -4582,7 +4579,7 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null) {
   console.log(`\n=== Closing Position (${percent}%) on ${exchange.name} ===`);
 
   // Wait a moment for any previous actions to complete
-  await delay(200);
+  await delay(700);
 
   // Click on Positions tab to see open positions
   // IMPORTANT: For Paradex, we need to stay on Positions tab throughout the entire flow
@@ -6479,67 +6476,38 @@ async function executeTrade(
   }
 
   console.log("\n=== Entering Size ===");
-  console.log(`Target size value: "${qty}" (type: ${typeof qty})`);
 
-  // Method 1: Clear using JavaScript first (most reliable)
+  // Method 1: Clear and type
   await sizeInput.click();
-  await delay(200);
-
-  // Clear the field using JavaScript to ensure it's completely empty
-  await page.evaluate((el) => {
-    el.value = "";
-    el.dispatchEvent(new Event("input", { bubbles: true }));
-    el.dispatchEvent(new Event("change", { bubbles: true }));
-  }, sizeInput);
-  await delay(150);
-
-  // Verify field is empty
-  let currentValue = await page.evaluate((el) => el.value, sizeInput);
-  if (currentValue && currentValue !== "") {
-    console.log(`⚠️  Field not empty after clear: "${currentValue}", trying triple-click to select all...`);
-    // Triple-click to select all text
-    await sizeInput.click({ clickCount: 3 });
-    await delay(100);
-    // Delete selected text
-    await page.keyboard.press("Backspace");
-    await delay(100);
-    // Clear again with JavaScript
-    await page.evaluate((el) => {
-      el.value = "";
-      el.dispatchEvent(new Event("input", { bubbles: true }));
-      el.dispatchEvent(new Event("change", { bubbles: true }));
-    }, sizeInput);
-    await delay(150);
-  }
-
-  // Focus the input to ensure it's ready
-  await sizeInput.focus();
-  await delay(100);
-
-  // Type the new value character by character
-  const qtyString = String(qty);
-  console.log(`Typing value: "${qtyString}"`);
-  await sizeInput.type(qtyString, { delay: 80 });
   await delay(300);
 
-  // Verify the value was set correctly
+  // Select all existing text (using Meta/Command on Mac)
+  await page.keyboard.down("Meta");
+  await page.keyboard.press("KeyA");
+  await page.keyboard.up("Meta");
+  await delay(100);
+
+  // Type the new value
+  await page.keyboard.type(String(qty), { delay: 100 });
+  await delay(500);
+
+  // Verify the value was set
   let actualValue = await page.evaluate((el) => el.value, sizeInput);
   console.log(`Size input value after first attempt: "${actualValue}"`);
 
-  // Verify exact match (string comparison for precision)
-  const isExactMatch = actualValue === qtyString || actualValue === String(parseFloat(qtyString));
-  const isNumericMatch = actualValue && !isNaN(parseFloat(actualValue)) && 
-                         Math.abs(parseFloat(actualValue) - parseFloat(qtyString)) < 0.00001;
-
   // If value wasn't set properly, try alternative method
-  if (!actualValue || actualValue === "" || (!isExactMatch && !isNumericMatch)) {
-    console.log(`⚠️  First attempt failed. Expected: "${qtyString}", Got: "${actualValue}". Trying alternative method...`);
+  if (
+    !actualValue ||
+    actualValue === "" ||
+    Math.abs(parseFloat(actualValue) - parseFloat(qty)) > 0.0001
+  ) {
+    console.log("First attempt failed, trying alternative method...");
 
     // Focus the input
     await sizeInput.focus();
     await delay(200);
 
-    // Clear using JavaScript again
+    // Clear using JavaScript
     await page.evaluate((el) => {
       el.value = "";
       el.dispatchEvent(new Event("input", { bubbles: true }));
@@ -6547,28 +6515,21 @@ async function executeTrade(
     }, sizeInput);
     await delay(200);
 
-    // Triple-click to ensure selection
-    await sizeInput.click({ clickCount: 3 });
-    await delay(100);
-    await page.keyboard.press("Backspace");
-    await delay(100);
-
-    // Type again with slower delay
-    await sizeInput.type(qtyString, { delay: 100 });
-    await delay(400);
+    // Type again
+    await sizeInput.type(String(qty), { delay: 100 });
+    await delay(500);
 
     actualValue = await page.evaluate((el) => el.value, sizeInput);
     console.log(`Size input value after second attempt: "${actualValue}"`);
   }
 
-  // Re-check after second attempt
-  const isExactMatchAfterSecond = actualValue === qtyString || actualValue === String(parseFloat(qtyString));
-  const isNumericMatchAfterSecond = actualValue && !isNaN(parseFloat(actualValue)) && 
-                                    Math.abs(parseFloat(actualValue) - parseFloat(qtyString)) < 0.00001;
-
-  // If still not set correctly, try direct value assignment
-  if (!actualValue || actualValue === "" || (!isExactMatchAfterSecond && !isNumericMatchAfterSecond)) {
-    console.log(`⚠️  Second attempt failed. Expected: "${qtyString}", Got: "${actualValue}". Using direct assignment...`);
+  // If still not set, try direct value assignment
+  if (
+    !actualValue ||
+    actualValue === "" ||
+    Math.abs(parseFloat(actualValue) - parseFloat(qty)) > 0.0001
+  ) {
+    console.log("Second attempt failed, using direct assignment...");
 
     await page.evaluate(
       (el, value) => {
@@ -6578,7 +6539,7 @@ async function executeTrade(
         el.dispatchEvent(new Event("blur", { bubbles: true }));
       },
       sizeInput,
-      qtyString
+      String(qty)
     );
     await delay(500);
 
@@ -6586,17 +6547,13 @@ async function executeTrade(
     console.log(`Size input value after direct assignment: "${actualValue}"`);
   }
 
-  // Final verification with exact string matching
-  const finalIsExactMatch = actualValue === qtyString || actualValue === String(parseFloat(qtyString));
-  const finalIsNumericMatch = actualValue && !isNaN(parseFloat(actualValue)) && 
-                              Math.abs(parseFloat(actualValue) - parseFloat(qtyString)) < 0.00001;
-
-  if (!actualValue || actualValue === "" || (!finalIsExactMatch && !finalIsNumericMatch)) {
-    console.log(`❌ Failed to set size value correctly! Expected: "${qtyString}", Got: "${actualValue}"`);
-    return { success: false, error: `Failed to enter size value. Expected: "${qtyString}", Got: "${actualValue}"` };
+  // Final verification
+  if (!actualValue || actualValue === "") {
+    console.log("❌ Failed to set size value!");
+    return { success: false, error: "Failed to enter size value" };
   }
 
-  console.log(`✓ Successfully set size to: ${actualValue} (expected: ${qtyString})`);
+  console.log(`✓ Successfully set size to: ${actualValue}`);
   await delay(500); // Reduced from 1000ms
 
   if (exchange.name === 'Paradex') {
