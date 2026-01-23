@@ -138,43 +138,6 @@ async function findByText(page, text, tagNames = ['button', 'a', 'div', 'span'])
   for (const tag of tagNames) {
     const elements = await page.$$(tag);
     for (const el of elements) {
-      // Skip anchor tags with BOTH href AND target="_blank", and elements inside such anchors
-      const isLinkOrInsideLink = await page.evaluate((elem) => {
-        // Check if element is an anchor tag with BOTH href AND target="_blank"
-        if (elem.tagName?.toLowerCase() === 'a') {
-          const hasHref = elem.hasAttribute('href') && elem.getAttribute('href');
-          const opensNewWindow = elem.getAttribute('target') === '_blank' || 
-                                elem.getAttribute('target') === '_new' ||
-                                elem.getAttribute('rel')?.includes('noopener') ||
-                                elem.getAttribute('rel')?.includes('noreferrer');
-          // Only skip if BOTH conditions are true
-          if (hasHref && opensNewWindow) {
-            return true;
-          }
-        }
-        // Check if element is inside an anchor tag with BOTH href AND target="_blank"
-        let current = elem.parentElement;
-        while (current && current !== document.body) {
-          if (current.tagName?.toLowerCase() === 'a') {
-            const hasHref = current.hasAttribute('href') && current.getAttribute('href');
-            const opensNewWindow = current.getAttribute('target') === '_blank' || 
-                                  current.getAttribute('target') === '_new' ||
-                                  current.getAttribute('rel')?.includes('noopener') ||
-                                  current.getAttribute('rel')?.includes('noreferrer');
-            // Only skip if BOTH conditions are true
-            if (hasHref && opensNewWindow) {
-              return true;
-            }
-          }
-          current = current.parentElement;
-        }
-        return false;
-      }, el);
-      
-      if (isLinkOrInsideLink) {
-        continue; // Skip links (anchor tags with BOTH href AND target="_blank") and elements inside them
-      }
-      
       const elText = await page.evaluate(e => e.textContent?.trim(), el);
       if (elText && elText.toLowerCase().includes(text.toLowerCase())) {
         return el;
@@ -647,45 +610,14 @@ async function clickOrdersTab(page, email, skipLeverage = false) {
                 const tpSlCell = cells[tpSlColumnIndex];
                 
                 // Look for any clickable element in this cell (button, icon, div, span, etc.)
-                // Include anchor tags but exclude those with href or target="_blank"
-                const clickableElements = tpSlCell.querySelectorAll('button, div[role="button"], span[role="button"], a, svg, [onclick], [class*="icon"], [class*="Icon"]');
+                const clickableElements = tpSlCell.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"], a, div, span, svg, [onclick], [class*="icon"], [class*="Icon"]');
                 
                 for (const element of clickableElements) {
                   // Check if element is visible
                   if (element.offsetParent !== null && element.offsetWidth > 0 && element.offsetHeight > 0) {
-                    // Skip if element is an anchor tag with href or target="_blank"
-                    if (element.tagName?.toLowerCase() === 'a') {
-                      const hasHref = element.hasAttribute('href') && element.getAttribute('href');
-                      const opensNewWindow = element.getAttribute('target') === '_blank' || 
-                                            element.getAttribute('target') === '_new' ||
-                                            element.getAttribute('rel')?.includes('noopener') ||
-                                            element.getAttribute('rel')?.includes('noreferrer');
-                      if (hasHref || opensNewWindow) {
-                        continue; // Skip links
-                      }
-                    }
-                    // Check if element is inside an anchor tag with href or target="_blank"
-                    let isInsideLink = false;
-                    let parent = element.parentElement;
-                    while (parent && parent !== tpSlCell) {
-                      if (parent.tagName?.toLowerCase() === 'a') {
-                        const hasHref = parent.hasAttribute('href') && parent.getAttribute('href');
-                        const opensNewWindow = parent.getAttribute('target') === '_blank' || 
-                                              parent.getAttribute('target') === '_new' ||
-                                              parent.getAttribute('rel')?.includes('noopener') ||
-                                              parent.getAttribute('rel')?.includes('noreferrer');
-                        if (hasHref || opensNewWindow) {
-                          isInsideLink = true;
-                          break;
-                        }
-                      }
-                      parent = parent.parentElement;
-                    }
-                    if (!isInsideLink) {
-                      // Click the first visible clickable element found
-                      element.click();
-                      return true;
-                    }
+                    // Click the first visible clickable element found
+                    element.click();
+                    return true;
                   }
                 }
                 
@@ -1085,33 +1017,7 @@ async function clickOrdersTab(page, email, skipLeverage = false) {
                           
                           if (hasTpSlElement) {
                             // Now find Limit button in this same row (with capital L)
-                            const limitButton = Array.from(row.querySelectorAll('button, div[role="button"], span[role="button"], a')).find(btn => {
-                              // Skip links (anchor tags with href or target="_blank") and elements inside them
-                              if (btn.tagName?.toLowerCase() === 'a') {
-                                const hasHref = btn.hasAttribute('href') && btn.getAttribute('href');
-                                const opensNewWindow = btn.getAttribute('target') === '_blank' || 
-                                                      btn.getAttribute('target') === '_new' ||
-                                                      btn.getAttribute('rel')?.includes('noopener') ||
-                                                      btn.getAttribute('rel')?.includes('noreferrer');
-                                if (hasHref || opensNewWindow) {
-                                  return false; // Skip links
-                                }
-                              }
-                              // Check if element is inside a link
-                              let parent = btn.parentElement;
-                              while (parent && parent !== row) {
-                                if (parent.tagName?.toLowerCase() === 'a') {
-                                  const hasHref = parent.hasAttribute('href') && parent.getAttribute('href');
-                                  const opensNewWindow = parent.getAttribute('target') === '_blank' || 
-                                                        parent.getAttribute('target') === '_new' ||
-                                                        parent.getAttribute('rel')?.includes('noopener') ||
-                                                        parent.getAttribute('rel')?.includes('noreferrer');
-                                  if (hasHref || opensNewWindow) {
-                                    return false; // Skip if inside a link
-                                  }
-                                }
-                                parent = parent.parentElement;
-                              }
+                            const limitButton = Array.from(row.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"], a')).find(btn => {
                               const text = btn.textContent?.trim();
                               const isVisible = btn.offsetParent !== null && btn.offsetWidth > 0 && btn.offsetHeight > 0;
                               return isVisible && (text === 'Limit' || text.includes('Limit'));
@@ -1675,45 +1581,14 @@ async function extendedExchangePrePostTradeFlow(page, email) {
                     const tpSlCell = cells[tpSlColumnIndex];
                     
                     // Look for any clickable element in this cell (button, icon, div, span, etc.)
-                    // Include anchor tags but exclude those with href or target="_blank"
-                    const clickableElements = tpSlCell.querySelectorAll('button, div[role="button"], span[role="button"], a, svg, [onclick], [class*="icon"], [class*="Icon"]');
+                    const clickableElements = tpSlCell.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"], a, div, span, svg, [onclick], [class*="icon"], [class*="Icon"]');
                     
                     for (const element of clickableElements) {
                       // Check if element is visible
                       if (element.offsetParent !== null && element.offsetWidth > 0 && element.offsetHeight > 0) {
-                        // Skip if element is an anchor tag with href or target="_blank"
-                        if (element.tagName?.toLowerCase() === 'a') {
-                          const hasHref = element.hasAttribute('href') && element.getAttribute('href');
-                          const opensNewWindow = element.getAttribute('target') === '_blank' || 
-                                                element.getAttribute('target') === '_new' ||
-                                                element.getAttribute('rel')?.includes('noopener') ||
-                                                element.getAttribute('rel')?.includes('noreferrer');
-                          if (hasHref || opensNewWindow) {
-                            continue; // Skip links
-                          }
-                        }
-                        // Check if element is inside an anchor tag with href or target="_blank"
-                        let isInsideLink = false;
-                        let parent = element.parentElement;
-                        while (parent && parent !== tpSlCell) {
-                          if (parent.tagName?.toLowerCase() === 'a') {
-                            const hasHref = parent.hasAttribute('href') && parent.getAttribute('href');
-                            const opensNewWindow = parent.getAttribute('target') === '_blank' || 
-                                                  parent.getAttribute('target') === '_new' ||
-                                                  parent.getAttribute('rel')?.includes('noopener') ||
-                                                  parent.getAttribute('rel')?.includes('noreferrer');
-                            if (hasHref || opensNewWindow) {
-                              isInsideLink = true;
-                              break;
-                            }
-                          }
-                          parent = parent.parentElement;
-                        }
-                        if (!isInsideLink) {
-                          // Click the first visible clickable element found
-                          element.click();
-                          return true;
-                        }
+                        // Click the first visible clickable element found
+                        element.click();
+                        return true;
                       }
                     }
                     
@@ -1921,33 +1796,7 @@ async function extendedExchangePrePostTradeFlow(page, email) {
                           const hasTpSlElement = tpSlCell.querySelector('button, div[role="button"], span[role="button"], a, svg, [onclick], [class*="icon"]');
                           
                           if (hasTpSlElement) {
-                            const limitButton = Array.from(row.querySelectorAll('button, div[role="button"], span[role="button"], a')).find(btn => {
-                              // Skip links (anchor tags with href or target="_blank") and elements inside them
-                              if (btn.tagName?.toLowerCase() === 'a') {
-                                const hasHref = btn.hasAttribute('href') && btn.getAttribute('href');
-                                const opensNewWindow = btn.getAttribute('target') === '_blank' || 
-                                                      btn.getAttribute('target') === '_new' ||
-                                                      btn.getAttribute('rel')?.includes('noopener') ||
-                                                      btn.getAttribute('rel')?.includes('noreferrer');
-                                if (hasHref || opensNewWindow) {
-                                  return false; // Skip links
-                                }
-                              }
-                              // Check if element is inside a link
-                              let parent = btn.parentElement;
-                              while (parent && parent !== row) {
-                                if (parent.tagName?.toLowerCase() === 'a') {
-                                  const hasHref = parent.hasAttribute('href') && parent.getAttribute('href');
-                                  const opensNewWindow = parent.getAttribute('target') === '_blank' || 
-                                                        parent.getAttribute('target') === '_new' ||
-                                                        parent.getAttribute('rel')?.includes('noopener') ||
-                                                        parent.getAttribute('rel')?.includes('noreferrer');
-                                  if (hasHref || opensNewWindow) {
-                                    return false; // Skip if inside a link
-                                  }
-                                }
-                                parent = parent.parentElement;
-                              }
+                            const limitButton = Array.from(row.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"], a')).find(btn => {
                               const text = btn.textContent?.trim();
                               const isVisible = btn.offsetParent !== null && btn.offsetWidth > 0 && btn.offsetHeight > 0;
                               return isVisible && (text === 'Limit' || text.includes('Limit'));
@@ -2045,25 +1894,8 @@ async function extendedExchangePrePostTradeFlow(page, email) {
                         console.log(`[${email}] Positions still open after 10 seconds, clicking CLOSE ALL POSITIONS...`);
                         
                         const closeAllClicked = await page.evaluate(() => {
-                          const allButtons = Array.from(document.querySelectorAll('button, div[role="button"], span[role="button"], a'));
-                          // Helper to check if element is a link (anchor with href or target="_blank")
-                          const isLink = (elem) => {
-                            if (elem.tagName?.toLowerCase() === 'a') {
-                              const hasHref = elem.hasAttribute('href') && elem.getAttribute('href');
-                              const opensNewWindow = elem.getAttribute('target') === '_blank' || 
-                                                    elem.getAttribute('target') === '_new' ||
-                                                    elem.getAttribute('rel')?.includes('noopener') ||
-                                                    elem.getAttribute('rel')?.includes('noreferrer');
-                              return hasHref || opensNewWindow;
-                            }
-                            return false;
-                          };
-                          
+                          const allButtons = Array.from(document.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"]'));
                           const closeAllBtn = allButtons.find(btn => {
-                            // Skip links
-                            if (isLink(btn)) {
-                              return false;
-                            }
                             const text = btn.textContent?.trim();
                             const isVisible = btn.offsetParent !== null && btn.offsetWidth > 0 && btn.offsetHeight > 0;
                             return isVisible && (
@@ -2779,7 +2611,7 @@ async function login(page, browser, email, cookiesPath, isNewAccount = false, ex
       let connectButtonClicked = false;
       
       // Strategy 1: Find "Connect Wallet" button
-      const connectWalletBtn = await findByText(page, "Connect Wallet", ["button", "div", "span", "a"]);
+      const connectWalletBtn = await findByText(page, "Connect Wallet", ["button", "div", "span"]);
       if (connectWalletBtn) {
         const isVisible = await page.evaluate((el) => {
           return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
@@ -2793,7 +2625,7 @@ async function login(page, browser, email, cookiesPath, isNewAccount = false, ex
       
       // Strategy 2: Find "Start Trading" button
       if (!connectButtonClicked) {
-        const startTradingBtn = await findByText(page, "Start Trading", ["button", "div", "span", "a"]);
+        const startTradingBtn = await findByText(page, "Start Trading", ["button", "div", "span"]);
         if (startTradingBtn) {
           const isVisible = await page.evaluate((el) => {
             return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
@@ -4584,7 +4416,7 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null) {
   // Click on Positions tab to see open positions
   // IMPORTANT: For Paradex, we need to stay on Positions tab throughout the entire flow
   // Do NOT navigate to Orders tab - we need Positions tab for TP/SL and Limit button
-  // console.log(`[${exchange.name}] Navigating to Positions tab (will stay here for TP/SL and Limit button)...`);
+  console.log(`[${exchange.name}] Navigating to Positions tab (will stay here for TP/SL and Limit button)...`);
   const positionsTab = await findByExactText(page, exchange.selectors.positionsTab, [
     "button",
     "div",
@@ -4592,8 +4424,8 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null) {
   ]);
   if (positionsTab) {
     await positionsTab.click();
-    // console.log(`[${exchange.name}] ✓ Clicked Positions tab - will stay here for TP/SL and Limit button`);
-    await delay(100); // Reduced from 2000ms - wait for positions to load
+    console.log(`[${exchange.name}] ✓ Clicked Positions tab - will stay here for TP/SL and Limit button`);
+    await delay(400); // Reduced from 2000ms - wait for positions to load
   } else {
     console.log(`[${exchange.name}] ⚠️  Could not find Positions tab`);
   }
@@ -5195,7 +5027,7 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null) {
   let closeBtn = null;
   let closeBtnClicked = false;
 
-  // Strategy 1: Find by text "Close" or "Close All" using existing function (exclude anchor tags)
+  // Strategy 1: Find by text "Close" or "Close All" using existing function
   closeBtn = await findByText(page, "Close", ["button", "div", "a"]);
   if (!closeBtn) {
     closeBtn = await findByText(page, "Close All", ["button", "div", "a"]);
@@ -5262,49 +5094,11 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null) {
     const clicked = await page.evaluate(() => {
       const buttons = Array.from(
         document.querySelectorAll(
-          'button, div[role="button"], a, [class*="button"]'
+          'button, div[role="button"], a[role="button"], [class*="button"]'
         )
       );
-      
-      // Helper to check if element is a link (anchor with href or target="_blank")
-      const isLink = (elem) => {
-        if (elem.tagName?.toLowerCase() === 'a') {
-          const hasHref = elem.hasAttribute('href') && elem.getAttribute('href');
-          const opensNewWindow = elem.getAttribute('target') === '_blank' || 
-                                elem.getAttribute('target') === '_new' ||
-                                elem.getAttribute('rel')?.includes('noopener') ||
-                                elem.getAttribute('rel')?.includes('noreferrer');
-          return hasHref || opensNewWindow;
-        }
-        return false;
-      };
-      
-      // Helper to check if element is inside a link
-      const isInsideLink = (elem) => {
-        let parent = elem.parentElement;
-        while (parent && parent !== document.body) {
-          if (parent.tagName?.toLowerCase() === 'a') {
-            const hasHref = parent.hasAttribute('href') && parent.getAttribute('href');
-            const opensNewWindow = parent.getAttribute('target') === '_blank' || 
-                                  parent.getAttribute('target') === '_new' ||
-                                  parent.getAttribute('rel')?.includes('noopener') ||
-                                  parent.getAttribute('rel')?.includes('noreferrer');
-            if (hasHref || opensNewWindow) {
-              return true;
-            }
-          }
-          parent = parent.parentElement;
-        }
-        return false;
-      };
-      
       // First, try to find "Close All" button (exact text match, case insensitive)
       for (const btn of buttons) {
-        // Skip links (anchor tags with href or target="_blank") and elements inside them
-        if (isLink(btn) || isInsideLink(btn)) {
-          continue;
-        }
-        
         const text = btn.textContent?.trim();
         const isVisible = btn.offsetParent !== null;
         if (isVisible && text && text.toLowerCase() === "close all") {
@@ -5319,11 +5113,6 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null) {
       }
       // Fallback: try any button with "close" in text
       for (const btn of buttons) {
-        // Skip links (anchor tags with href or target="_blank") and elements inside them
-        if (isLink(btn) || isInsideLink(btn)) {
-          continue;
-        }
-        
         const text = btn.textContent?.trim().toLowerCase();
         const isVisible = btn.offsetParent !== null;
         if (isVisible && text && text.includes("close") && !text.includes("position")) {
@@ -5599,51 +5388,15 @@ async function cancelAllOrders(page) {
     console.log(`Looking for cancel buttons (attempt ${attempts}/${maxAttempts})...`);
 
     const cancelResult = await page.evaluate(() => {
-      // Find all buttons that might be cancel buttons (exclude links with href or target="_blank")
+      // Find all buttons that might be cancel buttons
       const allButtons = Array.from(
         document.querySelectorAll(
-          'button, div[role="button"], a, [class*="button"]'
+          'button, div[role="button"], a[role="button"], [class*="button"]'
         )
       );
-      
-      // Helper to check if element is a link (anchor with href or target="_blank")
-      const isLink = (elem) => {
-        if (elem.tagName?.toLowerCase() === 'a') {
-          const hasHref = elem.hasAttribute('href') && elem.getAttribute('href');
-          const opensNewWindow = elem.getAttribute('target') === '_blank' || 
-                                elem.getAttribute('target') === '_new' ||
-                                elem.getAttribute('rel')?.includes('noopener') ||
-                                elem.getAttribute('rel')?.includes('noreferrer');
-          return hasHref || opensNewWindow;
-        }
-        return false;
-      };
-      
-      // Helper to check if element is inside a link
-      const isInsideLink = (elem) => {
-        let parent = elem.parentElement;
-        while (parent && parent !== document.body) {
-          if (parent.tagName?.toLowerCase() === 'a') {
-            const hasHref = parent.hasAttribute('href') && parent.getAttribute('href');
-            const opensNewWindow = parent.getAttribute('target') === '_blank' || 
-                                  parent.getAttribute('target') === '_new' ||
-                                  parent.getAttribute('rel')?.includes('noopener') ||
-                                  parent.getAttribute('rel')?.includes('noreferrer');
-            if (hasHref || opensNewWindow) {
-              return true;
-            }
-          }
-          parent = parent.parentElement;
-        }
-        return false;
-      };
 
       const cancelButtons = [];
       for (const btn of allButtons) {
-        // Skip links (anchor tags with href or target="_blank") and elements inside them
-        if (isLink(btn) || isInsideLink(btn)) {
-          continue;
-        }
         const text = btn.textContent?.trim().toLowerCase();
         const ariaLabel = btn.getAttribute("aria-label")?.toLowerCase() || "";
         const isVisible = btn.offsetParent !== null;
@@ -5744,20 +5497,7 @@ async function cancelAllOrders(page) {
         }
         
         // Fallback: check for cancel buttons (if buttons exist, orders likely exist)
-        const allCancelButtons = Array.from(document.querySelectorAll('button, div[role="button"], a'));
-        // Helper to check if element is a link (anchor with href or target="_blank")
-        const isLink = (elem) => {
-          if (elem.tagName?.toLowerCase() === 'a') {
-            const hasHref = elem.hasAttribute('href') && elem.getAttribute('href');
-            const opensNewWindow = elem.getAttribute('target') === '_blank' || 
-                                  elem.getAttribute('target') === '_new' ||
-                                  elem.getAttribute('rel')?.includes('noopener') ||
-                                  elem.getAttribute('rel')?.includes('noreferrer');
-            return hasHref || opensNewWindow;
-          }
-          return false;
-        };
-        const cancelButtons = allCancelButtons.filter(btn => !isLink(btn));
+        const cancelButtons = Array.from(document.querySelectorAll('button, div[role="button"], a[role="button"]'));
         const activeCancelButtons = cancelButtons.filter(btn => {
           const text = btn.textContent?.trim().toLowerCase();
           const isVisible = btn.offsetParent !== null;
@@ -6771,47 +6511,10 @@ async function executeTrade(
     if (!confirmBtn) {
       console.log(`Partial match failed, trying case-insensitive search...`);
       const foundBtn = await page.evaluate((searchText) => {
-        const buttons = Array.from(document.querySelectorAll('button, div[role="button"], span[role="button"], a'));
+        const buttons = Array.from(document.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"]'));
         const searchLower = searchText.toLowerCase();
         
-        // Helper to check if element is a link (anchor with href or target="_blank")
-        const isLink = (elem) => {
-          if (elem.tagName?.toLowerCase() === 'a') {
-            const hasHref = elem.hasAttribute('href') && elem.getAttribute('href');
-            const opensNewWindow = elem.getAttribute('target') === '_blank' || 
-                                  elem.getAttribute('target') === '_new' ||
-                                  elem.getAttribute('rel')?.includes('noopener') ||
-                                  elem.getAttribute('rel')?.includes('noreferrer');
-            return hasHref || opensNewWindow;
-          }
-          return false;
-        };
-        
-        // Helper to check if element is inside a link
-        const isInsideLink = (elem) => {
-          let parent = elem.parentElement;
-          while (parent && parent !== document.body) {
-            if (parent.tagName?.toLowerCase() === 'a') {
-              const hasHref = parent.hasAttribute('href') && parent.getAttribute('href');
-              const opensNewWindow = parent.getAttribute('target') === '_blank' || 
-                                    parent.getAttribute('target') === '_new' ||
-                                    parent.getAttribute('rel')?.includes('noopener') ||
-                                    parent.getAttribute('rel')?.includes('noreferrer');
-              if (hasHref || opensNewWindow) {
-                return true;
-              }
-            }
-            parent = parent.parentElement;
-          }
-          return false;
-        };
-        
         for (const btn of buttons) {
-          // Skip links (anchor tags with href or target="_blank") and elements inside them
-          if (isLink(btn) || isInsideLink(btn)) {
-            continue;
-          }
-          
           const btnText = btn.textContent?.trim() || '';
           const isVisible = btn.offsetParent !== null && btn.offsetWidth > 0 && btn.offsetHeight > 0;
           const isDisabled = btn.disabled || btn.getAttribute('aria-disabled') === 'true' || 
