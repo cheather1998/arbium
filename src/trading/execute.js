@@ -488,6 +488,16 @@ async function executeTrade(
         
         // Check if it's the "Sell" button, visible, and in the right 40% of screen
         if (btnText === "Sell" && isVisible && rect && rect.x >= rightSideThreshold) {
+
+                  // Check if button is near footer
+          const buttonInfo = await page.evaluate((el) => {
+            const rect = el.getBoundingClientRect();
+            const viewportHeight = window.innerHeight;
+            return {
+              isNearFooter: rect.bottom > viewportHeight * 0.8,
+              viewportHeight
+            };
+          }, btn);
           const isDisabled = await page.evaluate((el) => {
             return el.disabled || el.getAttribute('aria-disabled') === 'true' || 
                    el.classList.contains('disabled') || el.style.pointerEvents === 'none';
@@ -498,12 +508,16 @@ async function executeTrade(
             x: Math.round(rect.x),
             y: Math.round(rect.y),
             onRight: true,
-            disabled: isDisabled
+            disabled: isDisabled,
+            isNearFooter: buttonInfo.isNearFooter
           });
           
           if (!isDisabled) {
             confirmBtn = btn;
             console.log(`[EXTENDED EXCHANGE] ✓ Method 1 SUCCESS: Found Sell button at (${Math.round(rect.x)}, ${Math.round(rect.y)}) in right 40%`);
+            if (buttonInfo.isNearFooter) {
+              console.log(`[EXTENDED EXCHANGE] ⚠️  Button is near footer, will scroll into view before clicking`);
+            }
             break;
           }
         }
@@ -598,16 +612,36 @@ async function executeTrade(
       confirmBtn = await findByExactText(page, confirmText, ["button", "div", "span"]);
       
       if (confirmBtn) {
-        const isVisible = await page.evaluate((el) => {
-          return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+        const buttonCheck = await page.evaluate((el) => {
+          const isVisible = el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+          if (!isVisible) return { isVisible: false };
+          
+          const rect = el.getBoundingClientRect();
+          const viewportHeight = window.innerHeight;
+          const isInViewport = rect.top >= 0 && 
+                              rect.left >= 0 && 
+                              rect.bottom <= viewportHeight && 
+                              rect.right <= window.innerWidth;
+          const isNearFooter = rect.bottom > viewportHeight * 0.8;
+          
+          return {
+            isVisible: true,
+            x: rect.x,
+            y: rect.y,
+            isInViewport,
+            isNearFooter,
+            viewportHeight
+          };
         }, confirmBtn);
         
-        if (!isVisible) {
+        if (!buttonCheck) {
           console.log(`⚠️  Found "${confirmText}" button but it's not visible, trying fallback...`);
           confirmBtn = null;
         } else {
-          const rect = await confirmBtn.boundingBox();
-          console.log(`✓ Found "${confirmText}" button at (${Math.round(rect?.x || 0)}, ${Math.round(rect?.y || 0)})`);
+          console.log(`✓ Found "${confirmText}" button at (${Math.round(buttonCheck.x || 0)}, ${Math.round(buttonCheck.y || 0)})`);
+          if (buttonCheck.isNearFooter) {
+            console.log(`⚠️  Button is near footer (bottom ${Math.round((buttonCheck.y + 100) / buttonCheck.viewportHeight * 100)}% of viewport), will scroll into view before clicking`);
+          }
         }
       }
       
@@ -617,13 +651,33 @@ async function executeTrade(
         confirmBtn = await findByText(page, confirmText, ["button"]);
         
         if (confirmBtn) {
-          const isVisible = await page.evaluate((el) => {
-            return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+          const buttonCheck = await page.evaluate((el) => {
+            const isVisible = el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+            if (!isVisible) return { isVisible: false };
+            
+            const rect = el.getBoundingClientRect();
+            const viewportHeight = window.innerHeight;
+            const isInViewport = rect.top >= 0 && 
+                                rect.left >= 0 && 
+                                rect.bottom <= viewportHeight && 
+                                rect.right <= window.innerWidth;
+            const isNearFooter = rect.bottom > viewportHeight * 0.8;
+            
+            return {
+              isVisible: true,
+              x: rect.x,
+              y: rect.y,
+              isInViewport,
+              isNearFooter,
+              viewportHeight
+            };
           }, confirmBtn);
           
-          if (isVisible) {
-            const rect = await confirmBtn.boundingBox();
-            console.log(`✓ Found "${confirmText}" button via partial match at (${Math.round(rect?.x || 0)}, ${Math.round(rect?.y || 0)})`);
+          if (buttonCheck.isVisible) {
+            console.log(`✓ Found "${confirmText}" button via partial match at (${Math.round(buttonCheck.x || 0)}, ${Math.round(buttonCheck.y || 0)})`);
+            if (buttonCheck.isNearFooter) {
+              console.log(`⚠️  Button is near footer (bottom ${Math.round((buttonCheck.y + 100) / buttonCheck.viewportHeight * 100)}% of viewport), will scroll into view before clicking`);
+            }
           } else {
             console.log(`⚠️  Found button but it's not visible`);
             confirmBtn = null;
@@ -631,12 +685,17 @@ async function executeTrade(
         }
       }
       
-      // Method 3: Try case-insensitive search in evaluate
-      if (!confirmBtn) {
+    // Method 3: Try case-insensitive search in evaluate with viewport and footer checking
+    if (!confirmBtn) {
         console.log(`Partial match failed, trying case-insensitive search...`);
         const foundBtn = await page.evaluate((searchText) => {
           const buttons = Array.from(document.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"]'));
           const searchLower = searchText.toLowerCase();
+          const viewportHeight = window.innerHeight;
+          const viewportWidth = window.innerWidth;
+          
+          // Score buttons: prefer buttons that are in viewport and not near footer
+          const scoredButtons = [];
           
           for (const btn of buttons) {
             const btnText = btn.textContent?.trim() || '';
@@ -645,13 +704,58 @@ async function executeTrade(
                               btn.classList.contains('disabled') || btn.style.pointerEvents === 'none';
             
             if (isVisible && !isDisabled && btnText.toLowerCase().includes(searchLower)) {
-              return {
-                found: true,
+              const rect = btn.getBoundingClientRect();
+            
+              // Check if button is in viewport
+              const isInViewport = rect.top >= 0 && 
+                                  rect.left >= 0 && 
+                                  rect.bottom <= viewportHeight && 
+                                  rect.right <= viewportWidth;
+              
+              // Check if button is near footer (bottom 20% of viewport)
+              const isNearFooter = rect.bottom > viewportHeight * 0.8;
+              
+              // Check if button is covered by another element at its center
+              const centerX = rect.left + rect.width / 2;
+              const centerY = rect.top + rect.height / 2;
+              const elementAtPoint = document.elementFromPoint(centerX, centerY);
+              const isCovered = elementAtPoint && 
+                               !btn.contains(elementAtPoint) && 
+                               elementAtPoint !== btn &&
+                               !elementAtPoint.closest('button, [role="button"]');
+              
+              // Calculate score: higher is better
+              let score = 0;
+              if (isInViewport) score += 100;
+              if (!isNearFooter) score += 50;
+              if (!isCovered) score += 30;
+              // Prefer buttons in upper/middle viewport (not near bottom)
+              if (rect.top < viewportHeight * 0.7) score += 20;
+              
+              scoredButtons.push({
                 text: btnText,
-                x: btn.getBoundingClientRect().x,
-                y: btn.getBoundingClientRect().y
-              };
+                x: rect.x,
+                y: rect.y,
+                score,
+                isInViewport,
+                isNearFooter,
+                isCovered
+              });
             }
+          }
+
+                  // Sort by score (highest first) and return the best match
+          scoredButtons.sort((a, b) => b.score - a.score);
+          
+          if (scoredButtons.length > 0) {
+            const best = scoredButtons[0];
+            console.log(`Found ${scoredButtons.length} matching buttons, best score: ${best.score} (isInViewport: ${best.isInViewport}, isNearFooter: ${best.isNearFooter}, isCovered: ${best.isCovered})`);
+            return {
+              found: true,
+              text: best.text,
+              x: best.x,
+              y: best.y
+            };
           }
           return { found: false };
         }, confirmText);
@@ -671,8 +775,100 @@ async function executeTrade(
       } else {
         console.log(`[${exchange.name}] 🖱️  Clicking "${confirmText}" button now...`);
       }
-      await confirmBtn.click();
-      console.log(`✓ Successfully clicked "${confirmText}" button`);
+      // Scroll button into view and ensure it's not hidden behind footer
+      const buttonInfo = await page.evaluate((btn) => {
+        const rect = btn.getBoundingClientRect();
+        const viewportHeight = window.innerHeight;
+        const viewportWidth = window.innerWidth;
+        
+        // Check if button is in viewport
+        const isInViewport = rect.top >= 0 && 
+                            rect.left >= 0 && 
+                            rect.bottom <= viewportHeight && 
+                            rect.right <= viewportWidth;
+        
+        // Check if button might be covered by footer (in bottom 15% of viewport)
+        const isNearFooter = rect.bottom > viewportHeight * 0.85;
+        
+        // Get element at button's center point to check if something is covering it
+        const centerX = rect.left + rect.width / 2;
+        const centerY = rect.top + rect.height / 2;
+        const elementAtPoint = document.elementFromPoint(centerX, centerY);
+        
+        // Check if the element at the point is the button itself or inside it
+        const isCovered = elementAtPoint && 
+                        !btn.contains(elementAtPoint) && 
+                        elementAtPoint !== btn &&
+                        !elementAtPoint.closest('button, [role="button"]');
+        
+        return {
+          x: rect.x,
+          y: rect.y,
+          width: rect.width,
+          height: rect.height,
+          isInViewport,
+          isNearFooter,
+          isCovered,
+          viewportHeight,
+          viewportWidth,
+          centerX,
+          centerY
+        };
+      }, confirmBtn);
+      
+      console.log(`Button position: (${Math.round(buttonInfo.x)}, ${Math.round(buttonInfo.y)}), Viewport: ${buttonInfo.viewportWidth}x${buttonInfo.viewportHeight}`);
+      
+      // Scroll button into view if needed
+      if (!buttonInfo.isInViewport || buttonInfo.isNearFooter) {
+        console.log(`📜 Scrolling button into view (isInViewport: ${buttonInfo.isInViewport}, isNearFooter: ${buttonInfo.isNearFooter})...`);
+        await confirmBtn.evaluate((btn) => {
+          btn.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+        });
+        await delay(500); // Wait for scroll to complete
+        
+        // Re-check position after scroll
+        const newButtonInfo = await page.evaluate((btn) => {
+          const rect = btn.getBoundingClientRect();
+          const viewportHeight = window.innerHeight;
+          return {
+            y: rect.y,
+            bottom: rect.bottom,
+            viewportHeight,
+            isInViewport: rect.top >= 0 && rect.bottom <= viewportHeight
+          };
+        }, confirmBtn);
+        
+        console.log(`After scroll: y=${Math.round(newButtonInfo.y)}, bottom=${Math.round(newButtonInfo.bottom)}, viewport=${newButtonInfo.viewportHeight}`);
+        
+        // If still too close to footer, scroll up a bit more
+        if (newButtonInfo.bottom > newButtonInfo.viewportHeight * 0.9) {
+          console.log(`⚠️  Button still too close to footer, scrolling up more...`);
+          await page.evaluate(() => {
+            window.scrollBy(0, -100); // Scroll up 100px
+          });
+          await delay(300);
+        }
+      }
+      
+      // Check if button is covered by another element
+      if (buttonInfo.isCovered) {
+        console.log(`⚠️  Button might be covered by another element, trying to click anyway...`);
+      }
+      
+      // Use JavaScript click as fallback if element might be covered
+      // First try Puppeteer's click, which handles some coverage cases
+      try {
+        await confirmBtn.click({ delay: 100 });
+        console.log(`✓ Successfully clicked "${confirmText}" button`);
+      } catch (clickError) {
+        console.log(`⚠️  Puppeteer click failed: ${clickError.message}, trying JavaScript click...`);
+        // Fallback to JavaScript click
+        await confirmBtn.evaluate((btn) => {
+          btn.scrollIntoView({ behavior: 'instant', block: 'center' });
+          btn.click();
+        });
+        console.log(`✓ Successfully clicked "${confirmText}" button (via JavaScript)`);
+      }
       await delay(2000); // Wait for order submission to process
   
       // Check for error messages first
