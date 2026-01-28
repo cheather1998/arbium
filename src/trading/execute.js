@@ -339,35 +339,73 @@ async function executeTrade(
       return { success: false, error: "Size input field not found" };
     }
   
-    console.log("\n=== Entering Size ===");
+    console.log(`\n[${exchange.name}] === Entering Size ===`);
+    console.log(`[${exchange.name}] Target size from env: ${qty}`);
   
-    // Method 1: Clear and type
-    await sizeInput.click();
+    const desiredQtyStr = String(qty).trim();
+    const desiredQtyNum = parseFloat(desiredQtyStr);
+    
+    // Get current value before clearing
+    const currentValue = await page.evaluate((el) => el.value || '', sizeInput);
+    console.log(`[${exchange.name}] Current size value in input: "${currentValue}"`);
+  
+    // Method 1: Triple click to select all, then Backspace to clear, then type new value
+    console.log(`[${exchange.name}] Method 1: Triple click + Backspace + Type new value...`);
+    await sizeInput.focus();
+    await delay(200);
+    
+    // Triple click to select all text (platform-independent)
+    await sizeInput.click({ clickCount: 3 });
+    await delay(200);
+    
+    // Press Backspace to delete selected text
+    await page.keyboard.press("Backspace");
+    await delay(200);
+    
+    // Verify it's cleared
+    let clearedValue = await page.evaluate((el) => el.value || '', sizeInput);
+    console.log(`[${exchange.name}] Value after triple click + Backspace: "${clearedValue}"`);
+    
+    // If not cleared, try JavaScript clear
+    if (clearedValue && clearedValue.trim() !== '') {
+      console.log(`[${exchange.name}] Input not fully cleared, using JavaScript clear...`);
+      await page.evaluate((el) => {
+        el.value = "";
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      }, sizeInput);
+      await delay(200);
+      clearedValue = await page.evaluate((el) => el.value || '', sizeInput);
+      console.log(`[${exchange.name}] Value after JavaScript clear: "${clearedValue}"`);
+    }
+    
+    // Type the new value from env
+    console.log(`[${exchange.name}] Typing new size value: "${desiredQtyStr}"...`);
+    await sizeInput.type(desiredQtyStr, { delay: 50 });
+    await delay(300);
+    
+    // Trigger input/change events to ensure UI updates
+    await page.evaluate((el) => {
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+      el.dispatchEvent(new Event("blur", { bubbles: true }));
+    }, sizeInput);
     await delay(300);
   
-    // Select all existing text (using Meta/Command on Mac)
-    await page.keyboard.down("Meta");
-    await page.keyboard.press("KeyA");
-    await page.keyboard.up("Meta");
-    await delay(100);
-  
-    // Type the new value
-    await page.keyboard.type(String(qty), { delay: 100 });
-    await delay(500);
-  
-    // Verify the value was set
-    let actualValue = await page.evaluate((el) => el.value, sizeInput);
-    console.log(`Size input value after first attempt: "${actualValue}"`);
-  
+    // Verify the value was set correctly
+    let actualValue = await page.evaluate((el) => el.value || '', sizeInput);
+    console.log(`[${exchange.name}] Size input value after typing: "${actualValue}"`);
+    
+    // Check if value matches (allowing for small floating point differences)
+    const actualValueNum = parseFloat(actualValue.replace(/,/g, ''));
+    const isMatch = actualValueNum && !isNaN(actualValueNum) && 
+                    Math.abs(actualValueNum - desiredQtyNum) < 0.0001;
+    
     // If value wasn't set properly, try alternative method
-    if (
-      !actualValue ||
-      actualValue === "" ||
-      Math.abs(parseFloat(actualValue) - parseFloat(qty)) > 0.0001
-    ) {
-      console.log("First attempt failed, trying alternative method...");
+    if (!isMatch) {
+      console.log(`[${exchange.name}] ⚠️  First attempt failed (expected: "${desiredQtyStr}", got: "${actualValue}"), trying alternative method...`);
   
-      // Focus the input
+      // Method 2: Focus, clear with JS, then type
       await sizeInput.focus();
       await delay(200);
   
@@ -378,44 +416,68 @@ async function executeTrade(
         el.dispatchEvent(new Event("change", { bubbles: true }));
       }, sizeInput);
       await delay(200);
+      
+      // Triple click again to ensure selection
+      await sizeInput.click({ clickCount: 3 });
+      await delay(100);
+      await page.keyboard.press("Backspace");
+      await delay(100);
   
       // Type again
-      await sizeInput.type(String(qty), { delay: 100 });
-      await delay(500);
+      await sizeInput.type(desiredQtyStr, { delay: 50 });
+      await delay(300);
+      
+      // Trigger events
+      await page.evaluate((el) => {
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      }, sizeInput);
+      await delay(300);
   
-      actualValue = await page.evaluate((el) => el.value, sizeInput);
-      console.log(`Size input value after second attempt: "${actualValue}"`);
-    }
+      actualValue = await page.evaluate((el) => el.value || '', sizeInput);
+      const actualValueNum2 = parseFloat(actualValue.replace(/,/g, ''));
+      const isMatch2 = actualValueNum2 && !isNaN(actualValueNum2) && 
+                       Math.abs(actualValueNum2 - desiredQtyNum) < 0.0001;
+      console.log(`[${exchange.name}] Size input value after second attempt: "${actualValue}" (match: ${isMatch2})`);
+      
+      if (!isMatch2) {
+        // Method 3: Direct value assignment as last resort
+        console.log(`[${exchange.name}] Second attempt failed, using direct assignment...`);
   
-    // If still not set, try direct value assignment
-    if (
-      !actualValue ||
-      actualValue === "" ||
-      Math.abs(parseFloat(actualValue) - parseFloat(qty)) > 0.0001
-    ) {
-      console.log("Second attempt failed, using direct assignment...");
+        await page.evaluate(
+          (el, value) => {
+            el.value = value;
+            el.dispatchEvent(new Event("input", { bubbles: true }));
+            el.dispatchEvent(new Event("change", { bubbles: true }));
+            el.dispatchEvent(new Event("blur", { bubbles: true }));
+          },
+          sizeInput,
+          desiredQtyStr
+        );
+        await delay(500);
   
-      await page.evaluate(
-        (el, value) => {
-          el.value = value;
-          el.dispatchEvent(new Event("input", { bubbles: true }));
-          el.dispatchEvent(new Event("change", { bubbles: true }));
-          el.dispatchEvent(new Event("blur", { bubbles: true }));
-        },
-        sizeInput,
-        String(qty)
-      );
-      await delay(500);
-  
-      actualValue = await page.evaluate((el) => el.value, sizeInput);
-      console.log(`Size input value after direct assignment: "${actualValue}"`);
+        actualValue = await page.evaluate((el) => el.value || '', sizeInput);
+        const actualValueNum3 = parseFloat(actualValue.replace(/,/g, ''));
+        const isMatch3 = actualValueNum3 && !isNaN(actualValueNum3) && 
+                         Math.abs(actualValueNum3 - desiredQtyNum) < 0.0001;
+        console.log(`[${exchange.name}] Size input value after direct assignment: "${actualValue}" (match: ${isMatch3})`);
+        
+        if (!isMatch3) {
+          console.log(`[${exchange.name}] ❌ Failed to set size value after all methods!`);
+          return { success: false, error: `Failed to enter size value. Expected: "${desiredQtyStr}", got: "${actualValue}"` };
+        }
+      }
     }
   
     // Final verification
-    if (!actualValue || actualValue === "") {
-      console.log("❌ Failed to set size value!");
+    const finalValue = await page.evaluate((el) => el.value || '', sizeInput);
+    const finalValueNum = parseFloat(finalValue.replace(/,/g, ''));
+    if (!finalValue || finalValue.trim() === "" || !finalValueNum || isNaN(finalValueNum)) {
+      console.log(`[${exchange.name}] ❌ Failed to set size value! Final value: "${finalValue}"`);
       return { success: false, error: "Failed to enter size value" };
     }
+    
+    console.log(`[${exchange.name}] ✅ Successfully set size to: "${finalValue}" (target: "${desiredQtyStr}")`);
   
     console.log(`✓ Successfully set size to: ${actualValue}`);
     await delay(500); // Reduced from 1000ms
