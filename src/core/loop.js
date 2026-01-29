@@ -66,28 +66,23 @@ async function automatedTradingLoop(account1Result, account2Result) {
     console.log(`\n🧹 Cleaning up existing positions and orders...`);
     const cleanupPromises = [];
     
-    // Only cleanup Paradex accounts (Extended Exchange already cleaned up in clickOrdersTab)
-    if (exchange1Name !== 'Extended Exchange') {
-      cleanupPromises.push((async () => {
-        console.log(`\n[${email1}] Checking for open positions and orders...`);
-        const closeResult = await closeAllPositions(page1, 100, exchange1);
-        const cancelResult = await cancelAllOrders(page1);
-        return { email: email1, close: closeResult, cancel: cancelResult };
-      })());
-    } else {
-      console.log(`\n[${email1}] Skipping cleanup - already done in clickOrdersTab() during login`);
-    }
+    // Helper function to add cleanup for an account
+    const addCleanupForAccount = (page, email, exchangeName, exchangeConfig) => {
+      if (exchangeName !== 'Extended Exchange') {
+        cleanupPromises.push((async () => {
+          console.log(`\n[${email}] Checking for open positions and orders...`);
+          const closeResult = await closeAllPositions(page, 100, exchangeConfig);
+          const cancelResult = await cancelAllOrders(page);
+          return { email, close: closeResult, cancel: cancelResult };
+        })());
+      } else {
+        console.log(`\n[${email}] Skipping cleanup - already done in clickOrdersTab() during login`);
+      }
+    };
     
-    if (exchange2Name !== 'Extended Exchange') {
-      cleanupPromises.push((async () => {
-        console.log(`\n[${email2}] Checking for open positions and orders...`);
-        const closeResult = await closeAllPositions(page2, 100, exchange2);
-        const cancelResult = await cancelAllOrders(page2);
-        return { email: email2, close: closeResult, cancel: cancelResult };
-      })());
-    } else {
-      console.log(`\n[${email2}] Skipping cleanup - already done in clickOrdersTab() during login`);
-    }
+    // Cleanup for both accounts (they are different accounts, so both need cleanup)
+    addCleanupForAccount(page1, email1, exchange1Name, exchange1);
+    addCleanupForAccount(page2, email2, exchange2Name, exchange2);
   
     if (cleanupPromises.length > 0) {
       const cleanupResults = await Promise.all(cleanupPromises);
