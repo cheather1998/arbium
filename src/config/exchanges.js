@@ -34,6 +34,42 @@ const EXCHANGE_CONFIGS = {
         confirmSell: "Sell", // Extended Exchange uses "Sell" button, not "Confirm Sell"
         positionsTab: "Positions", // May need to change
       }
+    },
+    grvt: {
+      name: "GRVT",
+      url: "https://grvt.io/exchange/perpetual/BTC-USDT",
+      referralUrl: "https://grvt.io/exchange/perpetual/BTC-USDT",
+      urlPattern: "grvt.io/exchange",
+      // UI selectors - will need to be updated after inspecting GRVT UI
+      // For now, using generic text-based selectors
+      selectors: {
+        loginButton: null, // Will use text-based search
+        buyButton: "Buy",
+        sellButton: "Sell",
+        marketButton: "Market",
+        limitButton: "Limit",
+        confirmBuy: "Confirm Buy", // May need to change after UI inspection
+        confirmSell: "Confirm Sell", // May need to change after UI inspection
+        positionsTab: "Positions", // May need to change after UI inspection
+      }
+    },
+    kraken: {
+      name: "Kraken",
+      url: "https://pro.kraken.com/app/trade/futures-btc-usd-perp",
+      referralUrl: "https://pro.kraken.com/app/trade/futures-btc-usd-perp",
+      urlPattern: "pro.kraken.com/app/trade",
+      // UI selectors - will need to be updated after inspecting Kraken UI
+      // For now, using generic text-based selectors
+      selectors: {
+        loginButton: null, // Will use text-based search
+        buyButton: "Buy",
+        sellButton: "Sell",
+        marketButton: "Market",
+        limitButton: "Limit",
+        confirmBuy: "Confirm Buy", // May need to change after UI inspection
+        confirmSell: "Confirm Sell", // May need to change after UI inspection
+        positionsTab: "Positions", // May need to change after UI inspection
+      }
     }
   };
 

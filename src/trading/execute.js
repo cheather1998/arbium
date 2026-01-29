@@ -1,6 +1,8 @@
 import EXCHANGE_CONFIGS from '../config/exchanges.js';
 import { executeTradeExtended } from './executeExtended.js';
 import { executeTradeParadex } from './executeParadex.js';
+import { executeTradeGrvt } from './executeGrvt.js';
+import { executeTradeKraken } from './executeKraken.js';
 import { getCurrentMarketPrice } from './executeBase.js';
 
 /**
@@ -14,14 +16,15 @@ export async function executeTrade(
 ) {
   const exchange = exchangeConfig || EXCHANGE_CONFIGS.paradex; // Default to Paradex
   
-  // Detect exchange type
-  const isExtendedExchange = exchange.name === 'Extended Exchange' || 
-                              exchange.name?.toLowerCase() === 'extended exchange' ||
-                              exchange.name?.includes('Extended');
+  // Detect exchange type and route to appropriate handler
+  const exchangeName = exchange.name?.toLowerCase() || '';
   
-  // Route to exchange-specific handler
-  if (isExtendedExchange) {
+  if (exchangeName.includes('extended')) {
     return await executeTradeExtended(page, { side, orderType, price, qty, setLeverageFirst, leverage }, exchange);
+  } else if (exchangeName.includes('grvt')) {
+    return await executeTradeGrvt(page, { side, orderType, price, qty, setLeverageFirst, leverage }, exchange);
+  } else if (exchangeName.includes('kraken')) {
+    return await executeTradeKraken(page, { side, orderType, price, qty, setLeverageFirst, leverage }, exchange);
   } else {
     // Default to Paradex (includes Paradex and any other exchanges)
     return await executeTradeParadex(page, { side, orderType, price, qty, setLeverageFirst, leverage }, exchange);
