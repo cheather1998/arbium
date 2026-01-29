@@ -10,6 +10,9 @@ import {
   clickConfirmButton,
   verifyOrderPlacement
 } from './executeBase.js';
+import dotenv from 'dotenv';
+
+dotenv.config();
 
 /**
  * Extended Exchange specific trade execution logic
@@ -396,6 +399,625 @@ export async function findConfirmButtonExtended(page, side, exchange) {
 }
 
 /**
+ * Handle TP/SL for Extended Exchange
+ * Extended Exchange has a checkbox with label "Take profit / Stop loss"
+ * and two inputs: "TP Price" and "SL Price"
+ * 
+ * TP = price + (price * (TAKE_PROFIT/10) / 100)
+ * SL = price - (price * (STOP_LOSS/10) / 100)
+ */
+export async function handleTpSlExtended(page, exchange, price = null, side = 'buy') {
+  console.log(`[${exchange.name}] Handling TP/SL for Extended Exchange (side: ${side})...`);
+  
+  const takeProfitPercent = process.env.TAKE_PROFIT || '';
+  const stopLossPercent = process.env.STOP_LOSS || '';
+  
+  if (!takeProfitPercent && !stopLossPercent) {
+    console.log(`[${exchange.name}] ⚠️  TAKE_PROFIT and STOP_LOSS env variables not set, skipping TP/SL`);
+    return { success: false, error: 'TAKE_PROFIT and STOP_LOSS not set' };
+  }
+  
+  // Validate price is provided
+  if (!price || isNaN(price)) {
+    console.log(`[${exchange.name}] ⚠️  Price not provided or invalid, skipping TP/SL calculation`);
+    return { success: false, error: 'Price not provided or invalid' };
+  }
+  
+  console.log(`[${exchange.name}] Using price value: ${price} for TP/SL calculation (side: ${side})`);
+  
+  // Calculate TP and SL values based on formulas and order side
+  let calculatedTakeProfit = null;
+  let calculatedStopLoss = null;
+  const isSell = side.toLowerCase() === 'sell';
+  
+  if (takeProfitPercent) {
+    const takeProfitNum = parseFloat(takeProfitPercent);
+    if (!isNaN(takeProfitNum) && price) {
+      const percentage = (takeProfitNum / 10) / 100;
+      const adjustment = price * percentage;
+      
+      if (isSell) {
+        // For SELL: TP = price - (price * (TAKE_PROFIT/10) / 100)
+        calculatedTakeProfit = price - adjustment;
+        console.log(`[${exchange.name}] TP Calculation (SELL): ${price} - (${price} * (${takeProfitNum}/10) / 100) = ${calculatedTakeProfit.toFixed(2)}`);
+      } else {
+        // For BUY: TP = price + (price * (TAKE_PROFIT/10) / 100)
+        calculatedTakeProfit = price + adjustment;
+        console.log(`[${exchange.name}] TP Calculation (BUY): ${price} + (${price} * (${takeProfitNum}/10) / 100) = ${calculatedTakeProfit.toFixed(2)}`);
+      }
+      
+      // Validate TP based on side
+      if (isSell && calculatedTakeProfit >= price) {
+        console.log(`[${exchange.name}] ❌ ERROR: For SELL, calculated TP (${calculatedTakeProfit.toFixed(2)}) should be LESS than price (${price})!`);
+        calculatedTakeProfit = null;
+      } else if (!isSell && calculatedTakeProfit <= price) {
+        console.log(`[${exchange.name}] ❌ ERROR: For BUY, calculated TP (${calculatedTakeProfit.toFixed(2)}) should be GREATER than price (${price})!`);
+        calculatedTakeProfit = null;
+      } else {
+        console.log(`[${exchange.name}] ✅ TP calculation validated for ${side.toUpperCase()}`);
+      }
+    }
+  }
+  
+  if (stopLossPercent) {
+    const stopLossNum = parseFloat(stopLossPercent);
+    if (!isNaN(stopLossNum) && price) {
+      const percentage = (stopLossNum / 10) / 100;
+      const adjustment = price * percentage;
+      
+      if (isSell) {
+        // For SELL: SL = price + (price * (STOP_LOSS/10) / 100)
+        calculatedStopLoss = price + adjustment;
+        console.log(`[${exchange.name}] SL Calculation (SELL): ${price} + (${price} * (${stopLossNum}/10) / 100) = ${calculatedStopLoss.toFixed(2)}`);
+      } else {
+        // For BUY: SL = price - (price * (STOP_LOSS/10) / 100)
+        calculatedStopLoss = price - adjustment;
+        console.log(`[${exchange.name}] SL Calculation (BUY): ${price} - (${price} * (${stopLossNum}/10) / 100) = ${calculatedStopLoss.toFixed(2)}`);
+      }
+      
+      // Validate SL based on side
+      if (isSell && calculatedStopLoss <= price) {
+        console.log(`[${exchange.name}] ❌ ERROR: For SELL, calculated SL (${calculatedStopLoss.toFixed(2)}) should be GREATER than price (${price})!`);
+        calculatedStopLoss = null;
+      } else if (!isSell && calculatedStopLoss >= price) {
+        console.log(`[${exchange.name}] ❌ ERROR: For BUY, calculated SL (${calculatedStopLoss.toFixed(2)}) should be LESS than price (${price})!`);
+        calculatedStopLoss = null;
+      } else if (calculatedStopLoss <= 0) {
+        console.log(`[${exchange.name}] ❌ ERROR: Calculated SL (${calculatedStopLoss.toFixed(2)}) is negative or zero!`);
+        calculatedStopLoss = null;
+      } else {
+        console.log(`[${exchange.name}] ✅ SL calculation validated for ${side.toUpperCase()}`);
+      }
+    }
+  }
+  
+  if (!calculatedTakeProfit && !calculatedStopLoss) {
+    console.log(`[${exchange.name}] ⚠️  Could not calculate TP/SL values, skipping`);
+    return { success: false, error: 'Could not calculate TP/SL values' };
+  }
+  
+  // Step 1: Find and check if "Take profit / Stop loss" checkbox is already checked
+  console.log(`[${exchange.name}] Looking for TP/SL checkbox...`);
+  
+  // Find checkbox using Puppeteer element handles
+  let checkboxElement = null;
+  let isChecked = false;
+  
+  // Method 1: Find via labels
+  const labels = await page.$$('label');
+  for (const label of labels) {
+    const labelText = await page.evaluate((el) => el.textContent?.trim().toLowerCase() || '', label);
+    if (labelText.includes('take profit') && labelText.includes('stop loss')) {
+      // Try to find checkbox in label
+      checkboxElement = await label.$('input[type="checkbox"]');
+      if (checkboxElement) {
+        isChecked = await page.evaluate((el) => el.checked, checkboxElement);
+        break;
+      }
+      // Try to find by 'for' attribute
+      const labelFor = await page.evaluate((el) => el.getAttribute('for'), label);
+      if (labelFor) {
+        checkboxElement = await page.$(`#${labelFor}[type="checkbox"]`);
+        if (checkboxElement) {
+          isChecked = await page.evaluate((el) => el.checked, checkboxElement);
+          break;
+        }
+      }
+    }
+  }
+  
+  // Method 2: Fallback - find all checkboxes and check parent text
+  if (!checkboxElement) {
+    const allCheckboxes = await page.$$('input[type="checkbox"]');
+    for (const checkbox of allCheckboxes) {
+      const isVisible = await checkbox.evaluate((el) => {
+        return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+      });
+      
+      if (!isVisible) continue;
+      
+      // Check parent elements for text
+      const hasTpSlText = await checkbox.evaluate((el) => {
+        let parent = el.parentElement;
+        for (let i = 0; i < 5 && parent; i++) {
+          const parentText = parent.textContent?.toLowerCase() || '';
+          if (parentText.includes('take profit') && parentText.includes('stop loss')) {
+            return true;
+          }
+          parent = parent.parentElement;
+        }
+        return false;
+      });
+      
+      if (hasTpSlText) {
+        checkboxElement = checkbox;
+        isChecked = await page.evaluate((el) => el.checked, checkboxElement);
+        break;
+      }
+    }
+  }
+  
+  if (checkboxElement) {
+    if (isChecked) {
+      console.log(`[${exchange.name}] ✅ TP/SL checkbox is already checked, skipping click`);
+      await delay(500); // Small delay to ensure inputs are visible
+    } else {
+      console.log(`[${exchange.name}] TP/SL checkbox is not checked, clicking it...`);
+      // Click using Puppeteer's click method for reliability
+      await checkboxElement.click();
+      await delay(1000); // Wait for inputs to appear after checkbox is clicked
+      console.log(`[${exchange.name}] ✅ TP/SL checkbox clicked successfully`);
+    }
+  } else {
+    console.log(`[${exchange.name}] ⚠️  Could not find TP/SL checkbox, continuing anyway...`);
+    // Continue anyway - might not be critical
+  }
+  
+  // Track the last filled input element for Enter key press
+  let lastFilledInput = null;
+  
+  // Step 2: Find and fill TP Price input
+  if (calculatedTakeProfit) {
+    console.log(`[${exchange.name}] Looking for TP Price input...`);
+    
+    // Method 1: Find input near "TP Price" text label
+    let tpInputElement = await page.evaluateHandle(() => {
+      // Find all text nodes or elements containing "TP Price"
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null);
+      let node;
+      while (node = walker.nextNode()) {
+        const text = node.textContent?.trim().toLowerCase() || '';
+        if (text.includes('tp price') || (text.includes('tp') && text.includes('price'))) {
+          // Found "TP Price" text, now find nearby input
+          let parent = node.parentElement;
+          for (let i = 0; i < 10 && parent; i++) {
+            // Look for input in this container
+            const inputs = parent.querySelectorAll('input[type="text"], input[type="number"], input:not([type="hidden"])');
+            for (const input of inputs) {
+              const isVisible = input.offsetParent !== null && !input.disabled && !input.readOnly;
+              if (isVisible) {
+                return input;
+              }
+            }
+            parent = parent.parentElement;
+          }
+        }
+      }
+      return null;
+    });
+    
+    if (tpInputElement && tpInputElement.asElement()) {
+      tpInputElement = tpInputElement.asElement();
+    } else {
+      tpInputElement = null;
+    }
+    
+    // Method 2: Fallback - Find TP Price input using page.$$ with improved search
+    if (!tpInputElement) {
+      console.log(`[${exchange.name}] Method 1 failed, trying Method 2...`);
+      const allInputs = await page.$$('input[type="text"], input[type="number"], input:not([type="hidden"])');
+      
+      for (const input of allInputs) {
+        const isVisible = await input.evaluate(el => {
+          return el.offsetParent !== null && !el.disabled && !el.readOnly;
+        });
+        if (!isVisible) continue;
+        
+        const inputInfo = await page.evaluate((el) => {
+          const placeholder = (el.placeholder || '').toLowerCase();
+          const name = (el.name || '').toLowerCase();
+          const id = (el.id || '').toLowerCase();
+          
+          // Check for associated label
+          let labelText = '';
+          const labels = document.querySelectorAll('label');
+          for (const label of labels) {
+            if (label.control === el || label.getAttribute('for') === el.id) {
+              labelText = (label.textContent || '').toLowerCase();
+              break;
+            }
+          }
+          
+          // Check parent and sibling text more thoroughly
+          let parent = el.parentElement;
+          let parentText = '';
+          let siblingText = '';
+          for (let i = 0; i < 5 && parent; i++) {
+            if (parent.textContent) {
+              parentText = parent.textContent.toLowerCase();
+              // Check siblings
+              if (parent.previousElementSibling) {
+                siblingText = (parent.previousElementSibling.textContent || '').toLowerCase();
+              }
+              if (parent.nextElementSibling) {
+                siblingText += ' ' + (parent.nextElementSibling.textContent || '').toLowerCase();
+              }
+              break;
+            }
+            parent = parent.parentElement;
+          }
+          
+          return { placeholder, name, id, labelText, parentText, siblingText };
+        }, input);
+        
+        // More flexible matching
+        if (inputInfo.placeholder.includes('tp') || inputInfo.placeholder.includes('take profit') ||
+            inputInfo.name.includes('tp') || inputInfo.name.includes('take profit') ||
+            inputInfo.id.includes('tp') || inputInfo.id.includes('take profit') ||
+            inputInfo.labelText.includes('tp') || inputInfo.labelText.includes('take profit') ||
+            inputInfo.parentText.includes('tp price') || inputInfo.parentText.includes('take profit') ||
+            inputInfo.siblingText.includes('tp price') || inputInfo.siblingText.includes('take profit')) {
+          tpInputElement = input;
+          console.log(`[${exchange.name}] Found TP input via Method 2`);
+          break;
+        }
+      }
+    }
+    
+    if (tpInputElement) {
+      const tpValueStr = calculatedTakeProfit.toFixed(2);
+      console.log(`[${exchange.name}] ✅ Found TP Price input, filling calculated value: ${tpValueStr}`);
+      
+      // Method 1: Clear first, then set value
+      await tpInputElement.focus();
+      await delay(200);
+      
+      // Clear existing value
+      await page.evaluate((el) => {
+        el.value = '';
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      }, tpInputElement);
+      await delay(200);
+      
+      // Check input attributes to understand expected format
+      const inputInfo = await page.evaluate((el) => {
+        return {
+          type: el.type || '',
+          step: el.step || '',
+          min: el.min || '',
+          max: el.max || '',
+          pattern: el.pattern || '',
+          inputMode: el.inputMode || '',
+          acceptsDecimals: el.step === 'any' || el.step === '' || (el.step && parseFloat(el.step) < 1)
+        };
+      }, tpInputElement);
+      
+      console.log(`[${exchange.name}] TP Input info: type="${inputInfo.type}", step="${inputInfo.step}", acceptsDecimals=${inputInfo.acceptsDecimals}`);
+      
+      const valueNum = parseFloat(tpValueStr);
+      // Use Math.ceil() for TP to ensure it's at least the calculated value (round up)
+      const intValue = Math.ceil(valueNum).toString();
+      
+      // Based on logs, the UI treats decimal point as thousands separator
+      // So we'll use integer values for TP/SL inputs
+      console.log(`[${exchange.name}] Using integer value (rounded up): ${intValue} (original: ${tpValueStr})`);
+      
+      // Set value as integer using JavaScript
+      await page.evaluate((el, value) => {
+        el.value = value;
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        el.dispatchEvent(new Event('blur', { bubbles: true }));
+      }, tpInputElement, intValue);
+      
+      await delay(500); // Wait for UI to process
+      
+      // Verify the value was set correctly
+      const actualValue = await page.evaluate((el) => el.value || '', tpInputElement);
+      // Remove thousands separators (commas) and spaces for comparison
+      const actualValueNum = parseFloat(actualValue.replace(/,/g, '').replace(/ /g, ''));
+      const expectedValueNum = parseInt(intValue, 10);
+      
+      console.log(`[${exchange.name}] After setting: actualValue="${actualValue}", actualValueNum=${actualValueNum}, expectedValueNum=${expectedValueNum}`);
+      
+      if (actualValue && actualValue.trim() !== '' && !isNaN(actualValueNum) && actualValueNum === expectedValueNum) {
+        console.log(`[${exchange.name}] ✅ TP Price filled successfully. Expected: ${intValue}, Actual: ${actualValue}`);
+      } else {
+        console.log(`[${exchange.name}] ⚠️  TP Price value mismatch. Expected: ${intValue} (${expectedValueNum}), Actual: "${actualValue}" (${actualValueNum})`);
+        console.log(`[${exchange.name}] ⚠️  Retrying by typing the value...`);
+        
+        // Retry by typing
+        await tpInputElement.focus();
+        await delay(200);
+        await page.evaluate((el) => {
+          el.value = '';
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+        }, tpInputElement);
+        await delay(100);
+        
+        await tpInputElement.type(intValue, { delay: 30 });
+        await delay(500);
+        
+        await page.evaluate((el) => {
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+          el.dispatchEvent(new Event('blur', { bubbles: true }));
+        }, tpInputElement);
+        await delay(300);
+        
+        const finalValue = await page.evaluate((el) => el.value || '', tpInputElement);
+        const finalValueNum = parseFloat(finalValue.replace(/,/g, '').replace(/ /g, ''));
+        if (finalValueNum === expectedValueNum) {
+          console.log(`[${exchange.name}] ✅ TP Price filled successfully after retry. Expected: ${intValue}, Actual: ${finalValue}`);
+        } else {
+          console.log(`[${exchange.name}] ⚠️  TP Price still incorrect after retry. Expected: ${intValue}, Actual: ${finalValue}`);
+        }
+      }
+      // Track TP input as last filled
+      lastFilledInput = tpInputElement;
+    } else {
+      console.log(`[${exchange.name}] ⚠️  Could not find TP Price input`);
+      // Debug: Log all visible inputs
+      const allInputs = await page.$$('input[type="text"], input[type="number"], input:not([type="hidden"])');
+      console.log(`[${exchange.name}] Debug: Found ${allInputs.length} total inputs on page`);
+      for (let i = 0; i < Math.min(allInputs.length, 10); i++) {
+        const inputInfo = await page.evaluate((el) => {
+          return {
+            placeholder: el.placeholder || '',
+            name: el.name || '',
+            id: el.id || '',
+            value: el.value || '',
+            visible: el.offsetParent !== null
+          };
+        }, allInputs[i]);
+        console.log(`[${exchange.name}]   Input ${i}: placeholder="${inputInfo.placeholder}", name="${inputInfo.name}", id="${inputInfo.id}", value="${inputInfo.value}", visible=${inputInfo.visible}`);
+      }
+    }
+  }
+  
+  // Step 3: Find and fill SL Price input
+  if (calculatedStopLoss) {
+    console.log(`[${exchange.name}] Looking for SL Price input...`);
+    
+    // Method 1: Find input near "SL Price" text label
+    let slInputElement = await page.evaluateHandle(() => {
+      // Find all text nodes or elements containing "SL Price"
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null);
+      let node;
+      while (node = walker.nextNode()) {
+        const text = node.textContent?.trim().toLowerCase() || '';
+        if (text.includes('sl price') || (text.includes('sl') && text.includes('price') && !text.includes('tp'))) {
+          // Found "SL Price" text, now find nearby input
+          let parent = node.parentElement;
+          for (let i = 0; i < 10 && parent; i++) {
+            // Look for input in this container
+            const inputs = parent.querySelectorAll('input[type="text"], input[type="number"], input:not([type="hidden"])');
+            for (const input of inputs) {
+              const isVisible = input.offsetParent !== null && !input.disabled && !input.readOnly;
+              if (isVisible) {
+                return input;
+              }
+            }
+            parent = parent.parentElement;
+          }
+        }
+      }
+      return null;
+    });
+    
+    if (slInputElement && slInputElement.asElement()) {
+      slInputElement = slInputElement.asElement();
+    } else {
+      slInputElement = null;
+    }
+    
+    // Method 2: Fallback - Find SL Price input using page.$$ with improved search
+    if (!slInputElement) {
+      console.log(`[${exchange.name}] Method 1 failed, trying Method 2...`);
+      const allInputs = await page.$$('input[type="text"], input[type="number"], input:not([type="hidden"])');
+      
+      for (const input of allInputs) {
+        const isVisible = await input.evaluate(el => {
+          return el.offsetParent !== null && !el.disabled && !el.readOnly;
+        });
+        if (!isVisible) continue;
+        
+        const inputInfo = await page.evaluate((el) => {
+          const placeholder = (el.placeholder || '').toLowerCase();
+          const name = (el.name || '').toLowerCase();
+          const id = (el.id || '').toLowerCase();
+          
+          // Check for associated label
+          let labelText = '';
+          const labels = document.querySelectorAll('label');
+          for (const label of labels) {
+            if (label.control === el || label.getAttribute('for') === el.id) {
+              labelText = (label.textContent || '').toLowerCase();
+              break;
+            }
+          }
+          
+          // Check parent and sibling text more thoroughly
+          let parent = el.parentElement;
+          let parentText = '';
+          let siblingText = '';
+          for (let i = 0; i < 5 && parent; i++) {
+            if (parent.textContent) {
+              parentText = parent.textContent.toLowerCase();
+              // Check siblings
+              if (parent.previousElementSibling) {
+                siblingText = (parent.previousElementSibling.textContent || '').toLowerCase();
+              }
+              if (parent.nextElementSibling) {
+                siblingText += ' ' + (parent.nextElementSibling.textContent || '').toLowerCase();
+              }
+              break;
+            }
+            parent = parent.parentElement;
+          }
+          
+          return { placeholder, name, id, labelText, parentText, siblingText };
+        }, input);
+        
+        // More flexible matching
+        if (inputInfo.placeholder.includes('sl') || inputInfo.placeholder.includes('stop loss') ||
+            inputInfo.name.includes('sl') || inputInfo.name.includes('stop loss') ||
+            inputInfo.id.includes('sl') || inputInfo.id.includes('stop loss') ||
+            inputInfo.labelText.includes('sl') || inputInfo.labelText.includes('stop loss') ||
+            inputInfo.parentText.includes('sl price') || inputInfo.parentText.includes('stop loss') ||
+            inputInfo.siblingText.includes('sl price') || inputInfo.siblingText.includes('stop loss')) {
+          slInputElement = input;
+          console.log(`[${exchange.name}] Found SL input via Method 2`);
+          break;
+        }
+      }
+    }
+    
+    if (slInputElement) {
+      const slValueStr = calculatedStopLoss.toFixed(2);
+      console.log(`[${exchange.name}] ✅ Found SL Price input, filling calculated value: ${slValueStr}`);
+      
+      // Method 1: Clear first, then set value
+      await slInputElement.focus();
+      await delay(200);
+      
+      // Clear existing value
+      await page.evaluate((el) => {
+        el.value = '';
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      }, slInputElement);
+      await delay(200);
+      
+      // Check input attributes to understand expected format
+      const inputInfo = await page.evaluate((el) => {
+        return {
+          type: el.type || '',
+          step: el.step || '',
+          min: el.min || '',
+          max: el.max || '',
+          pattern: el.pattern || '',
+          inputMode: el.inputMode || '',
+          acceptsDecimals: el.step === 'any' || el.step === '' || (el.step && parseFloat(el.step) < 1)
+        };
+      }, slInputElement);
+      
+      console.log(`[${exchange.name}] SL Input info: type="${inputInfo.type}", step="${inputInfo.step}", acceptsDecimals=${inputInfo.acceptsDecimals}`);
+      
+      const valueNum = parseFloat(slValueStr);
+      // Use Math.floor() for SL to ensure it's at most the calculated value (round down)
+      const intValue = Math.floor(valueNum).toString();
+      
+      // Based on logs, the UI treats decimal point as thousands separator
+      // So we'll use integer values for TP/SL inputs
+      console.log(`[${exchange.name}] Using integer value (rounded down): ${intValue} (original: ${slValueStr})`);
+      
+      // Set value as integer using JavaScript
+      await page.evaluate((el, value) => {
+        el.value = value;
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        el.dispatchEvent(new Event('blur', { bubbles: true }));
+      }, slInputElement, intValue);
+      
+      await delay(500); // Wait for UI to process
+      
+      // Verify the value was set correctly
+      const actualValue = await page.evaluate((el) => el.value || '', slInputElement);
+      // Remove thousands separators (commas) and spaces for comparison
+      const actualValueNum = parseFloat(actualValue.replace(/,/g, '').replace(/ /g, ''));
+      const expectedValueNum = parseInt(intValue, 10);
+      
+      console.log(`[${exchange.name}] After setting: actualValue="${actualValue}", actualValueNum=${actualValueNum}, expectedValueNum=${expectedValueNum}`);
+      
+      if (actualValue && actualValue.trim() !== '' && !isNaN(actualValueNum) && actualValueNum === expectedValueNum) {
+        console.log(`[${exchange.name}] ✅ SL Price filled successfully. Expected: ${intValue}, Actual: ${actualValue}`);
+      } else {
+        console.log(`[${exchange.name}] ⚠️  SL Price value mismatch. Expected: ${intValue} (${expectedValueNum}), Actual: "${actualValue}" (${actualValueNum})`);
+        console.log(`[${exchange.name}] ⚠️  Retrying by typing the value...`);
+        
+        // Retry by typing
+        await slInputElement.focus();
+        await delay(200);
+        await page.evaluate((el) => {
+          el.value = '';
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+        }, slInputElement);
+        await delay(100);
+        
+        await slInputElement.type(intValue, { delay: 30 });
+        await delay(500);
+        
+        await page.evaluate((el) => {
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+          el.dispatchEvent(new Event('blur', { bubbles: true }));
+        }, slInputElement);
+        await delay(300);
+        
+        const finalValue = await page.evaluate((el) => el.value || '', slInputElement);
+        const finalValueNum = parseFloat(finalValue.replace(/,/g, '').replace(/ /g, ''));
+        if (finalValueNum === expectedValueNum) {
+          console.log(`[${exchange.name}] ✅ SL Price filled successfully after retry. Expected: ${intValue}, Actual: ${finalValue}`);
+        } else {
+          console.log(`[${exchange.name}] ⚠️  SL Price still incorrect after retry. Expected: ${intValue}, Actual: ${finalValue}`);
+        }
+      }
+      // Track SL input as last filled (will override TP if both are filled)
+      lastFilledInput = slInputElement;
+    } else {
+      console.log(`[${exchange.name}] ⚠️  Could not find SL Price input`);
+      // Debug: Log all visible inputs
+      const allInputs = await page.$$('input[type="text"], input[type="number"], input:not([type="hidden"])');
+      console.log(`[${exchange.name}] Debug: Found ${allInputs.length} total inputs on page`);
+      for (let i = 0; i < Math.min(allInputs.length, 10); i++) {
+        const inputInfo = await page.evaluate((el) => {
+          return {
+            placeholder: el.placeholder || '',
+            name: el.name || '',
+            id: el.id || '',
+            value: el.value || '',
+            visible: el.offsetParent !== null
+          };
+        }, allInputs[i]);
+        console.log(`[${exchange.name}]   Input ${i}: placeholder="${inputInfo.placeholder}", name="${inputInfo.name}", id="${inputInfo.id}", value="${inputInfo.value}", visible=${inputInfo.visible}`);
+      }
+    }
+  }
+  
+  console.log(`[${exchange.name}] ✅ TP/SL handling completed`);
+  
+  // Wait a bit after filling TP/SL inputs, then press Enter
+  console.log(`[${exchange.name}] Waiting 1 second after TP/SL inputs are filled...`);
+  await delay(1000);
+  
+  // Focus on the last filled input (SL if both filled, TP if only TP filled) before pressing Enter
+  if (lastFilledInput) {
+    console.log(`[${exchange.name}] Focusing on last filled TP/SL input before pressing Enter...`);
+    await lastFilledInput.focus();
+    await delay(200);
+  }
+  
+  // Press Enter to confirm/apply the TP/SL values
+  console.log(`[${exchange.name}] Pressing Enter to confirm TP/SL values...`);
+  await page.keyboard.press('Enter');
+  await delay(500);
+  
+  return { success: true };
+}
+
+/**
  * Execute trade for Extended Exchange
  */
 export async function executeTradeExtended(
@@ -450,9 +1072,18 @@ export async function executeTradeExtended(
 
   await delay(500);
 
-  // NOTE: Extended Exchange does NOT have TP/SL handling
+  // 4. Handle TP/SL for Extended Exchange (pass price and side for calculation)
+  // Only calculate TP/SL for limit orders where price is set
+  if (orderType === "limit" && price) {
+    await handleTpSlExtended(page, exchange, price, side);
+    // Wait after TP/SL is set to allow UI to process
+    console.log(`[${exchange.name}] Waiting 2 seconds after TP/SL setup before proceeding to confirm...`);
+    await delay(2000);
+  } else {
+    console.log(`[${exchange.name}] Skipping TP/SL - only available for limit orders with price`);
+  }
 
-  // 4. Find and click Confirm button
+  // 5. Find and click Confirm button
   const { confirmBtn, confirmText } = await findConfirmButtonExtended(page, side, exchange);
 
   if (!confirmBtn) {
