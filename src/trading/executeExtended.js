@@ -682,17 +682,41 @@ export async function handleTpSlExtended(page, exchange, price = null, side = 'b
       const tpValueStr = calculatedTakeProfit.toFixed(2);
       console.log(`[${exchange.name}] ✅ Found TP Price input, filling calculated value: ${tpValueStr}`);
       
-      // Method 1: Clear first, then set value
+      // Clear the input first using multiple methods to ensure it's empty
       await tpInputElement.focus();
       await delay(200);
       
-      // Clear existing value
+      // Method 1: Triple-click to select all
+      await tpInputElement.click({ clickCount: 3 });
+      await delay(100);
+      
+      // Method 2: Ctrl+A and Delete
+      await page.keyboard.down('Control');
+      await page.keyboard.press('a');
+      await page.keyboard.up('Control');
+      await delay(100);
+      await page.keyboard.press('Delete');
+      await delay(100);
+      
+      // Method 3: JavaScript clear
       await page.evaluate((el) => {
         el.value = '';
         el.dispatchEvent(new Event('input', { bubbles: true }));
         el.dispatchEvent(new Event('change', { bubbles: true }));
       }, tpInputElement);
       await delay(200);
+      
+      // Verify it's cleared
+      const clearedValue = await page.evaluate((el) => el.value || '', tpInputElement);
+      if (clearedValue && clearedValue.trim() !== '') {
+        // More aggressive clear
+        await page.evaluate((el) => {
+          el.value = '';
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+        }, tpInputElement);
+        await delay(200);
+      }
       
       // Check input attributes to understand expected format
       const inputInfo = await page.evaluate((el) => {
@@ -717,7 +741,9 @@ export async function handleTpSlExtended(page, exchange, price = null, side = 'b
       // So we'll use integer values for TP/SL inputs
       console.log(`[${exchange.name}] Using integer value (rounded up): ${intValue} (original: ${tpValueStr})`);
       
-      // Set value as integer using JavaScript
+      // Now set the new value
+      await tpInputElement.focus();
+      await delay(200);
       await page.evaluate((el, value) => {
         el.value = value;
         el.dispatchEvent(new Event('input', { bubbles: true }));
@@ -742,33 +768,46 @@ export async function handleTpSlExtended(page, exchange, price = null, side = 'b
         console.log(`[${exchange.name}] ⚠️  Retrying by typing the value...`);
         
         try {
-          // Retry by typing with timeout protection
+          // Retry with aggressive clearing
           await tpInputElement.focus();
           await delay(200);
           
-          // Clear using JavaScript (faster and more reliable)
+          // Aggressive clear: Triple-click + Ctrl+A + Delete
+          await tpInputElement.click({ clickCount: 3 });
+          await delay(100);
+          await page.keyboard.down('Control');
+          await page.keyboard.press('a');
+          await page.keyboard.up('Control');
+          await delay(100);
+          await page.keyboard.press('Delete');
+          await delay(100);
+          await page.keyboard.press('Backspace');
+          await delay(100);
+          
+          // JavaScript clear
           await page.evaluate((el) => {
             el.value = '';
             el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
           }, tpInputElement);
-          await delay(100);
+          await delay(200);
           
-          // Try typing with timeout
-          const typePromise = tpInputElement.type(intValue, { delay: 30 });
-          const timeoutPromise = new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('Type timeout')), 5000)
-          );
-          
-          await Promise.race([typePromise, timeoutPromise]).catch((error) => {
-            console.log(`[${exchange.name}] ⚠️  Type operation timed out or failed, using direct value assignment instead`);
-            // Fallback: Direct value assignment
-            return page.evaluate((el, value) => {
-              el.value = value;
+          // Verify cleared
+          const clearedCheck = await page.evaluate((el) => el.value || '', tpInputElement);
+          if (clearedCheck && clearedCheck.trim() !== '') {
+            // Still not cleared, try one more time
+            await page.evaluate((el) => {
+              el.value = '';
               el.dispatchEvent(new Event('input', { bubbles: true }));
               el.dispatchEvent(new Event('change', { bubbles: true }));
-            }, tpInputElement, intValue);
-          });
+            }, tpInputElement);
+            await delay(200);
+          }
           
+          // Now type the value
+          await tpInputElement.focus();
+          await delay(200);
+          await tpInputElement.type(intValue, { delay: 50 });
           await delay(500);
           
           await page.evaluate((el) => {
@@ -784,8 +823,14 @@ export async function handleTpSlExtended(page, exchange, price = null, side = 'b
             console.log(`[${exchange.name}] ✅ TP Price filled successfully after retry. Expected: ${intValue}, Actual: ${finalValue}`);
           } else {
             console.log(`[${exchange.name}] ⚠️  TP Price still incorrect after retry. Expected: ${intValue}, Actual: ${finalValue}`);
-            // Last resort: Direct assignment
+            // Last resort: Direct assignment after one more clear
             console.log(`[${exchange.name}] Attempting direct value assignment as last resort...`);
+            await page.evaluate((el) => {
+              el.value = '';
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+            }, tpInputElement);
+            await delay(200);
             await page.evaluate((el, value) => {
               el.value = value;
               el.dispatchEvent(new Event('input', { bubbles: true }));
@@ -958,7 +1003,45 @@ export async function handleTpSlExtended(page, exchange, price = null, side = 'b
       // So we'll use integer values for TP/SL inputs
       console.log(`[${exchange.name}] Using integer value (rounded down): ${intValue} (original: ${slValueStr})`);
       
-      // Set value as integer using JavaScript
+      // Clear the input first using multiple methods to ensure it's empty
+      await slInputElement.focus();
+      await delay(200);
+      
+      // Method 1: Triple-click to select all
+      await slInputElement.click({ clickCount: 3 });
+      await delay(100);
+      
+      // Method 2: Ctrl+A and Delete
+      await page.keyboard.down('Control');
+      await page.keyboard.press('a');
+      await page.keyboard.up('Control');
+      await delay(100);
+      await page.keyboard.press('Delete');
+      await delay(100);
+      
+      // Method 3: JavaScript clear
+      await page.evaluate((el) => {
+        el.value = '';
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      }, slInputElement);
+      await delay(200);
+      
+      // Verify it's cleared
+      const clearedValue = await page.evaluate((el) => el.value || '', slInputElement);
+      if (clearedValue && clearedValue.trim() !== '') {
+        // More aggressive clear
+        await page.evaluate((el) => {
+          el.value = '';
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+        }, slInputElement);
+        await delay(200);
+      }
+      
+      // Now set the new value
+      await slInputElement.focus();
+      await delay(200);
       await page.evaluate((el, value) => {
         el.value = value;
         el.dispatchEvent(new Event('input', { bubbles: true }));
@@ -983,33 +1066,46 @@ export async function handleTpSlExtended(page, exchange, price = null, side = 'b
         console.log(`[${exchange.name}] ⚠️  Retrying by typing the value...`);
         
         try {
-          // Retry by typing with timeout protection
+          // Retry with aggressive clearing
           await slInputElement.focus();
           await delay(200);
           
-          // Clear using JavaScript (faster and more reliable)
+          // Aggressive clear: Triple-click + Ctrl+A + Delete
+          await slInputElement.click({ clickCount: 3 });
+          await delay(100);
+          await page.keyboard.down('Control');
+          await page.keyboard.press('a');
+          await page.keyboard.up('Control');
+          await delay(100);
+          await page.keyboard.press('Delete');
+          await delay(100);
+          await page.keyboard.press('Backspace');
+          await delay(100);
+          
+          // JavaScript clear
           await page.evaluate((el) => {
             el.value = '';
             el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
           }, slInputElement);
-          await delay(100);
+          await delay(200);
           
-          // Try typing with timeout
-          const typePromise = slInputElement.type(intValue, { delay: 30 });
-          const timeoutPromise = new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('Type timeout')), 5000)
-          );
-          
-          await Promise.race([typePromise, timeoutPromise]).catch((error) => {
-            console.log(`[${exchange.name}] ⚠️  Type operation timed out or failed, using direct value assignment instead`);
-            // Fallback: Direct value assignment
-            return page.evaluate((el, value) => {
-              el.value = value;
+          // Verify cleared
+          const clearedCheck = await page.evaluate((el) => el.value || '', slInputElement);
+          if (clearedCheck && clearedCheck.trim() !== '') {
+            // Still not cleared, try one more time
+            await page.evaluate((el) => {
+              el.value = '';
               el.dispatchEvent(new Event('input', { bubbles: true }));
               el.dispatchEvent(new Event('change', { bubbles: true }));
-            }, slInputElement, intValue);
-          });
+            }, slInputElement);
+            await delay(200);
+          }
           
+          // Now type the value
+          await slInputElement.focus();
+          await delay(200);
+          await slInputElement.type(intValue, { delay: 50 });
           await delay(500);
           
           await page.evaluate((el) => {
@@ -1025,8 +1121,14 @@ export async function handleTpSlExtended(page, exchange, price = null, side = 'b
             console.log(`[${exchange.name}] ✅ SL Price filled successfully after retry. Expected: ${intValue}, Actual: ${finalValue}`);
           } else {
             console.log(`[${exchange.name}] ⚠️  SL Price still incorrect after retry. Expected: ${intValue}, Actual: ${finalValue}`);
-            // Last resort: Direct assignment
+            // Last resort: Direct assignment after one more clear
             console.log(`[${exchange.name}] Attempting direct value assignment as last resort...`);
+            await page.evaluate((el) => {
+              el.value = '';
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+            }, slInputElement);
+            await delay(200);
             await page.evaluate((el, value) => {
               el.value = value;
               el.dispatchEvent(new Event('input', { bubbles: true }));

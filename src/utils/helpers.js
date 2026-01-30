@@ -25,9 +25,13 @@ async function chooseTradingMode() {
     console.log(`1. Buy from Paradex, Sell from Paradex (Both accounts on Paradex)`);
     console.log(`2. Buy from Paradex, Sell from Extended Exchange`);
     console.log(`3. Multi-Exchange Mode (Kraken, GRVT, Extended)`);
+    console.log(`\n--- Option 3 Testing Modes ---`);
+    console.log(`3a. Test Kraken Exchange Only (BUY + SELL)`);
+    console.log(`3b. Test GRVT Exchange Only (BUY + SELL)`);
+    console.log(`3c. Test Extended Exchange Only (BUY + SELL)`);
     console.log(`========================================\n`);
     
-    const answer = await prompt(`Enter option (1, 2, or 3): `);
+    const answer = await prompt(`Enter option (1, 2, 3, 3a, 3b, or 3c): `);
     const mode = answer.trim();
     
     if (mode === '1') {
@@ -53,8 +57,29 @@ async function chooseTradingMode() {
         description: 'Multi-Exchange Mode (Kraken, GRVT, Extended)',
         accountCount: 3
       };
+    } else if (mode === '3a') {
+      return {
+        mode: '3a',
+        testExchange: 'kraken',
+        description: 'Test Kraken Exchange Only (BUY + SELL)',
+        accountCount: 1
+      };
+    } else if (mode === '3b') {
+      return {
+        mode: '3b',
+        testExchange: 'grvt',
+        description: 'Test GRVT Exchange Only (BUY + SELL)',
+        accountCount: 1
+      };
+    } else if (mode === '3c') {
+      return {
+        mode: '3c',
+        testExchange: 'extended',
+        description: 'Test Extended Exchange Only (BUY + SELL)',
+        accountCount: 1
+      };
     } else {
-      console.log(`\n✗ Invalid option. Please enter 1, 2, or 3.`);
+      console.log(`\n✗ Invalid option. Please enter 1, 2, 3, 3a, 3b, or 3c.`);
       process.exit(1);
     }
   }

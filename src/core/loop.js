@@ -2,7 +2,7 @@ import dotenv from 'dotenv';
 import EXCHANGE_CONFIGS from '../config/exchanges.js';
 import { delay } from '../utils/helpers.js';
 import { closeAllPositions } from '../trading/positions.js';
-import { cancelAllOrders } from '../trading/orders.js';
+import { cancelAllOrders, cancelKrakenOrders } from '../trading/orders.js';
 import { setLeverage } from '../trading/leverage.js';
 import { clickOrdersTab } from '../ui/tabs.js';
 import { executeTrade } from '../trading/execute.js';
@@ -70,12 +70,56 @@ async function automatedTradingLoop(account1Result, account2Result) {
     const cleanupPromises = [];
     
     // Helper function to add cleanup for an account
-    const addCleanupForAccount = (page, email, exchangeName, exchangeConfig) => {
+    const addCleanupForAccount = (page, email, exchangeName, exchangeConfig, exchangeKey) => {
       if (exchangeName !== 'Extended Exchange') {
       cleanupPromises.push((async () => {
           console.log(`\n[${email}] Checking for open positions and orders...`);
           const closeResult = await closeAllPositions(page, 100, exchangeConfig);
-          const cancelResult = await cancelAllOrders(page);
+          
+          // Use Kraken-specific cancel function for Kraken
+          // Check both exchangeName and exchangeConfig.name to handle different naming
+          // Also check the exchange key (kraken) and URL patterns
+          const exchangeNameLower = (exchangeName || '').toLowerCase();
+          const exchangeConfigNameLower = (exchangeConfig?.name || '').toLowerCase();
+          const exchangeKeyLower = (exchangeKey || '').toLowerCase();
+          const urlPatternLower = (exchangeConfig?.urlPattern || '').toLowerCase();
+          
+          const isKraken = exchangeName === 'Kraken' || 
+                          exchangeConfig?.name === 'Kraken' || 
+                          exchangeNameLower === 'kraken' || 
+                          exchangeConfigNameLower === 'kraken' ||
+                          exchangeKeyLower === 'kraken' ||
+                          urlPatternLower.includes('kraken');
+          
+          // CRITICAL DEBUG: Print this BEFORE calling cancel function
+          // Use process.stdout.write to ensure it's printed immediately
+          const emailStr = email || 'UNKNOWN';
+          console.log(`\n═══════════════════════════════════════════════════════════`);
+          console.log(`[${emailStr}] 🔍 EXCHANGE ROUTING CHECK FOR ORDER CANCELLATION:`);
+          console.log(`  exchangeName: "${exchangeName || 'undefined'}"`);
+          console.log(`  exchangeConfig.name: "${exchangeConfig?.name || 'undefined'}"`);
+          console.log(`  exchangeKey: "${exchangeKey || 'undefined'}"`);
+          console.log(`  urlPattern: "${exchangeConfig?.urlPattern || 'undefined'}"`);
+          console.log(`  exchangeNameLower: "${exchangeNameLower}"`);
+          console.log(`  exchangeConfigNameLower: "${exchangeConfigNameLower}"`);
+          console.log(`  exchangeKeyLower: "${exchangeKeyLower}"`);
+          console.log(`  urlPatternLower: "${urlPatternLower}"`);
+          console.log(`  isKraken: ${isKraken}`);
+          console.log(`  → Will use: ${isKraken ? 'cancelKrakenOrders' : 'cancelAllOrders'}`);
+          console.log(`═══════════════════════════════════════════════════════════\n`);
+          // Force flush
+          if (process.stdout && typeof process.stdout.flush === 'function') {
+            process.stdout.flush();
+          }
+          
+          let cancelResult;
+          if (isKraken) {
+            console.log(`\n[${email}] ✅✅✅ CALLING cancelKrakenOrders (Kraken-specific function) ✅✅✅\n`);
+            cancelResult = await cancelKrakenOrders(page);
+          } else {
+            console.log(`\n[${email}] ⚠️⚠️⚠️  CALLING cancelAllOrders (generic function) ⚠️⚠️⚠️\n`);
+            cancelResult = await cancelAllOrders(page);
+          }
           return { email, close: closeResult, cancel: cancelResult };
       })());
     } else {
@@ -84,8 +128,8 @@ async function automatedTradingLoop(account1Result, account2Result) {
     };
     
     // Cleanup for both accounts (they are different accounts, so both need cleanup)
-    addCleanupForAccount(page1, email1, exchange1Name, exchange1);
-    addCleanupForAccount(page2, email2, exchange2Name, exchange2);
+    addCleanupForAccount(page1, email1, exchange1Name, exchange1, exchange1Key);
+    addCleanupForAccount(page2, email2, exchange2Name, exchange2, exchange2Key);
   
     if (cleanupPromises.length > 0) {
       const cleanupResults = await Promise.all(cleanupPromises);
@@ -650,7 +694,14 @@ async function automatedTradingLoop3Exchanges(krakenAccount, grvtAccount, extend
       cleanupPromises.push((async () => {
         console.log(`\n[${email}] Checking for open positions and orders...`);
         const closeResult = await closeAllPositions(page, 100, exchangeConfig);
-        const cancelResult = await cancelAllOrders(page);
+        // Use Kraken-specific cancel function for Kraken
+        // Check both exchangeName and exchangeConfig.name to handle different naming
+        const isKraken = exchangeName === 'Kraken' || exchangeConfig?.name === 'Kraken' || 
+                        exchangeName?.toLowerCase() === 'kraken' || 
+                        exchangeConfig?.name?.toLowerCase() === 'kraken';
+        const cancelResult = isKraken 
+          ? await cancelKrakenOrders(page)
+          : await cancelAllOrders(page);
         return { email, close: closeResult, cancel: cancelResult };
       })());
     } else {
@@ -824,9 +875,22 @@ async function automatedTradingLoop3Exchanges(krakenAccount, grvtAccount, extend
         // Cancel orders and close positions before new trades
         console.log(`\n[CYCLE ${cycleCount}] Canceling orders and closing positions...`);
         
+        // Use Kraken-specific cancel function for Kraken exchange
+        // Check exchange name from both exchange object and name property
+        const buyIsKraken = buyAccount.exchange?.name === 'Kraken' || 
+                           buyAccount.exchange?.name?.toLowerCase() === 'kraken' ||
+                           buyAccount.exchange === 'Kraken';
+        const sellIsKraken = sellAccount.exchange?.name === 'Kraken' || 
+                            sellAccount.exchange?.name?.toLowerCase() === 'kraken' ||
+                            sellAccount.exchange === 'Kraken';
+        
         const cancelPromises = [
-          cancelAllOrders(buyAccount.page),
-          cancelAllOrders(sellAccount.page)
+          buyIsKraken 
+            ? cancelKrakenOrders(buyAccount.page)
+            : cancelAllOrders(buyAccount.page),
+          sellIsKraken 
+            ? cancelKrakenOrders(sellAccount.page)
+            : cancelAllOrders(sellAccount.page)
         ];
         
         const cancelResults = await Promise.all(cancelPromises);
@@ -955,4 +1019,189 @@ async function automatedTradingLoop3Exchanges(krakenAccount, grvtAccount, extend
   console.log(`\n[Trading Loop] Exited after ${cycleCount} cycles`);
 }
 
-export { automatedTradingLoop, automatedTradingLoop3Exchanges, closeAllPositionsOnShutdown };
+/**
+ * Test single exchange trading - tests both BUY and SELL sides
+ * Useful for debugging individual exchanges before running all 3 together
+ * @param {Object} accountResult - { page, email, exchange, exchangeConfig }
+ * @param {string} exchangeName - Display name for the exchange
+ */
+async function testSingleExchangeTrading(accountResult, exchangeName) {
+  const { page, email, exchange: exchangeNameFromResult, exchangeConfig } = accountResult;
+  
+  console.log(`\n========================================`);
+  console.log(`Testing ${exchangeName} Exchange`);
+  console.log(`Account: ${email}`);
+  console.log(`========================================\n`);
+  
+  // Get exchange config
+  const exchange = exchangeConfig || EXCHANGE_CONFIGS[exchangeName.toLowerCase()];
+  
+  if (!exchange) {
+    console.log(`❌ Error: Could not find exchange config for ${exchangeName}`);
+    return;
+  }
+  
+  console.log(`\n🧹 Step 1: Cleaning up existing positions and orders...`);
+  
+  // Cleanup
+  if (exchange.name !== 'Extended Exchange') {
+    const closeResult = await closeAllPositions(page, 100, exchange);
+    
+    // Use Kraken-specific cancel function for Kraken
+    // Check both exchangeName and exchange.name to handle different naming
+    const exchangeNameLower = (exchangeName || '').toLowerCase();
+    const exchangeNameFromResultLower = (exchangeNameFromResult || '').toLowerCase();
+    const exchangeNameConfigLower = (exchange?.name || '').toLowerCase();
+    const urlPatternLower = (exchange?.urlPattern || '').toLowerCase();
+    
+    // Get exchange key
+    const getExchangeKey = (name) => {
+      if (!name) return '';
+      const nameLower = name.toLowerCase();
+      if (nameLower.includes('extended')) return 'extended';
+      if (nameLower.includes('paradex')) return 'paradex';
+      if (nameLower.includes('grvt')) return 'grvt';
+      if (nameLower.includes('kraken')) return 'kraken';
+      return '';
+    };
+    const exchangeKey = getExchangeKey(exchangeName) || getExchangeKey(exchangeNameFromResult) || getExchangeKey(exchange?.name);
+    const exchangeKeyLower = (exchangeKey || '').toLowerCase();
+    
+    const isKraken = exchangeName === 'Kraken' || 
+                    exchangeNameFromResult === 'Kraken' ||
+                    exchange?.name === 'Kraken' || 
+                    exchangeNameLower === 'kraken' || 
+                    exchangeNameFromResultLower === 'kraken' ||
+                    exchangeNameConfigLower === 'kraken' ||
+                    exchangeKeyLower === 'kraken' ||
+                    urlPatternLower.includes('kraken');
+    
+    // CRITICAL DEBUG: Print this BEFORE calling cancel function
+    console.log(`\n═══════════════════════════════════════════════════════════`);
+    console.log(`[${email}] 🔍 EXCHANGE ROUTING CHECK FOR ORDER CANCELLATION (TEST MODE):`);
+    console.log(`  exchangeName: "${exchangeName || 'undefined'}"`);
+    console.log(`  exchangeNameFromResult: "${exchangeNameFromResult || 'undefined'}"`);
+    console.log(`  exchange.name: "${exchange?.name || 'undefined'}"`);
+    console.log(`  exchangeKey: "${exchangeKey || 'undefined'}"`);
+    console.log(`  urlPattern: "${exchange?.urlPattern || 'undefined'}"`);
+    console.log(`  isKraken: ${isKraken}`);
+    console.log(`  → Will use: ${isKraken ? 'cancelKrakenOrders' : 'cancelAllOrders'}`);
+    console.log(`═══════════════════════════════════════════════════════════\n`);
+    
+    let cancelResult;
+    if (isKraken) {
+      console.log(`\n[${email}] ✅✅✅ CALLING cancelKrakenOrders (Kraken-specific function) ✅✅✅\n`);
+      cancelResult = await cancelKrakenOrders(page);
+    } else {
+      console.log(`\n[${email}] ⚠️⚠️⚠️  CALLING cancelAllOrders (generic function) ⚠️⚠️⚠️\n`);
+      cancelResult = await cancelAllOrders(page);
+    }
+    console.log(`✓ Cleanup completed`);
+  } else {
+    console.log(`✓ Cleanup skipped (Extended Exchange handles it during login)`);
+  }
+  
+  // Set leverage
+  console.log(`\n🔧 Step 2: Setting leverage to ${TRADE_CONFIG.leverage}x...`);
+  if (exchange.name !== 'Extended Exchange') {
+    const leverageResult = await setLeverage(page, TRADE_CONFIG.leverage);
+    if (leverageResult.success) {
+      console.log(`✓ Leverage set to ${TRADE_CONFIG.leverage}x`);
+    } else {
+      console.log(`⚠️  Leverage setting: ${leverageResult.error || 'failed'}`);
+    }
+    
+    // Wait for leverage modal to close (if it was opened)
+    console.log(`   Waiting for leverage modal to close...`);
+    await delay(2000);
+    
+    // Verify modal is closed
+    const modalStillOpen = await page.evaluate(() => {
+      const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]');
+      if (modal) {
+        const style = window.getComputedStyle(modal);
+        return style.display !== 'none' && style.visibility !== 'hidden';
+      }
+      return false;
+    });
+    
+    if (modalStillOpen) {
+      console.log(`⚠️  Leverage modal still open, trying to close it...`);
+      // Try pressing Escape multiple times
+      for (let i = 0; i < 3; i++) {
+        await page.keyboard.press('Escape');
+        await delay(500);
+      }
+      await delay(1000);
+      console.log(`✓ Attempted to close leverage modal`);
+    } else {
+      console.log(`✓ Leverage modal is closed`);
+    }
+  } else {
+    console.log(`✓ Leverage skipped (Extended Exchange handles it during login)`);
+  }
+  
+  // Pre-trade flow for Extended Exchange
+  if (exchange.name === 'Extended Exchange') {
+    console.log(`\n📋 Step 2.5: Running pre-trade flow for Extended Exchange...`);
+    await clickOrdersTab(page, email, true);
+    await delay(2000);
+  }
+  
+  // Test BUY side
+  console.log(`\n\n========================================`);
+  console.log(`TEST 1: BUY Order`);
+  console.log(`========================================\n`);
+  
+  console.log(`[${exchange.name}] Executing BUY order...`);
+  const buyResult = await executeTrade(page, {
+    side: "buy",
+    orderType: "limit",
+    qty: TRADE_CONFIG.buyQty,
+  }, exchange);
+  
+  if (buyResult.success) {
+    console.log(`\n✅ [${exchange.name}] BUY order test PASSED`);
+  } else {
+    console.log(`\n❌ [${exchange.name}] BUY order test FAILED: ${buyResult.error || 'unknown error'}`);
+  }
+  
+  // Wait between tests
+  console.log(`\n⏳ Waiting 5 seconds before SELL test...`);
+  await delay(5000);
+  
+  // Test SELL side
+  console.log(`\n\n========================================`);
+  console.log(`TEST 2: SELL Order`);
+  console.log(`========================================\n`);
+  
+  console.log(`[${exchange.name}] Executing SELL order...`);
+  const sellResult = await executeTrade(page, {
+    side: "sell",
+    orderType: "limit",
+    qty: TRADE_CONFIG.sellQty,
+  }, exchange);
+  
+  if (sellResult.success) {
+    console.log(`\n✅ [${exchange.name}] SELL order test PASSED`);
+  } else {
+    console.log(`\n❌ [${exchange.name}] SELL order test FAILED: ${sellResult.error || 'unknown error'}`);
+  }
+  
+  // Summary
+  console.log(`\n\n========================================`);
+  console.log(`Test Summary for ${exchange.name}`);
+  console.log(`========================================`);
+  console.log(`BUY Test: ${buyResult.success ? '✅ PASSED' : '❌ FAILED'}`);
+  console.log(`SELL Test: ${sellResult.success ? '✅ PASSED' : '❌ FAILED'}`);
+  console.log(`========================================\n`);
+  
+  return {
+    exchange: exchange.name,
+    buyResult,
+    sellResult,
+    allPassed: buyResult.success && sellResult.success
+  };
+}
+
+export { automatedTradingLoop, automatedTradingLoop3Exchanges, testSingleExchangeTrading, closeAllPositionsOnShutdown };

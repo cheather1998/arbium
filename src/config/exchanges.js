@@ -42,12 +42,12 @@ const EXCHANGE_CONFIGS = {
       // UI selectors - updated for GRVT UI
       selectors: {
         loginButton: null, // Will use text-based search
-        buyButton: "Buy / Long", // GRVT uses "Buy / Long"
-        sellButton: "Sell / Short", // GRVT uses "Sell / Short"
+        buyButton: "Buy / Long", // GRVT uses "Buy / Long" - this IS the confirm button
+        sellButton: "Sell / Short", // GRVT uses "Sell / Short" - this IS the confirm button
         marketButton: "Market",
         limitButton: "Limit",
-        confirmBuy: "Confirm Buy",
-        confirmSell: "Confirm Sell",
+        confirmBuy: "Buy / Long", // GRVT: Buy/Long button IS the confirm button (no separate confirm)
+        confirmSell: "Sell / Short", // GRVT: Sell/Short button IS the confirm button (no separate confirm)
         positionsTab: "Positions",
       }
     },
@@ -64,8 +64,8 @@ const EXCHANGE_CONFIGS = {
         sellButton: "Sell",
         marketButton: "Market",
         limitButton: "Limit",
-        confirmBuy: "Confirm Buy", // May need to change after UI inspection
-        confirmSell: "Confirm Sell", // May need to change after UI inspection
+        confirmBuy: "Buy BTC Perp", // May need to change after UI inspection
+        confirmSell: "Sell BTC Perp", // May need to change after UI inspection
         positionsTab: "Positions", // May need to change after UI inspection
       }
     }

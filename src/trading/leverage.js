@@ -11,6 +11,47 @@ async function setLeverage(page, leverage) {
   
     try {
       await delay(1000);
+      
+      // Step 0: Close any existing modals before opening leverage modal
+      console.log("Checking for existing modals and closing them...");
+      const existingModalClosed = await page.evaluate(() => {
+        // Find any modals or pop-ups
+        const modals = document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"], [class*="popup"], [class*="Popup"]');
+        
+        for (const modal of modals) {
+          const style = window.getComputedStyle(modal);
+          const isVisible = style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+          
+          if (isVisible) {
+            // Try to find and click close button (X)
+            const closeButtons = modal.querySelectorAll('button, div[role="button"], span[role="button"], [class*="close"], [class*="Close"]');
+            for (const btn of closeButtons) {
+              const btnText = (btn.textContent || '').trim().toLowerCase();
+              const btnClass = (btn.className || '').toLowerCase();
+              // Look for X button or close button
+              if (btnText === '×' || btnText === 'x' || btnText === 'close' || 
+                  btnClass.includes('close') || btn.getAttribute('aria-label')?.toLowerCase().includes('close')) {
+                btn.click();
+                return true;
+              }
+            }
+            
+            // If no close button found, try pressing Escape
+            return false; // Will handle Escape in Puppeteer
+          }
+        }
+        return false; // No modals found
+      });
+      
+      if (existingModalClosed) {
+        console.log("✓ Closed existing modal");
+        await delay(1000);
+      } else {
+        // Try pressing Escape to close any modal
+        await page.keyboard.press('Escape');
+        await delay(500);
+        console.log("✓ Pressed Escape to close any existing modals");
+      }
   
       // Step 1: Find and click the leverage display (e.g., "50x") in the trading panel to open modal
       console.log("Looking for leverage button in trading panel...");
@@ -104,24 +145,94 @@ async function setLeverage(page, leverage) {
         ));
   
         console.log(`Found ${inputs.length} input fields in modal`);
-  
-        // Strategy 1: Find input near "Leverage" label text (for GRVT)
+
+        // Strategy 1: Find input that has "x" in its value (like "10x") - this is the leverage input
         for (const input of inputs) {
           if (input.offsetParent === null) continue; // Skip hidden inputs
           if (input.disabled || input.readOnly) continue; // Skip disabled/readonly inputs
-  
-          // Check parent elements for "Leverage" text
+
+          const value = (input.value || '').trim();
+          // Check if value contains "x" pattern (like "10x", "20x")
+          if (/^\d+x$/i.test(value)) {
+            console.log(`Found leverage input (has "x" pattern) with current value: "${value}"`);
+            input.setAttribute("data-leverage-input", "true");
+            input.setAttribute("data-old-value", value);
+            return {
+              success: true,
+              oldValue: value,
+            };
+          }
+        }
+
+        // Strategy 2: If only one visible input in modal, it's likely the leverage input
+        const visibleInputs = inputs.filter(input => {
+          if (input.offsetParent === null) return false;
+          if (input.disabled || input.readOnly) return false;
+          return true;
+        });
+        
+        if (visibleInputs.length === 1) {
+          const input = visibleInputs[0];
+          const value = input.value || "";
+          console.log(`Found leverage input (only visible input in modal) with current value: "${value}"`);
+          input.setAttribute("data-leverage-input", "true");
+          input.setAttribute("data-old-value", value);
+          return {
+            success: true,
+            oldValue: value,
+          };
+        }
+
+        // Strategy 3: Find input near "Leverage" label text (for GRVT and others)
+        for (const input of inputs) {
+          if (input.offsetParent === null) continue; // Skip hidden inputs
+          if (input.disabled || input.readOnly) continue; // Skip disabled/readonly inputs
+
+          // Check parent elements and siblings for "Leverage" text
           let parent = input.parentElement;
           let foundLeverageLabel = false;
           
-          for (let i = 0; i < 5 && parent; i++) {
+          // Check up to 10 levels up (more thorough search)
+          for (let i = 0; i < 10 && parent; i++) {
             const parentText = (parent.textContent || '').toLowerCase();
+            // Look for "Leverage" text but not "Adjust Leverage" (to avoid matching the title)
             if (parentText.includes('leverage') && !parentText.includes('adjust')) {
               foundLeverageLabel = true;
-              console.log(`Found input near "Leverage" label`);
+              console.log(`Found input near "Leverage" label (level ${i})`);
               break;
             }
             parent = parent.parentElement;
+          }
+          
+          // Also check for label element that might be associated
+          if (!foundLeverageLabel) {
+            const labels = document.querySelectorAll('label');
+            for (const label of labels) {
+              const labelText = (label.textContent || '').toLowerCase();
+              if (labelText.includes('leverage') && !labelText.includes('adjust')) {
+                // Check if this input is associated with this label
+                const labelFor = label.getAttribute('for');
+                if (labelFor && input.id === labelFor) {
+                  foundLeverageLabel = true;
+                  console.log(`Found input associated with "Leverage" label via for attribute`);
+                  break;
+                }
+                // Check if input is inside label
+                if (label.contains(input)) {
+                  foundLeverageLabel = true;
+                  console.log(`Found input inside "Leverage" label`);
+                  break;
+                }
+                // Check if label is near input (sibling or nearby)
+                const labelRect = label.getBoundingClientRect();
+                const inputRect = input.getBoundingClientRect();
+                if (Math.abs(labelRect.y - inputRect.y) < 50 && Math.abs(labelRect.x - inputRect.x) < 200) {
+                  foundLeverageLabel = true;
+                  console.log(`Found input near "Leverage" label (position-based)`);
+                  break;
+                }
+              }
+            }
           }
           
           if (foundLeverageLabel) {
@@ -136,11 +247,11 @@ async function setLeverage(page, leverage) {
           }
         }
         
-        // Strategy 2: Find input with numeric value (for other exchanges)
+        // Strategy 4: Find input with numeric value (for other exchanges)
         for (const input of inputs) {
           if (input.offsetParent === null) continue; // Skip hidden inputs
           if (input.disabled || input.readOnly) continue; // Skip disabled/readonly inputs
-  
+
           const value = input.value || "";
           const placeholder = (input.placeholder || "").toLowerCase();
           const name = (input.name || "").toLowerCase();
@@ -163,7 +274,7 @@ async function setLeverage(page, leverage) {
           }
         }
         
-        // Strategy 3: Find any visible numeric input in modal (fallback)
+        // Strategy 5: Find any visible numeric input in modal (fallback)
         for (const input of inputs) {
           if (input.offsetParent === null) continue;
           if (input.disabled || input.readOnly) continue;
@@ -186,7 +297,58 @@ async function setLeverage(page, leverage) {
   
       if (!inputInfo.success) {
         console.log(`⚠ Could not find leverage input: ${inputInfo.error}`);
-        return { success: false, error: inputInfo.error };
+        console.log(`⚠️  Closing leverage modal since input not found...`);
+        
+        // Try to close the modal by clicking Cancel or pressing Escape
+        const allButtons = await page.$$('button, div[role="button"], span[role="button"]');
+        let cancelBtnElement = null;
+        
+        for (const btn of allButtons) {
+          const btnInfo = await page.evaluate((el) => {
+            const text = (el.textContent || '').trim().toLowerCase();
+            const isVisible = el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+            return { text, isVisible };
+          }, btn);
+          
+          if (btnInfo.isVisible && (btnInfo.text === 'cancel' || btnInfo.text === 'close' || btnInfo.text === '×' || btnInfo.text === 'x')) {
+            cancelBtnElement = btn;
+            break;
+          }
+        }
+        
+        if (cancelBtnElement) {
+          try {
+            await cancelBtnElement.click();
+            console.log(`✓ Clicked Cancel to close leverage modal`);
+            await delay(1500);
+          } catch (error) {
+            console.log(`⚠️  Error clicking Cancel: ${error.message}, trying Escape...`);
+            await page.keyboard.press('Escape');
+            await delay(1000);
+          }
+        } else {
+          console.log(`⚠️  Cancel button not found, pressing Escape...`);
+          await page.keyboard.press('Escape');
+          await delay(1500);
+        }
+        
+        // Verify modal is closed
+        const modalClosed = await page.evaluate(() => {
+          const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]');
+          return modal === null;
+        });
+        
+        if (modalClosed) {
+          console.log(`✓ Leverage modal closed successfully`);
+        } else {
+          console.log(`⚠️  Modal still open, trying multiple Escape presses...`);
+          for (let i = 0; i < 3; i++) {
+            await page.keyboard.press('Escape');
+            await delay(500);
+          }
+        }
+        
+        return { success: true, leverage: leverage, skipped: true, reason: "Leverage input not found, modal closed" };
       }
   
       // Now use Puppeteer to actually type into the input (for proper React state management)
@@ -209,45 +371,69 @@ async function setLeverage(page, leverage) {
         const input = document.querySelector('input[data-leverage-input="true"]');
         return input ? input.value : "";
       });
-  
+
       console.log(`Current input value: "${currentValue}"`);
-  
-      // Move cursor to end of input
-      await page.keyboard.press("End");
-      await delay(100);
-  
-      // Delete all characters with backspace
-      const deleteCount = currentValue.length;
-      console.log(`Deleting ${deleteCount} characters with backspace...`);
-      for (let i = 0; i < deleteCount; i++) {
-        await page.keyboard.press("Backspace");
-        await delay(30);
-      }
-      await delay(200);
-  
-      // Verify input is empty or has default "0"
-      currentValue = await page.evaluate(() => {
-        const input = document.querySelector('input[data-leverage-input="true"]');
-        return input ? input.value : "";
-      });
-      console.log(`After deleting: "${currentValue}"`);
-  
-      // If there's still a "0", delete it too
-      if (currentValue === "0") {
-        await page.keyboard.press("Backspace");
+      
+      // Extract numeric value from current value (in case it's "10x" format)
+      const currentNumeric = currentValue.replace(/[^0-9]/g, '');
+      const currentLeverage = currentNumeric ? parseInt(currentNumeric, 10) : null;
+      
+      // Check if leverage is already set to the desired value
+      if (currentLeverage === leverage) {
+        console.log(`✓ Leverage is already set to ${leverage}x, no change needed`);
+        // Still need to close modal - will be handled by Confirm button check below
+      } else {
+        // Select all text (triple-click or Ctrl+A)
+        await leverageInput.click({ clickCount: 3 });
+        await delay(200);
+        
+        // Alternative: Try Ctrl+A (works on all platforms)
+        await page.keyboard.down('Control');
+        await page.keyboard.press('a');
+        await page.keyboard.up('Control');
         await delay(100);
+        
+        // Delete selected text
+        await page.keyboard.press("Backspace");
+        await delay(200);
+
+        // Verify input is empty
+        currentValue = await page.evaluate(() => {
+          const input = document.querySelector('input[data-leverage-input="true"]');
+          return input ? input.value : "";
+        });
+        console.log(`After clearing: "${currentValue}"`);
+
+        // Type the new leverage value - try both formats
+        // First try just the number (UI might auto-add "x")
+        const leverageStr = String(leverage);
+        console.log(`Typing leverage value: "${leverageStr}"`);
+        await page.keyboard.type(leverageStr, { delay: 100 });
+        await delay(500);
+        
+        // Check if value was set correctly
+        const typedValue = await page.evaluate(() => {
+          const input = document.querySelector('input[data-leverage-input="true"]');
+          return input ? input.value : "";
+        });
+        console.log(`After typing: "${typedValue}"`);
+        
+        // Extract numeric value from typed value
+        const typedNumeric = typedValue.replace(/[^0-9]/g, '');
+        const typedLeverage = typedNumeric ? parseInt(typedNumeric, 10) : null;
+        
+        // If the value doesn't match, try typing with "x"
+        if (typedLeverage !== leverage) {
+          console.log(`⚠️  Value mismatch, trying with "x" suffix...`);
+          // Clear and retry with "x"
+          await leverageInput.click({ clickCount: 3 });
+          await delay(100);
+          await page.keyboard.press("Backspace");
+          await delay(200);
+          await page.keyboard.type(`${leverageStr}x`, { delay: 100 });
+          await delay(500);
+        }
       }
-  
-      // Now type the new leverage value
-      const leverageStr = String(leverage);
-      console.log(`Typing leverage value: "${leverageStr}"`);
-      await page.keyboard.type(leverageStr, { delay: 100 });
-      await delay(300);
-  
-      // Delete the trailing "0" if it appears
-      console.log(`Pressing Delete to remove trailing "0"...`);
-      await page.keyboard.press("Delete");
-      await delay(200);
   
       // Verify the value was set
       const leverageSet = await page.evaluate(() => {

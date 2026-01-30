@@ -1,6 +1,6 @@
 import dotenv from 'dotenv';
 import { chooseTradingMode, delay } from '../utils/helpers.js';
-import { closeAllPositionsOnShutdown, automatedTradingLoop, automatedTradingLoop3Exchanges } from '../core/loop.js';
+import { closeAllPositionsOnShutdown, automatedTradingLoop, automatedTradingLoop3Exchanges, testSingleExchangeTrading } from '../core/loop.js';
 import { launchAccount } from '../core/launch.js';
 import EXCHANGE_CONFIGS from '../config/exchanges.js';
 import { ACCOUNTS } from '../config/accounts.js';
@@ -22,6 +22,129 @@ async function main() {
     // Prompt user to choose trading mode
     const tradingMode = await chooseTradingMode();
     console.log(`\n✓ Selected: ${tradingMode.description}\n`);
+  
+    // Handle test modes (3a, 3b, 3c) - Single exchange testing
+    if (tradingMode.mode === '3a' || tradingMode.mode === '3b' || tradingMode.mode === '3c') {
+      const testExchangeName = tradingMode.testExchange; // 'kraken', 'grvt', or 'extended'
+      const exchangeConfig = EXCHANGE_CONFIGS[testExchangeName];
+      
+      if (!exchangeConfig) {
+        console.log(`\n✗ Error: Unknown exchange "${testExchangeName}"`);
+        process.exit(1);
+      }
+      
+      console.log(`\n📋 Testing Configuration:`);
+      console.log(`   Exchange: ${exchangeConfig.name}`);
+      console.log(`   Mode: Single Exchange Test (BUY + SELL)`);
+      console.log(``);
+      
+      // Find account for this exchange from EXCHANGE_ACCOUNTS
+      let testAccount = null;
+      for (const account of ACCOUNTS) {
+        if (account.exchange === testExchangeName || account.assignedExchange === testExchangeName) {
+          testAccount = {
+            ...account,
+            exchange: testExchangeName,
+            exchangeConfig: exchangeConfig
+          };
+          break;
+        }
+      }
+      
+      // If not found by exchange assignment, use first account (fallback)
+      if (!testAccount && ACCOUNTS.length > 0) {
+        console.log(`⚠️  Warning: No account explicitly assigned to ${testExchangeName}, using first account`);
+        testAccount = {
+          ...ACCOUNTS[0],
+          exchange: testExchangeName,
+          exchangeConfig: exchangeConfig
+        };
+      }
+      
+      if (!testAccount) {
+        console.log(`\n✗ Error: No account found for ${exchangeConfig.name}`);
+        console.log(`   Please configure EXCHANGE_ACCOUNTS with an account for ${testExchangeName}`);
+        process.exit(1);
+      }
+      
+      console.log(`   Account: ${testAccount.email}`);
+      console.log(``);
+      
+      // Launch the single exchange
+      console.log(`\n🚀 Launching ${exchangeConfig.name}...`);
+      const result = await launchAccount(testAccount, exchangeConfig);
+      
+      if (!result.success && !result.keepBrowserOpen) {
+        console.log(`\n✗ Failed to launch ${exchangeConfig.name}`);
+        process.exit(1);
+      }
+      
+      if (result.keepBrowserOpen) {
+        console.log(`\n⚠️  Browser kept open for manual wallet connection (Extended Exchange)`);
+        console.log(`   Please connect your wallet, then the test will continue automatically...`);
+        // Wait for user to connect wallet
+        await delay(10000); // Wait 10 seconds for wallet connection
+      }
+      
+      // Start API server
+      if (result.apiPort) {
+        const { startApiServer } = await import('../api/server.js');
+        await startApiServer(result.page, testAccount.email, testAccount.apiPort, exchangeConfig);
+        console.log(`✅ API server started on port ${testAccount.apiPort}`);
+      }
+      
+      // Run the test
+      console.log(`\n🧪 Starting single exchange test in 3 seconds...`);
+      await delay(3000);
+      
+      const testResult = await testSingleExchangeTrading({
+        page: result.page,
+        email: testAccount.email,
+        exchange: exchangeConfig.name,
+        exchangeConfig: exchangeConfig
+      }, exchangeConfig.name);
+      
+      // Summary
+      console.log(`\n\n========================================`);
+      console.log(`Test Complete`);
+      console.log(`========================================`);
+      if (testResult.allPassed) {
+        console.log(`✅ All tests PASSED for ${exchangeConfig.name}`);
+      } else {
+        console.log(`⚠️  Some tests FAILED for ${exchangeConfig.name}`);
+        console.log(`   Review the logs above for details`);
+      }
+      console.log(`========================================\n`);
+      
+      // Setup graceful shutdown
+      const shutdownHandler = async () => {
+        if (isShuttingDown) return;
+        isShuttingDown = true;
+        console.log(`\n\nShutting down...`);
+        if (result.browser) {
+          try {
+            const pages = await result.browser.pages();
+            for (const page of pages) {
+              try {
+                await page.close();
+              } catch (e) {}
+            }
+            await result.browser.close();
+          } catch (e) {
+            console.log(`Error closing browser: ${e.message}`);
+          }
+        }
+        process.exit(0);
+      };
+      
+      process.on('SIGINT', shutdownHandler);
+      process.on('SIGTERM', shutdownHandler);
+      
+      console.log(`\n✅ Test completed. Press Ctrl+C to exit.\n`);
+      
+      // Keep process alive
+      return;
+    }
   
     // Handle option 3 (Multi-Exchange Mode) separately
     if (tradingMode.mode === 3) {

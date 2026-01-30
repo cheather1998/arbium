@@ -1,6 +1,6 @@
 import EXCHANGE_CONFIGS from '../config/exchanges.js';
 import { delay } from '../utils/helpers.js';
-import { findByExactText } from '../utils/helpers.js';
+import { findByExactText, findByText } from '../utils/helpers.js';
 import { handleSetLeverage } from './leverage.js';
 
 async function closeAllPositions(page, percent = 100, exchangeConfig = null) {
@@ -10,119 +10,859 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null) {
     // Wait a moment for any previous actions to complete
     await delay(700);
   
-    // Click on Positions tab to see open positions
-    // IMPORTANT: For Paradex, we need to stay on Positions tab throughout the entire flow
-    // Do NOT navigate to Orders tab - we need Positions tab for TP/SL and Limit button
-    console.log(`[${exchange.name}] Navigating to Positions tab (will stay here for TP/SL and Limit button)...`);
-    const positionsTab = await findByExactText(page, exchange.selectors.positionsTab, [
-      "button",
-      "div",
-      "span",
-    ]);
-    if (positionsTab) {
-      await positionsTab.click();
-      console.log(`[${exchange.name}] ✓ Clicked Positions tab - will stay here for TP/SL and Limit button`);
-      await delay(400); // Reduced from 2000ms - wait for positions to load
-    } else {
-      console.log(`[${exchange.name}] ⚠️  Could not find Positions tab`);
-    }
-  
-    // Check if there are any open positions
-    console.log("Checking for open positions...");
-    let hasPositions = false;
-    for (let i = 0; i < 3; i++) {
-      hasPositions = await page.evaluate(() => {
-        const text = document.body.innerText;
-        return (
-          text.includes("Current Position") ||
-          text.includes("Unrealized P&L") ||
-          text.includes("Position Size") ||
-          text.includes("Entry Price")
-        );
+    // ============================================================================
+    // GRVT-SPECIFIC CLOSE POSITION FLOW
+    // This block ONLY runs for GRVT exchange - all other exchanges are unaffected
+    // ============================================================================
+    if (exchange.name === 'GRVT') {
+      console.log(`[${exchange.name}] 🔵 GRVT-SPECIFIC CLOSE POSITION FLOW STARTING...`);
+      
+      // Step 0: Cancel all open orders before closing positions
+      console.log(`[${exchange.name}] Step 0: Canceling all open orders before closing positions...`);
+      
+      // Navigate to Open orders tab
+      // GRVT structure: <div data-text="Open orders (1)" class="style_label__3WVdr...">Open orders (1)</div>
+      console.log(`[${exchange.name}] Step 0.1: Navigating to Open orders tab...`);
+      let openOrdersTabClicked = false;
+      
+      // Strategy 1: Find by data-text attribute containing "Open orders"
+      const clickedByDataText = await page.evaluate(() => {
+        const allElements = Array.from(document.querySelectorAll('div, button, span, a'));
+        for (const el of allElements) {
+          const dataText = el.getAttribute('data-text');
+          if (dataText && dataText.toLowerCase().includes('open orders') && el.offsetParent !== null) {
+            el.click();
+            return true;
+          }
+        }
+        return false;
       });
-  
-      if (hasPositions) {
-        console.log("Found open positions!");
-        break;
+      
+      if (clickedByDataText) {
+        openOrdersTabClicked = true;
+        console.log(`[${exchange.name}] ✓ Clicked Open orders tab (via data-text attribute)`);
+        await delay(500);
       }
-  
-      if (i < 2) {
-        console.log(`Attempt ${i + 1}/3: No positions found yet, waiting...`);
-        await delay(400); // Reduced from 1500ms
-      }
-    }
-  
-    if (!hasPositions) {
-      console.log("✓ No open positions found - nothing to close");
-      return { success: true, message: "No positions to close" };
-    }
-  
-    // If we reach here, positions exist - FIRST add TP/SL, then close using Limit, then fallback to Close All
-    console.log("✓ Positions found - proceeding to add TP/SL first, then close them...");
-    
-    // Wait a bit more for UI to fully render
-    await delay(300);
-  
-    // Step 0: For Paradex - Add TP/SL before closing positions
-    // if (exchange.name === 'Paradex') {
-    //   console.log(`\n[Paradex] Step 0: Adding TP/SL before closing positions...`);
       
-    //   // Use the new function to handle the complete TP/SL flow
-    //   const tpSlResult = await clickTpSlColumnInPositions(page, exchange);
-      
-    //   if (tpSlResult.success) {
-    //     console.log(`[Paradex] ✅ TP/SL flow completed: ${tpSlResult.message}`);
-    //     tpSlCompleted = true;
-    //   } else {
-    //     console.log(`[Paradex] ⚠️  TP/SL flow failed: ${tpSlResult.message}`);
-    //     // Continue anyway - might still be able to close positions
-    //   }
-    // }
-  
-    // CRITICAL: After TP/SL is set, ensure we're still on Positions tab before looking for Limit button
-    // Do NOT navigate to Orders tab - we need to stay on Positions tab to find Limit button
-    console.log(`[Paradex] TP/SL setup complete. Ensuring we're on Positions tab before looking for Limit button...`);
-    
-    // IMPORTANT: Only look for Limit button if there are still open positions
-    // Check if positions exist by checking for data rows in table (not just header row)
-    console.log(`[Paradex] Checking if positions still exist before looking for Limit button...`);
-    const hasPositionsForLimit = await page.evaluate(() => {
-      // Find all tables
-      const tables = Array.from(document.querySelectorAll('table'));
-      
-      for (const table of tables) {
-        // Find header row
-        const headerRow = table.querySelector('thead tr, thead > tr, tr:first-child');
-        if (!headerRow) continue;
-        
-        // Find data rows (exclude header row)
-        const dataRows = Array.from(table.querySelectorAll('tbody tr, tr:not(:first-child)'));
-        
-        // Check if there are any data rows with actual content
-        for (const row of dataRows) {
-          const cells = Array.from(row.querySelectorAll('td, th'));
-          // Check if row has cells and is not empty
-          if (cells.length > 0) {
-            const rowText = row.textContent?.trim();
-            // If row has some text content (not just whitespace), it's a data row = position exists
-            if (rowText && rowText.length > 0) {
-              return true; // Found at least one data row = positions exist
+      // Strategy 2: Find by text starting with "Open orders" (handles "Open orders (1)" format)
+      if (!openOrdersTabClicked) {
+        const clickedByText = await page.evaluate(() => {
+          const allElements = Array.from(document.querySelectorAll('div, button, span, a'));
+          for (const el of allElements) {
+            const text = (el.textContent || '').trim();
+            const isVisible = el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+            // Match "Open orders" or "Open orders (1)" or "Open orders (2)" etc.
+            if (isVisible && text.toLowerCase().startsWith('open orders')) {
+              el.click();
+              return true;
             }
+          }
+          return false;
+        });
+        
+        if (clickedByText) {
+          openOrdersTabClicked = true;
+          console.log(`[${exchange.name}] ✓ Clicked Open orders tab (via text content)`);
+          await delay(500);
+        }
+      }
+      
+      // Strategy 3: Find by exact text "Open orders" using helper functions
+      if (!openOrdersTabClicked) {
+        const openOrdersTab = await findByExactText(page, "Open orders", ["button", "div", "span", "a"]);
+        if (openOrdersTab) {
+          const isVisible = await page.evaluate((el) => {
+            return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+          }, openOrdersTab);
+          if (isVisible) {
+            await openOrdersTab.click();
+            console.log(`[${exchange.name}] ✓ Clicked Open orders tab (exact text helper)`);
+            openOrdersTabClicked = true;
+            await delay(500);
           }
         }
       }
       
-      return false; // No data rows found = no positions
-    });
-  
-    if (!hasPositionsForLimit) {
-      console.log(`[Paradex] ✅ No open positions found (only header row in table) - skipping Limit button search`);
-      return { success: true, message: "No positions to close - TP/SL was set but positions already closed" };
+      // Strategy 4: Find by text containing "open orders" (case insensitive) using helper functions
+      if (!openOrdersTabClicked) {
+        const openOrdersTab2 = await findByText(page, "open orders", ["button", "div", "span", "a"]);
+        if (openOrdersTab2) {
+          const isVisible = await page.evaluate((el) => {
+            return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+          }, openOrdersTab2);
+          if (isVisible) {
+            await openOrdersTab2.click();
+            console.log(`[${exchange.name}] ✓ Clicked Open orders tab (text search helper)`);
+            openOrdersTabClicked = true;
+            await delay(500);
+          }
+        }
+      }
+      
+      if (!openOrdersTabClicked) {
+        console.log(`[${exchange.name}] ⚠️  Could not find Open orders tab, skipping order cancellation...`);
+      }
+      
+      // Wait for Open orders tab to load
+      await delay(1000);
+      
+      // Find and click "Cancel all orders" button
+      console.log(`[${exchange.name}] Step 0.2: Looking for "Cancel all orders" button...`);
+      let cancelAllOrdersBtnClicked = false;
+      const cancelAllOrdersBtn = await findByExactText(page, "Cancel all orders", ["button", "div", "span"]);
+      
+      if (cancelAllOrdersBtn) {
+        const isVisible = await page.evaluate((el) => {
+          return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+        }, cancelAllOrdersBtn);
+        if (isVisible) {
+          console.log(`[${exchange.name}] ✅ Found "Cancel all orders" button, clicking...`);
+          await cancelAllOrdersBtn.click();
+          cancelAllOrdersBtnClicked = true;
+        }
+      }
+      
+      if (!cancelAllOrdersBtnClicked) {
+        const cancelAllOrdersBtn2 = await findByText(page, "Cancel all orders", ["button", "div", "span"]);
+        if (cancelAllOrdersBtn2) {
+          const isVisible = await page.evaluate((el) => {
+            return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+          }, cancelAllOrdersBtn2);
+          if (isVisible) {
+            console.log(`[${exchange.name}] ✅ Found "Cancel all orders" button, clicking...`);
+            await cancelAllOrdersBtn2.click();
+            cancelAllOrdersBtnClicked = true;
+          }
+        }
+      }
+      
+      if (!cancelAllOrdersBtnClicked) {
+        console.log(`[${exchange.name}] ⚠️  Could not find "Cancel all orders" button, no orders to cancel - proceeding to close positions...`);
+      }
+      
+      // Wait for confirmation modal to open (only if button was clicked)
+      if (cancelAllOrdersBtnClicked) {
+        // Wait a moment for modal to appear
+        await delay(500);
+        
+        // Check if confirmation modal opened
+        const modalCheck = await page.evaluate(() => {
+          const modals = document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"], [class*="Dialog"]');
+          for (const modal of modals) {
+            const style = window.getComputedStyle(modal);
+            if (style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') {
+              return true;
+            }
+          }
+          return false;
+        });
+        
+        if (modalCheck) {
+          console.log(`[${exchange.name}] Step 0.3: Waiting for confirmation modal to open...`);
+          let modalOpen = false;
+          for (let i = 0; i < 10; i++) {
+            await delay(300);
+            modalOpen = await page.evaluate(() => {
+              const modals = document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"], [class*="Dialog"]');
+              for (const modal of modals) {
+                const style = window.getComputedStyle(modal);
+                if (style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') {
+                  return true;
+                }
+              }
+              return false;
+            });
+            if (modalOpen) {
+              console.log(`[${exchange.name}] ✅ Confirmation modal opened`);
+              break;
+            }
+          }
+          
+          if (modalOpen) {
+            // Find and click Confirm button in modal
+            console.log(`[${exchange.name}] Step 0.4: Looking for Confirm button in cancellation modal...`);
+            await delay(500); // Wait for modal content to render
+            
+            let confirmBtn = await findByExactText(page, "Confirm", ["button", "div", "span"]);
+            if (!confirmBtn) {
+              confirmBtn = await findByText(page, "Confirm", ["button", "div", "span"]);
+            }
+            
+            if (confirmBtn) {
+              // Verify it's in the modal
+              const confirmInModal = await page.evaluate((btn) => {
+                let parent = btn.parentElement;
+                for (let i = 0; i < 10 && parent; i++) {
+                  const role = parent.getAttribute('role');
+                  const className = (parent.className || '').toLowerCase();
+                  if (role === 'dialog' || 
+                      className.includes('modal') || 
+                      className.includes('dialog')) {
+                    return true;
+                  }
+                  parent = parent.parentElement;
+                }
+                return false;
+              }, confirmBtn);
+              
+              if (confirmInModal) {
+                console.log(`[${exchange.name}] ✅ Found Confirm button in cancellation modal, clicking...`);
+                await confirmBtn.click();
+                
+                // Wait for modal to close
+                console.log(`[${exchange.name}] Step 0.5: Waiting for cancellation modal to close...`);
+                let modalClosed = false;
+                for (let i = 0; i < 15; i++) {
+                  await delay(300);
+                  modalClosed = await page.evaluate(() => {
+                    const modals = document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"], [class*="Dialog"]');
+                    for (const modal of modals) {
+                      const style = window.getComputedStyle(modal);
+                      if (style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') {
+                        return false;
+                      }
+                    }
+                    return true;
+                  });
+                  if (modalClosed) {
+                    console.log(`[${exchange.name}] ✅ Cancellation modal closed`);
+                    break;
+                  }
+                }
+                
+                // Wait a bit more after cancellation
+                await delay(500);
+                console.log(`[${exchange.name}] ✅ All orders canceled, proceeding to close positions...`);
+              } else {
+                console.log(`[${exchange.name}] ⚠️  Found Confirm button but it's not in modal`);
+              }
+            } else {
+              console.log(`[${exchange.name}] ⚠️  Could not find Confirm button in cancellation modal`);
+            }
+          } else {
+            console.log(`[${exchange.name}] ⚠️  Confirmation modal did not open after clicking Cancel all orders, continuing to close positions...`);
+          }
+        } else {
+          console.log(`[${exchange.name}] ⚠️  Confirmation modal did not open, continuing to close positions...`);
+        }
+      } else {
+        console.log(`[${exchange.name}] ⚠️  Cancel all orders button not clicked, proceeding to close positions...`);
+      }
+      
+      // IMPORTANT: Always proceed with close positions flow after order cancellation (or if no orders to cancel)
+      console.log(`[${exchange.name}] 🔵 Proceeding to close positions flow after order cancellation...`);
+      
+      // Now proceed with close positions flow
+      // Navigate to Positions tab (GRVT uses similar structure to Open orders tab)
+      console.log(`[${exchange.name}] Step 1: Navigating to Positions tab...`);
+      let positionsTabClicked = false;
+      
+      // Strategy 1: Find by data-text attribute containing "Positions"
+      const positionsClickedByDataText = await page.evaluate(() => {
+        const allElements = Array.from(document.querySelectorAll('div, button, span, a'));
+        for (const el of allElements) {
+          const dataText = el.getAttribute('data-text');
+          if (dataText && dataText.toLowerCase().includes('positions') && el.offsetParent !== null) {
+            el.click();
+            return true;
+          }
+        }
+        return false;
+      });
+      
+      if (positionsClickedByDataText) {
+        positionsTabClicked = true;
+        console.log(`[${exchange.name}] ✓ Clicked Positions tab (via data-text attribute)`);
+        await delay(500);
+      }
+      
+      // Strategy 2: Find by text starting with "Positions" (handles "Positions (1)" format)
+      if (!positionsTabClicked) {
+        const positionsClickedByText = await page.evaluate(() => {
+          const allElements = Array.from(document.querySelectorAll('div, button, span, a'));
+          for (const el of allElements) {
+            const text = (el.textContent || '').trim();
+            const isVisible = el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+            // Match "Positions" or "Positions (1)" or "Positions (2)" etc.
+            if (isVisible && text.toLowerCase().startsWith('positions')) {
+              el.click();
+              return true;
+            }
+          }
+          return false;
+        });
+        
+        if (positionsClickedByText) {
+          positionsTabClicked = true;
+          console.log(`[${exchange.name}] ✓ Clicked Positions tab (via text content)`);
+          await delay(500);
+        }
+      }
+      
+      // Strategy 3: Find by exact text "Positions" using helper functions
+      if (!positionsTabClicked) {
+        const positionsTab = await findByExactText(page, "Positions", ["button", "div", "span", "a"]);
+        if (positionsTab) {
+          const isVisible = await page.evaluate((el) => {
+            return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+          }, positionsTab);
+          if (isVisible) {
+            await positionsTab.click();
+            console.log(`[${exchange.name}] ✓ Clicked Positions tab (exact text helper)`);
+            positionsTabClicked = true;
+            await delay(500);
+          }
+        }
+      }
+      
+      // Strategy 4: Find by text containing "positions" (case insensitive) using helper functions
+      if (!positionsTabClicked) {
+        const positionsTab2 = await findByText(page, "positions", ["button", "div", "span", "a"]);
+        if (positionsTab2) {
+          const isVisible = await page.evaluate((el) => {
+            return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+          }, positionsTab2);
+          if (isVisible) {
+            await positionsTab2.click();
+            console.log(`[${exchange.name}] ✓ Clicked Positions tab (text search helper)`);
+            positionsTabClicked = true;
+            await delay(500);
+          }
+        }
+      }
+      
+      if (!positionsTabClicked) {
+        console.log(`[${exchange.name}] ⚠️  Could not find Positions tab, continuing anyway...`);
+        await delay(500); // Wait a bit for page to stabilize
+      }
+      
+      // Check if there are any open positions by looking for Close buttons in table
+      console.log(`[${exchange.name}] Step 2: Checking for open positions by looking for Close buttons...`);
+      const hasPositionsCheck = await page.evaluate(() => {
+        // GRVT uses div-based table structure, not standard <table>
+        // Look for Close buttons in the Actions column
+        const allButtons = Array.from(document.querySelectorAll('button'));
+        for (const btn of allButtons) {
+          const text = (btn.textContent || '').trim().toLowerCase();
+          if (text === 'close' && btn.offsetParent !== null) {
+            // Verify it's in a positions table (check for nearby "Actions" text or table structure)
+            let parent = btn.parentElement;
+            for (let i = 0; i < 10 && parent; i++) {
+              const parentText = parent.textContent || '';
+              const parentClass = (parent.className || '').toLowerCase();
+              // Check if it's in a positions table structure
+              if (parentText.includes('Actions') || 
+                  parentClass.includes('tablerow') ||
+                  parent.getAttribute('data-sentry-component') === 'TablePositions' ||
+                  parent.querySelector('[data-sentry-component="TablePositions"]')) {
+                return true;
+              }
+              parent = parent.parentElement;
+            }
+          }
+        }
+        return false;
+      });
+      
+      if (!hasPositionsCheck) {
+        console.log(`[${exchange.name}] ✓ No open positions found (no Close buttons in table) - nothing to close`);
+        return { success: true, message: "No positions to close" };
+      }
+      
+      console.log(`[${exchange.name}] ✓ Positions found (Close buttons detected) - proceeding to close via modal...`);
+      await delay(300); // Wait for UI to fully render
+      
+      // Step 3: Find Close button in Actions column (last column of table)
+      console.log(`[${exchange.name}] Step 3: Looking for Close button in Actions column (last column)...`);
+      
+      const closeButtonInActions = await page.evaluate(() => {
+        // GRVT uses div-based table structure, not standard <table>
+        // Look for Close buttons directly
+        const allButtons = Array.from(document.querySelectorAll('button'));
+        
+        for (const btn of allButtons) {
+          const text = (btn.textContent || '').trim().toLowerCase();
+          if (text === 'close' && btn.offsetParent !== null) {
+            // Verify it's in a positions table (check for nearby "Actions" text or table structure)
+            let parent = btn.parentElement;
+            let inActionsColumn = false;
+            for (let i = 0; i < 10 && parent; i++) {
+              const parentText = parent.textContent || '';
+              const parentClass = (parent.className || '').toLowerCase();
+              // Check if it's in Actions column (has "Actions" text nearby or is in last column)
+              if (parentText.includes('Actions') || 
+                  parentClass.includes('cell-ping-right') || // Last column class
+                  parent.querySelector('span')?.textContent?.trim() === 'Actions') {
+                inActionsColumn = true;
+                break;
+              }
+              parent = parent.parentElement;
+            }
+            
+            if (inActionsColumn) {
+              return {
+                found: true,
+                text: btn.textContent?.trim() || 'Close'
+              };
+            }
+          }
+        }
+        
+        return { found: false };
+      });
+      
+      if (closeButtonInActions.found) {
+        console.log(`[${exchange.name}] ✅ Found Close button in Actions column: "${closeButtonInActions.text}"`);
+        
+        // Click the Close button
+        const closeBtnElement = await page.evaluateHandle(() => {
+          // GRVT uses div-based table structure
+          const allButtons = Array.from(document.querySelectorAll('button'));
+          
+          for (const btn of allButtons) {
+            const text = (btn.textContent || '').trim().toLowerCase();
+            if (text === 'close' && btn.offsetParent !== null) {
+              // Verify it's in Actions column
+              let parent = btn.parentElement;
+              let inActionsColumn = false;
+              for (let i = 0; i < 10 && parent; i++) {
+                const parentText = parent.textContent || '';
+                const parentClass = (parent.className || '').toLowerCase();
+                if (parentText.includes('Actions') || 
+                    parentClass.includes('cell-ping-right') ||
+                    parent.querySelector('span')?.textContent?.trim() === 'Actions') {
+                  inActionsColumn = true;
+                  break;
+                }
+                parent = parent.parentElement;
+              }
+              
+              if (inActionsColumn) {
+                return btn;
+              }
+            }
+          }
+          return null;
+        });
+        
+        if (closeBtnElement && closeBtnElement.asElement()) {
+          // Step 1.5: Close any other modals that might be open
+          console.log(`[${exchange.name}] Step 1.5: Checking for and closing any other open modals...`);
+          const closedOtherModals = await page.evaluate(() => {
+            const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"], [class*="Dialog"]'));
+            let closed = false;
+            for (const modal of modals) {
+              const style = window.getComputedStyle(modal);
+              if (style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') {
+                // Try to find and click close button (X) in modal
+                const closeButtons = Array.from(modal.querySelectorAll('button, [role="button"]'));
+                const closeBtn = closeButtons.find(btn => {
+                  const text = (btn.textContent || '').trim().toLowerCase();
+                  const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
+                  return text === '×' || text === 'x' || text === 'close' || 
+                         ariaLabel.includes('close') || 
+                         (btn.querySelector('svg') && text === '');
+                });
+                if (closeBtn) {
+                  closeBtn.click();
+                  closed = true;
+                } else {
+                  // Try pressing Escape key
+                  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape' }));
+                  closed = true;
+                }
+              }
+            }
+            return closed;
+          });
+          
+          if (closedOtherModals) {
+            console.log(`[${exchange.name}] ✅ Closed other open modal(s), waiting a moment...`);
+            await delay(500);
+          }
+          
+          console.log(`[${exchange.name}] Clicking Close button to open modal...`);
+          await closeBtnElement.asElement().click();
+          
+          // Step 4: Wait for modal to fully render after Close button click
+          console.log(`[${exchange.name}] Step 4: Waiting for modal to fully render...`);
+          
+          // Wait for modal to appear and be visible
+          let modalOpen = false;
+          for (let i = 0; i < 10; i++) {
+            await delay(300);
+            modalOpen = await page.evaluate(() => {
+              const modals = document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"], [class*="Dialog"]');
+              for (const modal of modals) {
+                const style = window.getComputedStyle(modal);
+                if (style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') {
+                  return true;
+                }
+              }
+              return false;
+            });
+            
+            if (modalOpen) {
+              console.log(`[${exchange.name}] ✅ Modal detected and visible`);
+              break;
+            }
+          }
+          
+          if (!modalOpen) {
+            console.log(`[${exchange.name}] ⚠️  Modal not detected after waiting, but continuing anyway...`);
+            await delay(500); // Give it a bit more time
+          } else {
+            // Wait a bit more for modal content to fully render
+            await delay(500);
+          }
+          
+          // Find and click Limit option in modal - ALWAYS select Limit before Confirm
+          // Structure: <div class="style_toggleItem__ZIcFf">Limit</div> with data-active="false"
+          // After click, it should have data-active="true" and class "style_active__vVGd1"
+          console.log(`[${exchange.name}] Step 5: Looking for Limit option in modal using toggle structure...`);
+          
+          // Find Limit button using the specific toggle structure
+          const limitButtonHandle = await page.evaluateHandle(() => {
+            const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"], [class*="Dialog"]'));
+            for (const modal of modals) {
+              const style = window.getComputedStyle(modal);
+              if (style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') {
+                // Look for toggle container with class "style_toggle__j_fck"
+                const toggleContainer = modal.querySelector('.style_toggle__j_fck, [class*="toggle"]');
+                if (toggleContainer) {
+                  // Find Limit div inside toggle container
+                  const toggleItems = Array.from(toggleContainer.querySelectorAll('.style_toggleItem__ZIcFf, [class*="toggleItem"], div'));
+                  for (const item of toggleItems) {
+                    const text = (item.textContent || '').trim();
+                    if (text === 'Limit' && item.offsetParent !== null) {
+                      return item; // Found Limit toggle item
+                    }
+                  }
+                }
+                
+                // Fallback: Find any div with text "Limit" that has toggle-related classes
+                const allDivs = Array.from(modal.querySelectorAll('div'));
+                for (const div of allDivs) {
+                  const text = (div.textContent || '').trim();
+                  const className = (div.className || '').toLowerCase();
+                  if (text === 'Limit' && 
+                      (className.includes('toggle') || 
+                       div.getAttribute('data-active') !== null ||
+                       div.parentElement?.className?.includes('toggle'))) {
+                    if (div.offsetParent !== null) {
+                      return div;
+                    }
+                  }
+                }
+                
+                // Last fallback: Find any element with text "Limit" in modal
+                const allElements = Array.from(modal.querySelectorAll('div, button, span'));
+                for (const el of allElements) {
+                  const text = (el.textContent || '').trim();
+                  if (text === 'Limit' && el.offsetParent !== null) {
+                    return el;
+                  }
+                }
+              }
+            }
+            return null;
+          });
+          
+          let limitSelected = false;
+          
+          if (limitButtonHandle && limitButtonHandle.asElement()) {
+            console.log(`[${exchange.name}] ✅ Found Limit toggle button in modal, clicking to switch from Market to Limit...`);
+            await limitButtonHandle.asElement().click();
+            await delay(500); // Wait for Limit option to activate
+            limitSelected = true;
+          } else {
+            // Fallback: Try using helper functions
+            console.log(`[${exchange.name}] ⚠️  Could not find Limit using toggle structure, trying helper functions...`);
+            let limitOption = await findByExactText(page, "Limit", ["button", "div", "span", "a"]);
+            
+            if (!limitOption) {
+              limitOption = await findByText(page, "Limit", ["button", "div", "span", "a"]);
+            }
+            
+            if (limitOption) {
+              console.log(`[${exchange.name}] ✅ Found Limit option using helper functions, clicking...`);
+              await limitOption.click();
+              await delay(500);
+              limitSelected = true;
+            } else {
+              console.log(`[${exchange.name}] ⚠️  Could not find Limit option in modal`);
+            }
+          }
+          
+          // Verify Limit is selected before proceeding to Confirm
+          if (limitSelected) {
+            // Wait a moment for UI to update
+            await delay(300);
+            
+            // Verify that Limit is now selected using data-active="true" and style_active__vVGd1 class
+            const limitVerified = await page.evaluate(() => {
+              const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"], [class*="Dialog"]'));
+              for (const modal of modals) {
+                const style = window.getComputedStyle(modal);
+                if (style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') {
+                  // Look for Limit toggle item with data-active="true" and style_active__vVGd1 class
+                  const toggleContainer = modal.querySelector('.style_toggle__j_fck, [class*="toggle"]');
+                  if (toggleContainer) {
+                    const toggleItems = Array.from(toggleContainer.querySelectorAll('.style_toggleItem__ZIcFf, [class*="toggleItem"], div'));
+                    for (const item of toggleItems) {
+                      const text = (item.textContent || '').trim();
+                      if (text === 'Limit') {
+                        const dataActive = item.getAttribute('data-active');
+                        const className = (item.className || '').toLowerCase();
+                        // Check if Limit is selected: data-active="true" or has style_active__vVGd1 class
+                        if (dataActive === 'true' || className.includes('style_active__vvgd1') || className.includes('active')) {
+                          return true; // Limit is selected
+                        }
+                      }
+                    }
+                  }
+                  
+                  // Fallback: Check any Limit element
+                  const allElements = Array.from(modal.querySelectorAll('div, button, span'));
+                  for (const el of allElements) {
+                    const text = (el.textContent || '').trim();
+                    if (text === 'Limit') {
+                      const dataActive = el.getAttribute('data-active');
+                      const className = (el.className || '').toLowerCase();
+                      const btnStyle = window.getComputedStyle(el);
+                      if (dataActive === 'true' || 
+                          className.includes('active') || 
+                          className.includes('selected') ||
+                          btnStyle.backgroundColor.includes('255') ||
+                          btnStyle.backgroundColor === 'rgb(255, 255, 255)') {
+                        return true; // Limit is selected
+                      }
+                    }
+                  }
+                }
+              }
+              return false; // Limit not selected
+            });
+            
+            if (!limitVerified) {
+              console.log(`[${exchange.name}] ⚠️  Limit clicked but not verified as selected, clicking again...`);
+              // Click Limit again
+              if (limitButtonHandle && limitButtonHandle.asElement()) {
+                await limitButtonHandle.asElement().click();
+              } else {
+                const limitOption = await findByExactText(page, "Limit", ["button", "div", "span", "a"]);
+                if (limitOption) {
+                  await limitOption.click();
+                }
+              }
+              await delay(500);
+              
+              // Final verification using data-active attribute
+              const stillNotSelected = await page.evaluate(() => {
+                const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]'));
+                for (const modal of modals) {
+                  const style = window.getComputedStyle(modal);
+                  if (style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') {
+                    const toggleContainer = modal.querySelector('.style_toggle__j_fck, [class*="toggle"]');
+                    if (toggleContainer) {
+                      const toggleItems = Array.from(toggleContainer.querySelectorAll('div'));
+                      for (const item of toggleItems) {
+                        const text = (item.textContent || '').trim();
+                        if (text === 'Limit') {
+                          const dataActive = item.getAttribute('data-active');
+                          const className = (item.className || '').toLowerCase();
+                          // Return true if still not selected (data-active !== 'true')
+                          return dataActive !== 'true' && !className.includes('style_active__vvgd1') && !className.includes('active');
+                        }
+                      }
+                    }
+                  }
+                }
+                return true; // Couldn't verify, assume not selected
+              });
+              
+              if (stillNotSelected) {
+                console.log(`[${exchange.name}] ⚠️  CRITICAL: Limit still not selected after clicking! Cannot proceed to Confirm.`);
+                return { success: false, message: "Could not select Limit option in modal - still showing Market" };
+              } else {
+                console.log(`[${exchange.name}] ✅ Limit verified as selected after second click (data-active="true")`);
+              }
+            } else {
+              console.log(`[${exchange.name}] ✅ Limit option verified as selected (data-active="true" or style_active__vVGd1 class)`);
+            }
+          } else {
+            console.log(`[${exchange.name}] ⚠️  CRITICAL: Limit option not clicked! Cannot proceed to Confirm.`);
+            return { success: false, message: "Could not find or click Limit option in modal" };
+          }
+          
+          // Small delay after Limit selection before clicking Confirm
+          console.log(`[${exchange.name}] Waiting a moment after Limit selection before Confirm...`);
+          await delay(500); // Increased wait time after Limit selection
+          
+          // Step 6: Find and click Confirm button in modal (ONLY after Limit is selected)
+          console.log(`[${exchange.name}] Step 6: Looking for Confirm button in modal (Limit is selected)...`);
+          await delay(300); // Additional wait before looking for Confirm
+          
+          let confirmBtn = await findByExactText(page, "Confirm", ["button", "div", "span"]);
+          
+          if (!confirmBtn) {
+            confirmBtn = await findByText(page, "Confirm", ["button", "div", "span"]);
+          }
+          
+          if (confirmBtn) {
+            // Verify it's in the modal
+            const confirmInModal = await page.evaluate((btn) => {
+              let parent = btn.parentElement;
+              for (let i = 0; i < 10 && parent; i++) {
+                const role = parent.getAttribute('role');
+                const className = (parent.className || '').toLowerCase();
+                if (role === 'dialog' || 
+                    className.includes('modal') || 
+                    className.includes('dialog')) {
+                  return true;
+                }
+                parent = parent.parentElement;
+              }
+              return false;
+            }, confirmBtn);
+            
+            if (confirmInModal) {
+              console.log(`[${exchange.name}] ✅ Found Confirm button in modal, clicking...`);
+              try {
+                await confirmBtn.click();
+                console.log(`[${exchange.name}] ✅ Clicked Confirm button`);
+                
+                // Step 7: Wait for modal to close automatically after Confirm click
+                // When Limit is selected and Confirm is clicked, the modal closes automatically
+                console.log(`[${exchange.name}] Step 7: Waiting for modal to close automatically after Confirm click...`);
+                let modalClosed = false;
+                const maxWaitIterations = 30; // Wait up to 9 seconds (30 * 300ms) for automatic close
+                for (let i = 0; i < maxWaitIterations; i++) {
+                  await delay(300);
+                  modalClosed = await page.evaluate(() => {
+                    const modals = document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"], [class*="Dialog"]');
+                    for (const modal of modals) {
+                      const style = window.getComputedStyle(modal);
+                      if (style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') {
+                        return false; // Modal still open
+                      }
+                    }
+                    return true; // All modals closed automatically
+                  });
+                  
+                  if (modalClosed) {
+                    console.log(`[${exchange.name}] ✅ Modal closed automatically - position close order placed (waited ${(i + 1) * 300}ms)`);
+                    break;
+                  }
+                  
+                  // Log progress every 3 seconds
+                  if ((i + 1) % 10 === 0) {
+                    console.log(`[${exchange.name}] ⏳ Still waiting for modal to close automatically... (${(i + 1) * 300}ms elapsed)`);
+                  }
+                }
+                
+                if (!modalClosed) {
+                  console.log(`[${exchange.name}] ⚠️  Modal still open after ${maxWaitIterations * 300}ms - it should close automatically after Limit + Confirm`);
+                  console.log(`[${exchange.name}] ⚠️  Waiting a bit more for automatic close...`);
+                  await delay(2000); // Wait 2 more seconds
+                  
+                  // Final check
+                  modalClosed = await page.evaluate(() => {
+                    const modals = document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"], [class*="Dialog"]');
+                    for (const modal of modals) {
+                      const style = window.getComputedStyle(modal);
+                      if (style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') {
+                        return false;
+                      }
+                    }
+                    return true;
+                  });
+                  
+                  if (!modalClosed) {
+                    console.log(`[${exchange.name}] ❌ CRITICAL: Modal still open after waiting! Cannot proceed to leverage setting.`);
+                    return { success: false, message: "Modal did not close automatically after Confirm click - cannot proceed" };
+                  }
+                }
+                
+                // Wait a bit more for UI to stabilize before proceeding to leverage
+                await delay(500);
+                console.log(`[${exchange.name}] ✅ Position close flow complete, modal closed automatically, ready for leverage setting`);
+                return { success: true, message: "GRVT position closed via modal flow, modal closed automatically" };
+              } catch (error) {
+                console.log(`[${exchange.name}] ⚠️  Error clicking Confirm: ${error.message}, trying JavaScript click...`);
+                await confirmBtn.evaluate((el) => el.click());
+                
+                // Wait for modal to close automatically after JavaScript click
+                console.log(`[${exchange.name}] Waiting for modal to close automatically after JavaScript click...`);
+                let modalClosed = false;
+                const maxWaitIterations = 30; // Wait up to 9 seconds
+                for (let i = 0; i < maxWaitIterations; i++) {
+                  await delay(300);
+                  modalClosed = await page.evaluate(() => {
+                    const modals = document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"], [class*="Dialog"]');
+                    for (const modal of modals) {
+                      const style = window.getComputedStyle(modal);
+                      if (style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') {
+                        return false;
+                      }
+                    }
+                    return true;
+                  });
+                  if (modalClosed) {
+                    console.log(`[${exchange.name}] ✅ Modal closed automatically after JavaScript click`);
+                    break;
+                  }
+                }
+                
+                if (!modalClosed) {
+                  console.log(`[${exchange.name}] ⚠️  Modal still open, waiting a bit more for automatic close...`);
+                  await delay(2000);
+                  
+                  // Final check
+                  modalClosed = await page.evaluate(() => {
+                    const modals = document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"], [class*="Dialog"]');
+                    for (const modal of modals) {
+                      const style = window.getComputedStyle(modal);
+                      if (style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') {
+                        return false;
+                      }
+                    }
+                    return true;
+                  });
+                  
+                  if (!modalClosed) {
+                    console.log(`[${exchange.name}] ❌ CRITICAL: Modal still open after JavaScript click! Cannot proceed.`);
+                    return { success: false, message: "Modal did not close automatically after Confirm click - cannot proceed" };
+                  }
+                }
+                
+                await delay(500);
+                console.log(`[${exchange.name}] ✅ Position close flow complete, modal closed automatically, ready for leverage setting`);
+                return { success: true, message: "Confirm clicked via JavaScript, modal closed automatically" };
+              }
+            } else {
+              console.log(`[${exchange.name}] ⚠️  Found Confirm button but it's not in modal`);
+            }
+          } else {
+            console.log(`[${exchange.name}] ⚠️  Could not find Confirm button in modal`);
+          }
+        } else {
+          console.log(`[${exchange.name}] ⚠️  Could not get Close button element handle`);
+        }
+      } else {
+        console.log(`[${exchange.name}] ⚠️  Could not find Close button in Actions column`);
+      }
+      
+      // If GRVT flow failed, fall through to general flow (shouldn't happen if flow is correct)
+      console.log(`[${exchange.name}] ⚠️  GRVT-specific flow failed or incomplete, continuing with general flow...`);
     }
-  
-    console.log(`[Paradex] ✅ Positions still exist (data rows found in table) - proceeding to find Limit button...`);
     
-    // Step 1: Look for Limit button in Positions table Close column BEFORE any Close All button logic
+    // ============================================================================
+    // GENERIC CLOSE POSITION FLOW (for Paradex, Extended, Kraken, etc.)
+    // This code runs for all non-GRVT exchanges
+    // ============================================================================
+    
+    // Step 1 (for Paradex): Look for Limit button in Positions table Close column BEFORE any Close All button logic
     // The Close column has buttons with text "Market" and "Limit" in MarketCloseButton__Container
     // IMPORTANT: This must happen BEFORE looking for "Close All" button
     console.log(`Step 1: Looking for Limit button in Positions table Close column (before Close All button)...`);

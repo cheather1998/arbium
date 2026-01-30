@@ -1,8 +1,8 @@
-import { delay } from '../utils/helpers.js';
-import { findByExactText } from '../utils/helpers.js';
+import { delay, findByExactText, findByText } from '../utils/helpers.js';
 
 async function cancelAllOrders(page) {
-    console.log(`\n=== Canceling All Open Orders ===`);
+    console.log(`\n=== Canceling All Open Orders (GENERIC FUNCTION) ===`);
+    console.log(`⚠️  NOTE: This is the generic cancelAllOrders function. If this is Kraken, it should use cancelKrakenOrders instead!`);
   
     // Wait a moment for any previous actions to complete
     await delay(500); // Reduced from 1000ms
@@ -74,6 +74,9 @@ async function cancelAllOrders(page) {
   
     if (!hasOrders) {
       console.log("✅ No open orders found - skipping cancellation");
+      // Wait before proceeding to leverage setting
+      console.log("Waiting 2 seconds before proceeding to leverage setting...");
+      await delay(2000);
       return { success: true, message: "No orders to cancel", canceled: 0 };
     }
   
@@ -107,6 +110,9 @@ async function cancelAllOrders(page) {
     // Early exit if no orders found
     if (initialOrderCount === 0) {
       console.log("✅ No open orders found - skipping cancellation");
+      // Wait before proceeding to leverage setting
+      console.log("Waiting 2 seconds before proceeding to leverage setting...");
+      await delay(2000);
       return { success: true, message: "No orders to cancel", canceled: 0 };
     }
   
@@ -331,6 +337,9 @@ async function cancelAllOrders(page) {
       };
     } else {
       console.log("No orders were canceled (none found or already canceled)");
+      // Wait before proceeding to leverage setting
+      console.log("Waiting 2 seconds before proceeding to leverage setting...");
+      await delay(2000);
       return {
         success: true,
         message: "No orders to cancel",
@@ -462,4 +471,668 @@ async function verifyOrderPlaced(page, exchange, side, qty, maxWaitTime = 10000)
     };
   }
 
-  export { cancelAllOrders, verifyOrderPlaced };
+/**
+ * Cancel orders for Kraken using modal flow
+ * 1. Go to Open Orders tab
+ * 2. Check if there are any orders
+ * 3. Click on an order (opens modal)
+ * 4. Click "Cancel order" button
+ * 5. Click "Yes, cancel order" in confirmation modal
+ */
+async function cancelKrakenOrders(page) {
+  console.log(`\n=== Canceling Kraken Orders via Modal Flow (KRAKEN-SPECIFIC FUNCTION) ===`);
+  
+  // Wait for Kraken page to fully load before proceeding
+  console.log(`[Kraken] Waiting 20 seconds for page to fully load...`);
+  await delay(20000); // Wait 20 seconds for page to fully load and show Open orders tab
+  
+  // Step 1: Go to Open Orders tab
+  console.log(`[Kraken] Step 1: Going to Open Orders tab...`);
+  let openOrdersTab = await findByExactText(page, "Open orders", ["button", "div", "span", "a"]);
+  
+  if (!openOrdersTab) {
+    openOrdersTab = await findByExactText(page, "Open Orders", ["button", "div", "span", "a"]);
+  }
+  
+  if (!openOrdersTab) {
+    openOrdersTab = await findByText(page, "Open orders", ["button", "div", "span", "a"]);
+  }
+  
+  if (!openOrdersTab) {
+    openOrdersTab = await findByExactText(page, "Order History", ["button", "div", "span", "a"]);
+  }
+  
+  if (!openOrdersTab) {
+    openOrdersTab = await findByExactText(page, "Orders", ["button", "div", "span", "a"]);
+  }
+  
+  if (openOrdersTab) {
+    const isVisible = await page.evaluate((el) => {
+      return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+    }, openOrdersTab);
+    
+    if (isVisible) {
+      await openOrdersTab.click();
+      console.log(`[Kraken] ✅ Clicked Open Orders tab`);
+      await delay(2000); // Wait longer for orders to load and table to render
+    } else {
+      console.log(`[Kraken] ⚠️  Open Orders tab found but not visible`);
+      return { success: false, message: "Open Orders tab not visible" };
+    }
+  } else {
+    console.log(`[Kraken] ⚠️  Could not find Open Orders tab`);
+    return { success: false, message: "Open Orders tab not found" };
+  }
+  
+  // Step 2: Check if there are any orders
+  console.log(`[Kraken] Step 2: Checking for open orders...`);
+  
+  // Wait a bit more for the table to fully render
+  await delay(500);
+  const hasOrders = await page.evaluate(() => {
+    // Strategy 1: Look for container with id="open-orders" (Kraken-specific)
+    let container = document.getElementById('open-orders');
+    
+    // Strategy 2: Look for table with role="table" that contains order data
+    if (!container) {
+      const tables = Array.from(document.querySelectorAll('[role="table"]'));
+      for (const table of tables) {
+        const tableText = (table.textContent || '').toLowerCase();
+        // Check if this table contains order-related headers or data
+        if ((tableText.includes('limit') || tableText.includes('market')) && 
+            (tableText.includes('buy') || tableText.includes('sell')) &&
+            (tableText.includes('quantity') || tableText.includes('price') || tableText.includes('usd'))) {
+          container = table;
+          break;
+        }
+      }
+    }
+    
+    // Strategy 3: Look for rowgroup that contains order rows
+    if (!container) {
+      const rowgroups = Array.from(document.querySelectorAll('[role="rowgroup"]'));
+      for (const rg of rowgroups) {
+        const rgText = (rg.textContent || '').toLowerCase();
+        if ((rgText.includes('limit') || rgText.includes('market')) && 
+            (rgText.includes('buy') || rgText.includes('sell'))) {
+          container = rg;
+          break;
+        }
+      }
+    }
+    
+    if (!container) {
+      console.log('[Kraken] No order table/container found');
+      return { hasOrders: false, count: 0, debug: 'no container' };
+    }
+    
+    // Look for rows with role="button" (Kraken order rows are clickable buttons)
+    const buttonRows = Array.from(container.querySelectorAll('[role="button"]'));
+    
+    // Also look for regular table rows
+    const tableRows = Array.from(container.querySelectorAll('tbody tr, tr'));
+    
+    // Also look in rowgroups within the container
+    const rowgroups = Array.from(container.querySelectorAll('[role="rowgroup"]'));
+    const rowgroupRows = [];
+    for (const rg of rowgroups) {
+      rowgroupRows.push(...Array.from(rg.querySelectorAll('[role="button"], tr')));
+    }
+    
+    // Combine all potential rows
+    const allRows = [...new Set([...buttonRows, ...tableRows, ...rowgroupRows])];
+    
+    const orderRows = allRows.filter(row => {
+      // Check visibility - be more lenient with offsetParent check
+      const style = window.getComputedStyle(row);
+      if (style.display === 'none' || style.visibility === 'hidden') {
+        return false;
+      }
+      
+      // Check if element has dimensions (even if offsetParent is null due to positioning)
+      if (row.offsetWidth === 0 && row.offsetHeight === 0) {
+        return false;
+      }
+      
+      const rowText = (row.textContent || '').toLowerCase();
+      
+      // Skip header rows - check for multiple header indicators
+      if ((rowText.includes('market') || rowText.includes('side') || rowText.includes('type')) &&
+          (rowText.includes('quantity') || rowText.includes('price')) &&
+          (rowText.includes('date') || rowText.includes('time'))) {
+        // This looks like a header row
+        return false;
+      }
+      
+      // Check if row contains order data indicators
+      const hasOrderType = rowText.includes('limit') || rowText.includes('market');
+      const hasSide = (rowText.includes('buy') || rowText.includes('sell')) && 
+                      !rowText.includes('side'); // "side" is a header, not order data
+      const hasPrice = /\d{1,3}([,.]\d{3})*[,.]?\d*\s*(usd|btc)/i.test(rowText) || 
+                      /\d{4,}\s*(usd|btc)/i.test(rowText); // Match prices like "82,669 USD" or "83056 USD"
+      const hasQuantity = /0\.\d+\s*(btc|usd)/i.test(rowText) || 
+                          /\d+\.\d+\s*(btc|usd)/i.test(rowText); // Match quantities like "0.0001 BTC"
+      
+      // Must have order type AND side, and at least one of price/quantity
+      const isOrderRow = hasOrderType && hasSide && (hasPrice || hasQuantity);
+      
+      // Exclude canceled/filled orders
+      const isActive = !rowText.includes('canceled') && 
+                       !rowText.includes('filled') && 
+                       !rowText.includes('executed') &&
+                       !rowText.includes('no orders');
+      
+      return isOrderRow && isActive;
+    });
+    
+    if (orderRows.length > 0) {
+      return { hasOrders: true, count: orderRows.length };
+    }
+    
+    return { hasOrders: false, count: 0, debug: `checked ${allRows.length} rows, none matched` };
+  });
+  
+  if (!hasOrders.hasOrders) {
+    console.log(`[Kraken] ✅ No open orders found`);
+    // Wait before proceeding to leverage setting
+    console.log(`[Kraken] Waiting 2 seconds before proceeding to leverage setting...`);
+    await delay(2000);
+    return { success: true, message: "No orders to cancel", canceled: 0 };
+  }
+  
+  console.log(`[Kraken] Found ${hasOrders.count} open order(s), canceling all...`);
+  
+  // Store the initial count - we'll use this to ensure we try to cancel at least this many
+  const initialOrderCount = hasOrders.count;
+  
+  // Helper function to find all order rows (reusable)
+  const findOrderRows = async () => {
+    try {
+      const result = await page.evaluate(() => {
+        try {
+          console.log('[Kraken] findOrderRows: Starting search...');
+          // Strategy 1: Look for container with id="open-orders" (Kraken-specific)
+          let container = document.getElementById('open-orders');
+          console.log('[Kraken] findOrderRows: Container by ID:', container ? 'found' : 'not found');
+      
+      // Strategy 2: Look for table with role="table" that contains order data
+      if (!container) {
+        const tables = Array.from(document.querySelectorAll('[role="table"]'));
+        for (const table of tables) {
+          const tableText = (table.textContent || '').toLowerCase();
+          if ((tableText.includes('limit') || tableText.includes('market')) && 
+              (tableText.includes('buy') || tableText.includes('sell')) &&
+              (tableText.includes('quantity') || tableText.includes('price') || tableText.includes('usd'))) {
+            container = table;
+            break;
+          }
+        }
+      }
+      
+      // Strategy 3: Look for rowgroup that contains order rows
+      if (!container) {
+        const rowgroups = Array.from(document.querySelectorAll('[role="rowgroup"]'));
+        for (const rg of rowgroups) {
+          const rgText = (rg.textContent || '').toLowerCase();
+          if ((rgText.includes('limit') || rgText.includes('market')) && 
+              (rgText.includes('buy') || rgText.includes('sell'))) {
+            container = rg;
+            break;
+          }
+        }
+      }
+      
+      if (!container) {
+        return [];
+      }
+      
+      // Look for rows with role="button" (Kraken order rows are clickable buttons)
+      const buttonRows = Array.from(container.querySelectorAll('[role="button"]'));
+      const tableRows = Array.from(container.querySelectorAll('tbody tr, tr'));
+      
+      // Also look in rowgroups within the container
+      const rowgroups = Array.from(container.querySelectorAll('[role="rowgroup"]'));
+      const rowgroupRows = [];
+      for (const rg of rowgroups) {
+        rowgroupRows.push(...Array.from(rg.querySelectorAll('[role="button"], tr')));
+      }
+      
+      // Combine all potential rows
+      const allRows = [...new Set([...buttonRows, ...tableRows, ...rowgroupRows])];
+      
+      const orderRows = allRows.filter(row => {
+        // Check visibility - be more lenient with offsetParent check
+        const style = window.getComputedStyle(row);
+        if (style.display === 'none' || style.visibility === 'hidden') {
+          return false;
+        }
+        
+        // Check if element has dimensions (even if offsetParent is null due to positioning)
+        if (row.offsetWidth === 0 && row.offsetHeight === 0) {
+          return false;
+        }
+        
+        const rowText = (row.textContent || '').toLowerCase();
+        
+        // Skip header rows - check for multiple header indicators
+        if ((rowText.includes('market') || rowText.includes('side') || rowText.includes('type')) &&
+            (rowText.includes('quantity') || rowText.includes('price')) &&
+            (rowText.includes('date') || rowText.includes('time'))) {
+          return false;
+        }
+        
+        // Check if row contains order data indicators
+        const hasOrderType = rowText.includes('limit') || rowText.includes('market');
+        const hasSide = (rowText.includes('buy') || rowText.includes('sell')) && 
+                        !rowText.includes('side'); // "side" is a header, not order data
+        const hasPrice = /\d{1,3}([,.]\d{3})*[,.]?\d*\s*(usd|btc)/i.test(rowText) || 
+                        /\d{4,}\s*(usd|btc)/i.test(rowText); // Match prices like "82,669 USD" or "83056 USD"
+        const hasQuantity = /0\.\d+\s*(btc|usd)/i.test(rowText) || 
+                            /\d+\.\d+\s*(btc|usd)/i.test(rowText); // Match quantities like "0.0001 BTC"
+        
+        // Must have order type AND side, and at least one of price/quantity
+        const isOrderRow = hasOrderType && hasSide && (hasPrice || hasQuantity);
+        
+        // Exclude canceled/filled orders
+        const isActive = !rowText.includes('canceled') && 
+                         !rowText.includes('filled') && 
+                         !rowText.includes('executed') &&
+                         !rowText.includes('no orders');
+        
+        return isOrderRow && isActive;
+      });
+      
+      console.log('[Kraken] findOrderRows: Filtered to', orderRows.length, 'order rows');
+      
+      // Return array of order row info - we can't pass DOM elements, so we'll use selectors
+      return orderRows.map((row, index) => {
+        // Get a unique identifier for the row - use its position and text content
+        const rowText = row.textContent || '';
+        const rowId = `${index}_${rowText.substring(0, 50).replace(/\s+/g, '_')}`;
+        return {
+          index,
+          text: rowText.substring(0, 100) || '',
+          rowId: rowId,
+          // Store selector info that we can use to find it again
+          hasBuy: rowText.toLowerCase().includes('buy'),
+          hasSell: rowText.toLowerCase().includes('sell'),
+          hasLimit: rowText.toLowerCase().includes('limit'),
+          hasMarket: rowText.toLowerCase().includes('market')
+        };
+      });
+        } catch (e) {
+          // Return error info that can be logged in Node.js context
+          return { error: true, message: e.message || String(e) };
+        }
+      });
+      
+      // Check if result is an error object
+      if (result && typeof result === 'object' && result.error) {
+        console.log(`[Kraken] ⚠️  Error in page.evaluate: ${result.message}`);
+        return [];
+      }
+      // Ensure we always return an array
+      return Array.isArray(result) ? result : [];
+    } catch (error) {
+      console.log(`[Kraken] ⚠️  Error in findOrderRows: ${error.message}`);
+      return [];
+    }
+  };
+  
+  // Cancel all orders one by one
+  let canceledCount = 0;
+  const maxAttempts = initialOrderCount * 3; // Allow up to 3 attempts per order
+  let attempts = 0;
+  let lastOrderCount = initialOrderCount; // Track last known order count
+  
+  while (attempts < maxAttempts) {
+    attempts++;
+    
+    console.log(`[Kraken] Loop iteration ${attempts}/${maxAttempts}, canceled so far: ${canceledCount}, initial count: ${initialOrderCount}`);
+    
+    // Get current list of order rows
+    const orderRows = await findOrderRows();
+    
+    // Safety check: ensure orderRows is an array
+    if (!Array.isArray(orderRows)) {
+      console.log(`[Kraken] ⚠️  findOrderRows returned non-array: ${typeof orderRows}, defaulting to empty array`);
+      break;
+    }
+    
+    console.log(`[Kraken] findOrderRows returned ${orderRows.length} order row(s)`);
+    
+    // If we haven't canceled any orders yet but findOrderRows returns empty,
+    // and we know there should be orders, try to click anyway using the initial count
+    if (orderRows.length === 0 && canceledCount === 0 && initialOrderCount > 0) {
+      console.log(`[Kraken] ⚠️  findOrderRows returned empty but initial check found ${initialOrderCount} order(s).`);
+      console.log(`[Kraken] Will attempt to click order row directly using index 0...`);
+      // Continue to the clicking logic - we'll use index 0 in the page.evaluate
+    } else if (orderRows.length === 0) {
+      // Only exit if we've canceled at least one order AND no orders remain
+      if (canceledCount > 0) {
+        console.log(`[Kraken] ✅ All orders canceled (${canceledCount} total)`);
+        break;
+      } else {
+        console.log(`[Kraken] ✅ No orders found - nothing to cancel`);
+        break;
+      }
+    }
+    
+    const currentOrderCount = orderRows.length > 0 ? orderRows.length : (canceledCount === 0 ? initialOrderCount : 0);
+    console.log(`[Kraken] Canceling order ${canceledCount + 1}/${initialOrderCount} (${currentOrderCount} remaining)...`);
+    
+    // Step 3: Click on the first available order to open modal
+    console.log(`[Kraken] Step 3: Clicking on order row to open modal...`);
+    if (orderRows.length > 0 && orderRows[0]) {
+      const orderInfo = orderRows[0];
+      console.log(`[Kraken] Order info: ${orderInfo.text ? orderInfo.text.substring(0, 80) : 'N/A'}...`);
+    } else {
+      console.log(`[Kraken] No order info available, will try to click first order row by index 0...`);
+    }
+    
+    const orderClicked = await page.evaluate((targetIndex) => {
+      // Strategy 1: Look for container with id="open-orders" (Kraken-specific)
+      let container = document.getElementById('open-orders');
+      
+      // Strategy 2: Look for table with role="table" that contains order data
+      if (!container) {
+        const tables = Array.from(document.querySelectorAll('[role="table"]'));
+        for (const table of tables) {
+          const tableText = (table.textContent || '').toLowerCase();
+          if ((tableText.includes('limit') || tableText.includes('market')) && 
+              (tableText.includes('buy') || tableText.includes('sell')) &&
+              (tableText.includes('quantity') || tableText.includes('price') || tableText.includes('usd'))) {
+            container = table;
+            break;
+          }
+        }
+      }
+      
+      // Strategy 3: Look for rowgroup that contains order rows
+      if (!container) {
+        const rowgroups = Array.from(document.querySelectorAll('[role="rowgroup"]'));
+        for (const rg of rowgroups) {
+          const rgText = (rg.textContent || '').toLowerCase();
+          if ((rgText.includes('limit') || rgText.includes('market')) && 
+              (rgText.includes('buy') || rgText.includes('sell'))) {
+            container = rg;
+            break;
+          }
+        }
+      }
+      
+      if (!container) {
+        return false;
+      }
+      
+      // Look for rows with role="button" (Kraken order rows are clickable buttons)
+      const buttonRows = Array.from(container.querySelectorAll('[role="button"]'));
+      const tableRows = Array.from(container.querySelectorAll('tbody tr, tr'));
+      
+      // Also look in rowgroups within the container
+      const rowgroups = Array.from(container.querySelectorAll('[role="rowgroup"]'));
+      const rowgroupRows = [];
+      for (const rg of rowgroups) {
+        rowgroupRows.push(...Array.from(rg.querySelectorAll('[role="button"], tr')));
+      }
+      
+      // Combine all potential rows
+      const allRows = [...new Set([...buttonRows, ...tableRows, ...rowgroupRows])];
+      
+      const orderRows = allRows.filter(row => {
+        const style = window.getComputedStyle(row);
+        if (style.display === 'none' || style.visibility === 'hidden') {
+          return false;
+        }
+        
+        if (row.offsetWidth === 0 && row.offsetHeight === 0) {
+          return false;
+        }
+        
+        const rowText = (row.textContent || '').toLowerCase();
+        
+        // Skip header rows
+        if ((rowText.includes('market') || rowText.includes('side') || rowText.includes('type')) &&
+            (rowText.includes('quantity') || rowText.includes('price')) &&
+            (rowText.includes('date') || rowText.includes('time'))) {
+          return false;
+        }
+        
+        const hasOrderType = rowText.includes('limit') || rowText.includes('market');
+        const hasSide = (rowText.includes('buy') || rowText.includes('sell')) && 
+                        !rowText.includes('side');
+        const hasPrice = /\d{1,3}([,.]\d{3})*[,.]?\d*\s*(usd|btc)/i.test(rowText) || 
+                        /\d{4,}\s*(usd|btc)/i.test(rowText);
+        const hasQuantity = /0\.\d+\s*(btc|usd)/i.test(rowText) || 
+                            /\d+\.\d+\s*(btc|usd)/i.test(rowText);
+        
+        const isOrderRow = hasOrderType && hasSide && (hasPrice || hasQuantity);
+        const isActive = !rowText.includes('canceled') && 
+                         !rowText.includes('filled') && 
+                         !rowText.includes('executed') &&
+                         !rowText.includes('no orders');
+        
+        return isOrderRow && isActive;
+      });
+      
+      if (orderRows.length > 0 && rowIndex < orderRows.length) {
+        // Click on the order row at the specified index
+        orderRows[rowIndex].click();
+        return true;
+      }
+      
+      return false;
+    }, 0); // Always click the first available order (index 0)
+    
+    if (!orderClicked) {
+      console.log(`[Kraken] ⚠️  Could not click on order row`);
+      break;
+    }
+    
+    // Step 3a: Wait for FIRST modal to open (order details modal)
+    console.log(`[Kraken] Step 3a: Waiting for first modal (order details) to open...`);
+    let firstModalOpen = false;
+    for (let i = 0; i < 10; i++) {
+      firstModalOpen = await page.evaluate(() => {
+        const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="overlay"]'));
+        return modals.some(modal => {
+          const style = window.getComputedStyle(modal);
+          return style.display !== 'none' && style.visibility !== 'hidden' && 
+                 (modal.offsetWidth > 0 && modal.offsetHeight > 0);
+        });
+      });
+      if (firstModalOpen) {
+        console.log(`[Kraken] ✅ First modal opened`);
+        break;
+      }
+      await delay(200);
+    }
+    
+    if (!firstModalOpen) {
+      console.log(`[Kraken] ⚠️  First modal did not open, skipping this order`);
+      await page.keyboard.press('Escape');
+      await delay(300);
+      continue;
+    }
+    
+    await delay(500); // Additional wait for modal to fully render
+    
+    // Step 4: Find and click "Cancel order" button in FIRST modal
+    console.log(`[Kraken] Step 4: Looking for "Cancel order" button in first modal...`);
+    let cancelOrderBtn = await findByExactText(page, "Cancel order", ["button", "div", "span"]);
+    
+    if (!cancelOrderBtn) {
+      cancelOrderBtn = await findByText(page, "Cancel order", ["button", "div", "span"]);
+    }
+    
+    if (!cancelOrderBtn) {
+      cancelOrderBtn = await findByExactText(page, "Cancel", ["button", "div", "span"]);
+    }
+    
+    if (cancelOrderBtn) {
+      // Verify it's in a modal
+      const isInModal = await page.evaluate((el) => {
+        let parent = el.parentElement;
+        for (let i = 0; i < 10 && parent; i++) {
+          const className = (typeof parent.className === 'string' ? parent.className : (parent.className?.baseVal || String(parent.className) || '')).toLowerCase();
+          if (parent.tagName === 'DIV' && (parent.getAttribute('role') === 'dialog' || 
+              className.includes('modal') || className.includes('dialog') || 
+              className.includes('overlay'))) {
+            return true;
+          }
+          parent = parent.parentElement;
+        }
+        return false;
+      }, cancelOrderBtn);
+      
+      if (isInModal) {
+        console.log(`[Kraken] ✅ Found "Cancel order" button in first modal, clicking...`);
+        await cancelOrderBtn.click();
+        console.log(`[Kraken] Waiting for first modal to close and second modal (confirmation) to open...`);
+        
+        // Step 4a: Wait for FIRST modal to close and SECOND modal to open
+        let secondModalOpen = false;
+        let firstModalClosed = false;
+        for (let i = 0; i < 15; i++) {
+          const modalState = await page.evaluate(() => {
+            const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="overlay"]'));
+            const visibleModals = modals.filter(modal => {
+              const style = window.getComputedStyle(modal);
+              return style.display !== 'none' && style.visibility !== 'hidden' && 
+                     (modal.offsetWidth > 0 && modal.offsetHeight > 0);
+            });
+            return { count: visibleModals.length, hasCancelText: document.body.innerText.toLowerCase().includes('yes, cancel order') || document.body.innerText.toLowerCase().includes('cancel order') };
+          });
+          
+          // Check if we have a confirmation modal (should have "Yes, cancel order" text)
+          if (modalState.hasCancelText && modalState.count > 0) {
+            secondModalOpen = true;
+            firstModalClosed = true; // Assume first closed if second opened
+            break;
+          }
+          
+          // If no modals visible, first modal closed but second hasn't opened yet
+          if (modalState.count === 0 && i > 2) {
+            firstModalClosed = true;
+          }
+          
+          await delay(200);
+        }
+        
+        if (!secondModalOpen) {
+          console.log(`[Kraken] ⚠️  Second modal (confirmation) did not open after clicking "Cancel order"`);
+          // Try to close any open modals and continue
+          await page.keyboard.press('Escape');
+          await delay(300);
+          continue;
+        }
+        
+        console.log(`[Kraken] ✅ Second modal (confirmation) opened`);
+        await delay(500); // Additional wait for second modal to fully render
+      } else {
+        console.log(`[Kraken] ⚠️  Found "Cancel order" button but it's not in a modal`);
+        // Try to close any open modals and continue
+        await page.keyboard.press('Escape');
+        await delay(300);
+        continue;
+      }
+    } else {
+      console.log(`[Kraken] ⚠️  Could not find "Cancel order" button in first modal`);
+      // Try to close any open modals and continue
+      await page.keyboard.press('Escape');
+      await delay(300);
+      continue;
+    }
+    
+    // Step 5: Find and click "Yes, cancel order" button in SECOND modal (confirmation modal)
+    console.log(`[Kraken] Step 5: Looking for "Yes, cancel order" button in second modal (confirmation)...`);
+    let confirmCancelBtn = await findByExactText(page, "Yes, cancel order", ["button", "div", "span"]);
+    
+    if (!confirmCancelBtn) {
+      confirmCancelBtn = await findByText(page, "Yes, cancel order", ["button", "div", "span"]);
+    }
+    
+    if (!confirmCancelBtn) {
+      // Try variations
+      confirmCancelBtn = await findByExactText(page, "Yes", ["button", "div", "span"]);
+    }
+    
+    if (confirmCancelBtn) {
+      // Verify it's in a modal
+      const isInModal = await page.evaluate((el) => {
+        let parent = el.parentElement;
+        for (let i = 0; i < 10 && parent; i++) {
+          const className = (typeof parent.className === 'string' ? parent.className : (parent.className?.baseVal || String(parent.className) || '')).toLowerCase();
+          if (parent.tagName === 'DIV' && (parent.getAttribute('role') === 'dialog' || 
+              className.includes('modal') || className.includes('dialog') || 
+              className.includes('overlay'))) {
+            return true;
+          }
+          parent = parent.parentElement;
+        }
+        return false;
+      }, confirmCancelBtn);
+      
+      if (isInModal) {
+        console.log(`[Kraken] ✅ Found "Yes, cancel order" button in second modal, clicking...`);
+        await confirmCancelBtn.click();
+        console.log(`[Kraken] Waiting for both modals to close...`);
+        
+        // Step 5a: Wait for both modals to close
+        let modalsClosed = false;
+        for (let i = 0; i < 20; i++) {
+          const modalCount = await page.evaluate(() => {
+            const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="overlay"]'));
+            return modals.filter(modal => {
+              const style = window.getComputedStyle(modal);
+              return style.display !== 'none' && style.visibility !== 'hidden' && 
+                     (modal.offsetWidth > 0 && modal.offsetHeight > 0);
+            }).length;
+          });
+          
+          if (modalCount === 0) {
+            modalsClosed = true;
+            break;
+          }
+          await delay(200);
+        }
+        
+        if (modalsClosed) {
+          canceledCount++;
+          console.log(`[Kraken] ✅ Order ${canceledCount} canceled successfully (both modals closed)`);
+        } else {
+          console.log(`[Kraken] ⚠️  Modals may still be open, but order cancellation was attempted`);
+          // Try to close any remaining modals
+          await page.keyboard.press('Escape');
+          await delay(300);
+          canceledCount++; // Count it anyway since we clicked confirm
+        }
+      } else {
+        console.log(`[Kraken] ⚠️  Found "Yes, cancel order" button but it's not in a modal`);
+        // Try to close any open modals and continue
+        await page.keyboard.press('Escape');
+        await delay(300);
+      }
+    } else {
+      console.log(`[Kraken] ⚠️  Could not find "Yes, cancel order" button in second modal`);
+      // Try to close any open modals and continue
+      await page.keyboard.press('Escape');
+      await delay(300);
+    }
+    
+    // Wait a bit before checking for next order
+    await delay(500);
+  }
+  
+  // Wait additional time after canceling orders before proceeding to leverage setting
+  console.log(`[Kraken] Waiting 2 seconds after cancel order flow before proceeding to leverage setting...`);
+  await delay(2000);
+  
+  if (canceledCount > 0) {
+    return { success: true, message: `Canceled ${canceledCount} order(s)`, canceled: canceledCount };
+  } else {
+    return { success: true, message: "No orders to cancel", canceled: 0 };
+  }
+}
+
+export { cancelAllOrders, verifyOrderPlaced, cancelKrakenOrders };

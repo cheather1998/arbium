@@ -536,20 +536,76 @@ export async function findSizeAndPriceInputs(page, orderType) {
 export async function enterPrice(page, priceInput, price, orderType) {
   if (orderType === "limit" && price) {
     if (priceInput) {
+      console.log(`Clearing and entering price: ${price}`);
+      
+      // Get current value
+      const currentValue = await page.evaluate((el) => el.value || '', priceInput);
+      console.log(`Current price value: "${currentValue}"`);
+      
+      // Focus the input
+      await priceInput.focus();
+      await delay(200);
+      
+      // Method 1: Triple click to select all, then Backspace
       await priceInput.click({ clickCount: 3 });
-      await delay(100);
+      await delay(200);
       await page.keyboard.press("Backspace");
-      await priceInput.type(String(price), { delay: 30 });
-      console.log(`Entered price: ${price}`);
+      await delay(200);
+      
+      // Verify it's cleared
+      let clearedValue = await page.evaluate((el) => el.value || '', priceInput);
+      console.log(`Price value after clearing: "${clearedValue}"`);
+      
+      // If not cleared, use JavaScript to clear
+      if (clearedValue && clearedValue.trim() !== '') {
+        console.log(`Price not fully cleared, using JavaScript to clear...`);
+        await page.evaluate((el) => {
+          el.value = '';
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+        }, priceInput);
+        await delay(200);
+        clearedValue = await page.evaluate((el) => el.value || '', priceInput);
+        console.log(`Price value after JavaScript clear: "${clearedValue}"`);
+      }
+      
+      // Type the new price value
+      const priceStr = String(price);
+      console.log(`Typing price value: "${priceStr}"`);
+      await priceInput.type(priceStr, { delay: 50 });
+      await delay(300);
+      
+      // Verify the value was set
+      const finalValue = await page.evaluate((el) => el.value || '', priceInput);
+      console.log(`Final price value: "${finalValue}"`);
+      
+      // Trigger input/change events to ensure UI updates
+      await page.evaluate((el) => {
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        el.dispatchEvent(new Event('blur', { bubbles: true }));
+      }, priceInput);
+      await delay(200);
+      
+      console.log(`✅ Price entered: ${price}`);
     } else {
+      console.log(`⚠️  Price input not provided, trying fallback...`);
       const allInputs = await page.$$("input");
       for (const inp of allInputs) {
         const rect = await inp.boundingBox();
         if (rect && rect.x > 1000 && rect.y > 150 && rect.y < 300) {
+          await inp.focus();
+          await delay(200);
           await inp.click({ clickCount: 3 });
           await delay(100);
           await page.keyboard.press("Backspace");
-          await inp.type(String(price), { delay: 30 });
+          await delay(200);
+          await page.evaluate((el) => {
+            el.value = '';
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+          }, inp);
+          await delay(200);
+          await inp.type(String(price), { delay: 50 });
           console.log(`Entered price: ${price} (fallback)`);
           break;
         }
