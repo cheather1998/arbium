@@ -1,5 +1,4 @@
-import { delay } from '../utils/helpers.js';
-import { findByText, findByExactText } from '../utils/helpers.js';
+import { delay, findByText, findByExactText } from '../utils/helpers.js';
 import { verifyOrderPlaced } from './orders.js';
 
 /**
@@ -124,7 +123,22 @@ export async function getCurrentMarketPrice(page, exchangeConfig = null) {
  */
 export async function selectBuyOrSell(page, side, exchange) {
   if (side === "sell") {
-    const sellBtn = await findByExactText(page, exchange.selectors.sellButton, ["button", "div"]);
+    // Try exact match first
+    let sellBtn = await findByExactText(page, exchange.selectors.sellButton, ["button", "div"]);
+    
+    // If exact match fails, try partial match (for GRVT "Sell / Short")
+    if (!sellBtn) {
+      sellBtn = await findByText(page, exchange.selectors.sellButton, ["button", "div"]);
+    }
+    
+    // Fallback: Try matching just "Sell" or "Short"
+    if (!sellBtn) {
+      sellBtn = await findByText(page, "Sell", ["button", "div"]);
+      if (!sellBtn) {
+        sellBtn = await findByText(page, "Short", ["button", "div"]);
+      }
+    }
+    
     if (sellBtn) {
       await sellBtn.click();
       console.log(`[${exchange.name}] Selected SELL`);
@@ -132,7 +146,22 @@ export async function selectBuyOrSell(page, side, exchange) {
       return true;
     }
   } else {
-    const buyBtn = await findByExactText(page, exchange.selectors.buyButton, ["button", "div"]);
+    // Try exact match first
+    let buyBtn = await findByExactText(page, exchange.selectors.buyButton, ["button", "div"]);
+    
+    // If exact match fails, try partial match (for GRVT "Buy / Long")
+    if (!buyBtn) {
+      buyBtn = await findByText(page, exchange.selectors.buyButton, ["button", "div"]);
+    }
+    
+    // Fallback: Try matching just "Buy" or "Long"
+    if (!buyBtn) {
+      buyBtn = await findByText(page, "Buy", ["button", "div"]);
+      if (!buyBtn) {
+        buyBtn = await findByText(page, "Long", ["button", "div"]);
+      }
+    }
+    
     if (buyBtn) {
       await buyBtn.click();
       console.log(`[${exchange.name}] Selected BUY`);
@@ -147,22 +176,35 @@ export async function selectBuyOrSell(page, side, exchange) {
  * Select Market or Limit order type
  */
 export async function selectOrderType(page, orderType, exchange) {
-  if (orderType === "limit") {
-    const limitBtn = await findByExactText(page, exchange.selectors.limitButton, ["button", "div"]);
-    if (limitBtn) {
-      await limitBtn.click();
-      console.log(`[${exchange.name}] Selected LIMIT order`);
-      await delay(300);
-      return true;
+  console.log(`[${exchange.name}] selectOrderType: Looking for ${orderType.toUpperCase()} button...`);
+  try {
+    if (orderType === "limit") {
+      console.log(`[${exchange.name}] Searching for Limit button with text: "${exchange.selectors.limitButton}"`);
+      const limitBtn = await findByExactText(page, exchange.selectors.limitButton, ["button", "div"]);
+      if (limitBtn) {
+        console.log(`[${exchange.name}] Found Limit button, clicking...`);
+        await limitBtn.click();
+        console.log(`[${exchange.name}] Selected LIMIT order`);
+        await delay(300);
+        return true;
+      } else {
+        console.log(`[${exchange.name}] ⚠️  Limit button not found`);
+      }
+    } else {
+      console.log(`[${exchange.name}] Searching for Market button with text: "${exchange.selectors.marketButton}"`);
+      const marketBtn = await findByExactText(page, exchange.selectors.marketButton, ["button", "div"]);
+      if (marketBtn) {
+        console.log(`[${exchange.name}] Found Market button, clicking...`);
+        await marketBtn.click();
+        console.log(`[${exchange.name}] Selected MARKET order`);
+        await delay(300);
+        return true;
+      } else {
+        console.log(`[${exchange.name}] ⚠️  Market button not found`);
+      }
     }
-  } else {
-    const marketBtn = await findByExactText(page, exchange.selectors.marketButton, ["button", "div"]);
-    if (marketBtn) {
-      await marketBtn.click();
-      console.log(`[${exchange.name}] Selected MARKET order`);
-      await delay(300);
-      return true;
-    }
+  } catch (error) {
+    console.log(`[${exchange.name}] ⚠️  Error in selectOrderType: ${error.message}`);
   }
   return false;
 }
@@ -179,7 +221,7 @@ export async function findSizeAndPriceInputs(page, orderType) {
 
   // Get screen width for percentage-based filtering (works for all screen sizes)
   const screenWidth = await page.evaluate(() => window.innerWidth);
-  const rightSideThreshold = screenWidth * 0.5; // Right half of screen
+  const rightSideThreshold = screenWidth * 0.4; // Right 60% of screen (relaxed from 50% for better compatibility)
 
   for (const input of inputs) {
     const rect = await input.boundingBox();
@@ -187,24 +229,52 @@ export async function findSizeAndPriceInputs(page, orderType) {
 
     // Look for inputs in the right panel (trading panel is on the right side)
     // Use percentage-based approach for screen-size independence
-    if (rect.x < rightSideThreshold) continue;
+    // Skip inputs on the far left (likely navigation/menu)
+    if (rect.x < rightSideThreshold) {
+      console.log(`  Skipping input at x=${Math.round(rect.x)} (left side of screen)`);
+      continue;
+    }
 
     const inputInfo = await page.evaluate((el) => {
       // Get all text content around this input
       let parent = el.parentElement;
       let parentText = "";
       let labelText = "";
+      let siblingText = "";
 
-      // Check for label
+      // Check for label using multiple methods
       const labels = document.querySelectorAll("label");
       for (const label of labels) {
-        if (label.control === el || label.contains(el)) {
+        // Method 1: label.control points to input
+        if (label.control === el) {
           labelText = label.textContent?.trim() || "";
+          break;
+        }
+        // Method 2: label's 'for' attribute matches input id
+        if (label.getAttribute('for') === el.id && el.id) {
+          labelText = label.textContent?.trim() || "";
+          break;
+        }
+        // Method 3: label contains the input
+        if (label.contains(el)) {
+          labelText = label.textContent?.trim() || "";
+          break;
         }
       }
 
-      // Get parent text
-      for (let i = 0; i < 5 && parent; i++) {
+      // Check previous sibling for label text (Kraken uses this pattern)
+      let prevSibling = el.previousElementSibling;
+      for (let i = 0; i < 3 && prevSibling; i++) {
+        const text = prevSibling.textContent?.trim() || "";
+        if (text && (text.toLowerCase().includes('quantity') || text.toLowerCase().includes('size'))) {
+          siblingText = text;
+          break;
+        }
+        prevSibling = prevSibling.previousElementSibling;
+      }
+
+      // Get parent text (more thorough search)
+      for (let i = 0; i < 7 && parent; i++) {
         if (parent.innerText) {
           parentText = parent.innerText;
           break;
@@ -219,6 +289,7 @@ export async function findSizeAndPriceInputs(page, orderType) {
         name: el.name || "",
         parentText: parentText,
         labelText: labelText,
+        siblingText: siblingText,
       };
     }, input);
 
@@ -227,29 +298,55 @@ export async function findSizeAndPriceInputs(page, orderType) {
       `  ID: "${inputInfo.id}", Name: "${inputInfo.name}", Placeholder: "${inputInfo.placeholder}"`
     );
     console.log(
-      `  Label: "${
-        inputInfo.labelText
-      }", Parent: "${inputInfo.parentText.substring(0, 60)}"`
+      `  Label: "${inputInfo.labelText}", Sibling: "${inputInfo.siblingText}", Parent: "${inputInfo.parentText.substring(0, 60)}"`
     );
     console.log(`  Current value: "${inputInfo.value}"`);
 
     // Check if this is the Size input (case-insensitive for better matching)
+    // For GRVT: placeholder is "Quantity"
+    // For Kraken: label/sibling text is "Quantity"
+    const parentTextLower = inputInfo.parentText.toLowerCase();
+    const labelTextLower = inputInfo.labelText.toLowerCase();
+    const siblingTextLower = inputInfo.siblingText.toLowerCase();
+    const placeholderLower = inputInfo.placeholder.toLowerCase();
+    const idLower = inputInfo.id.toLowerCase();
+    const nameLower = inputInfo.name.toLowerCase();
+    
     const isSizeInput =
-      inputInfo.parentText.toLowerCase().includes("size") ||
-      inputInfo.labelText.toLowerCase().includes("size") ||
-      inputInfo.placeholder.toLowerCase().includes("size") ||
-      inputInfo.id.toLowerCase().includes("size") ||
-      inputInfo.name.toLowerCase().includes("size") ||
-      inputInfo.parentText.toLowerCase().includes("quantity") ||
-      inputInfo.placeholder.toLowerCase().includes("quantity");
+      parentTextLower.includes("size") ||
+      labelTextLower.includes("size") ||
+      siblingTextLower.includes("size") ||
+      placeholderLower.includes("size") ||
+      idLower.includes("size") ||
+      nameLower.includes("size") ||
+      // Also check for "quantity" (GRVT uses "Quantity" placeholder, Kraken uses "Quantity" label)
+      parentTextLower.includes("quantity") ||
+      labelTextLower.includes("quantity") ||
+      siblingTextLower.includes("quantity") ||
+      placeholderLower.includes("quantity") ||
+      placeholderLower === "quantity" || // Exact match for GRVT
+      labelTextLower === "quantity" || // Exact match for Kraken label
+      siblingTextLower === "quantity" || // Exact match for Kraken sibling
+      idLower.includes("quantity") ||
+      nameLower.includes("quantity");
 
     // Check if this is the Price input
+    // For GRVT: Also check for "Price" in lowercase and variations
+    // For GRVT: Price input has "Mid" in value or parent text (similar to "BTC" for quantity)
     const isPriceInput =
-      inputInfo.parentText.includes("Price") ||
-      inputInfo.labelText.includes("Price") ||
-      inputInfo.placeholder.includes("Price") ||
-      inputInfo.id.includes("price") ||
-      inputInfo.name.includes("price");
+      inputInfo.parentText.toLowerCase().includes("price") ||
+      inputInfo.labelText.toLowerCase().includes("price") ||
+      inputInfo.placeholder.toLowerCase().includes("price") ||
+      inputInfo.id.toLowerCase().includes("price") ||
+      inputInfo.name.toLowerCase().includes("price") ||
+      // For GRVT: Check for "Mid" in value or parent text
+      inputInfo.value.toLowerCase().includes("mid") ||
+      inputInfo.parentText.toLowerCase().includes("mid") ||
+      inputInfo.siblingText.toLowerCase().includes("mid") ||
+      // Also check for price-like patterns (numbers with $ or commas)
+      (inputInfo.value && inputInfo.value.match(/^\$?[0-9,]+(\.[0-9]+)?$/)) ||
+      // Check if input is near "Price" text
+      (inputInfo.siblingText.toLowerCase().includes("price"));
 
     if (isSizeInput && !sizeInput) {
       sizeInput = input;
@@ -257,6 +354,176 @@ export async function findSizeAndPriceInputs(page, orderType) {
     } else if (isPriceInput && !priceInput && orderType === "limit") {
       priceInput = input;
       console.log("✓ Found price input!");
+    }
+  }
+  
+  // For GRVT: If we found size input but not price input, look for input positioned near size input
+  if (sizeInput && !priceInput && orderType === "limit") {
+    console.log("⚠️  Price input not found via text search, trying position-based search...");
+    const sizeRect = await sizeInput.boundingBox();
+    if (sizeRect) {
+      for (const input of inputs) {
+        if (input === sizeInput) continue; // Skip the size input itself
+        const rect = await input.boundingBox();
+        if (!rect) continue;
+        
+        // Check if input is on the same row (Y within 50px) and close horizontally (within 400px)
+        const sameRow = Math.abs(rect.y - sizeRect.y) < 50;
+        const closeHorizontally = Math.abs(rect.x - sizeRect.x) < 400 && rect.x !== sizeRect.x;
+        
+        if (sameRow && closeHorizontally) {
+          // This is likely the Price input - verify it's not disabled/readonly
+          const isEnabled = await page.evaluate((el) => {
+            return el.offsetParent !== null && !el.disabled && !el.readOnly;
+          }, input);
+          
+          if (isEnabled) {
+            priceInput = input;
+            console.log("✓ Found price input via position-based search (near quantity input)!");
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  // Fallback 1: If size input not found, look for input with "BTC" in value or nearby text (right side only)
+  if (!sizeInput) {
+    console.log("⚠️  Size input not found with standard methods, trying fallback 1 (looking for input with BTC on right side)...");
+    for (const input of inputs) {
+      const rect = await input.boundingBox();
+      if (!rect || rect.x < rightSideThreshold) continue;
+
+      const inputInfo = await page.evaluate((el) => {
+        const value = el.value || "";
+        const placeholder = el.placeholder || "";
+        let parent = el.parentElement;
+        let parentText = "";
+        let prevSibling = el.previousElementSibling;
+        let siblingText = "";
+        
+        for (let i = 0; i < 5 && parent; i++) {
+          if (parent.innerText) {
+            parentText = parent.innerText;
+            break;
+          }
+          parent = parent.parentElement;
+        }
+        
+        if (prevSibling) {
+          siblingText = prevSibling.textContent?.trim() || "";
+        }
+        
+        return {
+          value: value,
+          placeholder: placeholder,
+          parentText: parentText,
+          siblingText: siblingText,
+          hasBtc: value.toLowerCase().includes("btc") || 
+                  placeholder.toLowerCase().includes("btc") ||
+                  parentText.toLowerCase().includes("btc") ||
+                  siblingText.toLowerCase().includes("btc")
+        };
+      }, input);
+
+      // If input has BTC in value or nearby, and it's not the price input, it's likely the size input
+      if (inputInfo.hasBtc && !inputInfo.value.match(/^\$?[0-9,]+(\.[0-9]+)?$/)) {
+        // Not a price format (price would be like $84,742.3)
+        sizeInput = input;
+        console.log("✓ Found size input via BTC fallback!");
+        
+        // After finding size input, try to find price input nearby (for GRVT)
+        if (!priceInput && orderType === "limit") {
+          const sizeRect = await sizeInput.boundingBox();
+          if (sizeRect) {
+            for (const otherInput of inputs) {
+              if (otherInput === sizeInput) continue;
+              const otherRect = await otherInput.boundingBox();
+              if (!otherRect || otherRect.x < rightSideThreshold) continue;
+              
+              const sameRow = Math.abs(otherRect.y - sizeRect.y) < 50;
+              const closeHorizontally = Math.abs(otherRect.x - sizeRect.x) < 400 && otherRect.x !== sizeRect.x;
+              
+              if (sameRow && closeHorizontally) {
+                const isEnabled = await page.evaluate((el) => {
+                  return el.offsetParent !== null && !el.disabled && !el.readOnly;
+                }, otherInput);
+                
+                if (isEnabled) {
+                  priceInput = otherInput;
+                  console.log("✓ Found price input via position-based search (near quantity from BTC fallback)!");
+                  break;
+                }
+              }
+            }
+          }
+        }
+        break;
+      }
+    }
+  }
+
+  // Fallback 2: If still not found, search ALL inputs without position filter (for Kraken)
+  if (!sizeInput) {
+    console.log("⚠️  Size input still not found, trying fallback 2 (searching all inputs without position filter)...");
+    for (const input of inputs) {
+      const rect = await input.boundingBox();
+      if (!rect) continue;
+
+      const inputInfo = await page.evaluate((el) => {
+        const value = el.value || "";
+        const placeholder = el.placeholder || "";
+        let parent = el.parentElement;
+        let parentText = "";
+        let labelText = "";
+        let prevSibling = el.previousElementSibling;
+        let siblingText = "";
+        
+        // Check for label
+        const labels = document.querySelectorAll("label");
+        for (const label of labels) {
+          if (label.control === el || label.getAttribute('for') === el.id || label.contains(el)) {
+            labelText = label.textContent?.trim() || "";
+            break;
+          }
+        }
+        
+        if (prevSibling) {
+          siblingText = prevSibling.textContent?.trim() || "";
+        }
+        
+        for (let i = 0; i < 7 && parent; i++) {
+          if (parent.innerText) {
+            parentText = parent.innerText;
+            break;
+          }
+          parent = parent.parentElement;
+        }
+        
+        const allText = (value + " " + placeholder + " " + labelText + " " + siblingText + " " + parentText).toLowerCase();
+        
+        return {
+          value: value,
+          placeholder: placeholder,
+          labelText: labelText,
+          siblingText: siblingText,
+          parentText: parentText,
+          hasQuantity: allText.includes("quantity"),
+          hasSize: allText.includes("size"),
+          hasBtc: allText.includes("btc"),
+          isNumeric: /^[0-9.,]+$/.test(value.replace(/[^0-9.,]/g, ""))
+        };
+      }, input);
+
+      // Check if this looks like a size/quantity input
+      if ((inputInfo.hasQuantity || inputInfo.hasSize || inputInfo.hasBtc) && 
+          inputInfo.isNumeric && 
+          !inputInfo.value.match(/^\$?[0-9,]+(\.[0-9]+)?$/)) {
+        // Has quantity/size/BTC text and numeric value, not a price format
+        sizeInput = input;
+        console.log(`✓ Found size input via fallback 2! (hasQuantity: ${inputInfo.hasQuantity}, hasSize: ${inputInfo.hasSize}, hasBtc: ${inputInfo.hasBtc})`);
+        break;
+      }
     }
   }
 
@@ -569,14 +836,18 @@ export async function verifyOrderPlacement(page, exchange, side, qty) {
 
   // Verify order was placed and is pending
   console.log(`[${exchange.name}] Verifying order placement...`);
-  const orderVerified = await verifyOrderPlaced(page, exchange, side, qty, 10000);
+  // Use shorter timeout for Extended Exchange (3 seconds) since it confirms quickly
+  const timeout = exchange.name?.toLowerCase().includes('extended') ? 3000 : 10000;
+  const orderVerified = await verifyOrderPlaced(page, exchange, side, qty, timeout);
   
   if (orderVerified.success) {
     console.log(`[${exchange.name}] ✓ Order confirmed as ${orderVerified.status || 'pending'}`);
+    console.log(`[${exchange.name}] Order verification completed, returning success...`);
     return { success: true, message: "Trade submitted and order confirmed", orderStatus: orderVerified.status };
   } else {
     console.log(`[${exchange.name}] ⚠️  Order verification: ${orderVerified.reason || 'Could not verify order placement'}`);
     // Still return success if no error was found (order might be placed but not yet visible)
+    console.log(`[${exchange.name}] Order verification inconclusive, returning success anyway...`);
     return { success: true, message: "Trade submitted (verification inconclusive)", warning: orderVerified.reason };
   }
 }

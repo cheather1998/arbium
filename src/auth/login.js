@@ -34,6 +34,44 @@ async function isLoggedIn(page, exchangeConfig = null) {
       return false;
     }
     
+    // For Kraken and GRVT, check if trading interface is accessible
+    // They might not have the same login indicators as Paradex
+    if (exchange.name === 'Kraken' || exchange.name === 'GRVT') {
+      await delay(2000);
+      const isTradingPage = await page.evaluate(() => {
+        const text = document.body.innerText.toLowerCase();
+        // Check for trading interface elements
+        const hasTradingElements = 
+          text.includes('buy') || 
+          text.includes('sell') || 
+          text.includes('market') || 
+          text.includes('limit') ||
+          text.includes('order') ||
+          text.includes('position');
+        
+        // Check for price displays
+        const hasPriceElements = document.querySelectorAll('[class*="price"], [class*="ticker"]').length > 0;
+        
+        // Check if there are trading buttons
+        const hasTradingButtons = Array.from(document.querySelectorAll('button')).some(
+          btn => {
+            const btnText = btn.textContent?.trim().toLowerCase();
+            return btnText === 'buy' || btnText === 'sell' || btnText === 'long' || btnText === 'short';
+          }
+        );
+        
+        return hasTradingElements || hasPriceElements || hasTradingButtons;
+      });
+      
+      if (isTradingPage) {
+        console.log(`[${exchange.name}] Trading interface detected - appears to be logged in`);
+        return true;
+      } else {
+        console.log(`[${exchange.name}] Trading interface not detected - may need login`);
+        return false;
+      }
+    }
+    
     // For Paradex, use original logic
     // Check if user is logged in by looking for account/portfolio elements
     await delay(2000);
@@ -254,6 +292,25 @@ async function isLoggedIn(page, exchangeConfig = null) {
         
         console.log(`[${email}] Extended Exchange login process - user should complete wallet connection`);
         return true; // Return true to allow manual completion
+      }
+  
+      // Check if this exchange needs email login (only Paradex uses email login)
+      // Kraken and GRVT might use different authentication methods
+      if (exchange.name !== 'Paradex') {
+        console.log(`[${email}] ${exchange.name} - checking if already logged in...`);
+        // For non-Paradex exchanges (Kraken, GRVT), check if already logged in
+        // They might use cookies or different auth methods
+        const alreadyLoggedIn = await isLoggedIn(page, exchange);
+        if (alreadyLoggedIn) {
+          console.log(`[${email}] ✅ ${exchange.name} - Already logged in`);
+          await saveCookies(page, cookiesPath, email);
+          return true;
+        } else {
+          console.log(`[${email}] ⚠️  ${exchange.name} - Not logged in, but no specific login flow implemented`);
+          console.log(`[${email}] Please log in manually in the browser window`);
+          // Keep browser open for manual login
+          return false; // Return false so browser stays open
+        }
       }
   
       // Paradex login flow (original logic)
@@ -507,7 +564,8 @@ async function isLoggedIn(page, exchangeConfig = null) {
         ];
   
         let socialBtn = null;
-        for (let attempt = 0; attempt < 10; attempt++) {
+        const maxAttempts = 5; // Reduced from 10 to prevent long waits
+        for (let attempt = 0; attempt < maxAttempts; attempt++) {
           for (const buttonText of socialButtonTexts) {
             socialBtn = await findByText(page, buttonText, [
               "button",
@@ -534,7 +592,10 @@ async function isLoggedIn(page, exchangeConfig = null) {
             }
           }
           if (socialBtn) break;
-          await delay(1000);
+          if (attempt < maxAttempts - 1) {
+            console.log(`[${email}] Email/Social button not found, retrying... (${attempt + 1}/${maxAttempts})`);
+            await delay(1000);
+          }
         }
   
         if (socialBtn) {
@@ -543,7 +604,7 @@ async function isLoggedIn(page, exchangeConfig = null) {
           await delay(2000); // Wait for email input to appear
         } else {
           console.log(
-            `[${email}] Email or Social button not found after retries, checking available buttons...`
+            `[${email}] Email or Social button not found after ${maxAttempts} attempts, checking available buttons...`
           );
   
           // Debug: List all visible buttons to see what's available
@@ -571,6 +632,7 @@ async function isLoggedIn(page, exchangeConfig = null) {
           console.log(`[${email}] Available visible buttons:`, availableButtons);
   
           // Check one more time if email input appeared
+          console.log(`[${email}] Checking if email input appeared...`);
           await delay(2000);
           const emailInputCheck = await page.$(
             'input[type="email"], input[placeholder*="email"], input[placeholder*="Email"], input[autocomplete="email"]'
@@ -585,9 +647,13 @@ async function isLoggedIn(page, exchangeConfig = null) {
             }, emailInputCheck);
             if (isVisible) {
               console.log(
-                `[${email}] Email input appeared without clicking button - continuing...`
+                `[${email}] ✅ Email input appeared without clicking button - continuing...`
               );
+            } else {
+              console.log(`[${email}] ⚠️  Email input found but not visible`);
             }
+          } else {
+            console.log(`[${email}] ⚠️  Email input still not found - will continue to wait for it in next step`);
           }
         }
       } else {
@@ -619,7 +685,8 @@ async function isLoggedIn(page, exchangeConfig = null) {
         // Wait for email input to appear with retry logic
         console.log(`[${email}] Waiting for email input field...`);
         let emailInput = null;
-        for (let i = 0; i < 15; i++) {
+        const maxEmailWaitAttempts = 10; // Reduced from 15 to prevent long waits
+        for (let i = 0; i < maxEmailWaitAttempts; i++) {
           emailInput = await page.$(
             'input[type="email"], input[placeholder*="email"], input[placeholder*="Email"], input[autocomplete="email"]'
           );
@@ -633,15 +700,59 @@ async function isLoggedIn(page, exchangeConfig = null) {
             }, emailInput);
             if (isVisible) {
               console.log(
-                `[${email}] Email input found and visible (attempt ${i + 1})`
+                `[${email}] ✅ Email input found and visible (attempt ${i + 1}/${maxEmailWaitAttempts})`
               );
               break;
+            } else {
+              if ((i + 1) % 3 === 0) {
+                console.log(`[${email}] Email input found but not visible (attempt ${i + 1}/${maxEmailWaitAttempts})`);
+              }
+            }
+          } else {
+            if ((i + 1) % 3 === 0) {
+              console.log(`[${email}] Still waiting for email input... (attempt ${i + 1}/${maxEmailWaitAttempts})`);
             }
           }
-          await delay(500);
+          if (i < maxEmailWaitAttempts - 1) {
+            await delay(1000); // Increased from 500ms to 1000ms for better stability
+          }
+        }
+        
+        if (!emailInput) {
+          console.log(`[${email}] ⚠️  Email input not found after ${maxEmailWaitAttempts} attempts`);
+          console.log(`[${email}] Checking if already on OTP screen or logged in...`);
+          // Check if we're already past email entry (OTP screen or logged in)
+          const isOtpScreenCheck = await page.evaluate(() => {
+            const text = document.body.innerText.toLowerCase();
+            const hasOtpInputs =
+              document.querySelectorAll(
+                'input[maxlength="1"], input[type="text"][maxlength="1"]'
+              ).length >= 4;
+            return (
+              hasOtpInputs ||
+              text.includes("verification code") ||
+              text.includes("enter code") ||
+              text.includes("6-digit")
+            );
+          });
+          
+          if (isOtpScreenCheck) {
+            console.log(`[${email}] ✅ Already on OTP screen - skipping email entry`);
+            emailInput = null; // Set to null so we skip email entry below
+          } else {
+            // Check if already logged in
+            const alreadyLoggedIn = await isLoggedIn(page, exchange);
+            if (alreadyLoggedIn) {
+              console.log(`[${email}] ✅ Already logged in - skipping email entry`);
+              return true;
+            } else {
+              console.log(`[${email}] ⚠️  Not on OTP screen and not logged in - will try to continue anyway...`);
+            }
+          }
         }
   
         if (emailInput) {
+          console.log(`[${email}] Proceeding to enter email...`);
           // Clear and enter email
           await emailInput.click({ clickCount: 3 }); // Triple click to select all
           await delay(200);

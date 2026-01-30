@@ -167,8 +167,12 @@ export async function setLeverageExtended(page, leverage, exchange) {
 export async function findConfirmButtonExtended(page, side, exchange) {
   let confirmText = side === "buy" ? exchange.selectors.confirmBuy : exchange.selectors.confirmSell;
   
-  // Extended Exchange uses "Sell" button directly (no "Confirm Sell")
-  if (side === 'sell') {
+  // Extended Exchange uses "Buy" button directly (no "Confirm Buy") for buy side
+  // Extended Exchange uses "Sell" button directly (no "Confirm Sell") for sell side
+  if (side === 'buy') {
+    confirmText = "Buy";
+    console.log(`[${exchange.name}] ✓ Extended Exchange detected - using "Buy" button instead of "Confirm Buy"`);
+  } else if (side === 'sell') {
     confirmText = "Sell";
     console.log(`[${exchange.name}] ✓ Extended Exchange detected - using "Sell" button instead of "Confirm Sell"`);
   }
@@ -737,31 +741,62 @@ export async function handleTpSlExtended(page, exchange, price = null, side = 'b
         console.log(`[${exchange.name}] ⚠️  TP Price value mismatch. Expected: ${intValue} (${expectedValueNum}), Actual: "${actualValue}" (${actualValueNum})`);
         console.log(`[${exchange.name}] ⚠️  Retrying by typing the value...`);
         
-        // Retry by typing
-        await tpInputElement.focus();
-        await delay(200);
-        await page.evaluate((el) => {
-          el.value = '';
-          el.dispatchEvent(new Event('input', { bubbles: true }));
-        }, tpInputElement);
-        await delay(100);
-        
-        await tpInputElement.type(intValue, { delay: 30 });
-        await delay(500);
-        
-        await page.evaluate((el) => {
-          el.dispatchEvent(new Event('input', { bubbles: true }));
-          el.dispatchEvent(new Event('change', { bubbles: true }));
-          el.dispatchEvent(new Event('blur', { bubbles: true }));
-        }, tpInputElement);
-        await delay(300);
-        
-        const finalValue = await page.evaluate((el) => el.value || '', tpInputElement);
-        const finalValueNum = parseFloat(finalValue.replace(/,/g, '').replace(/ /g, ''));
-        if (finalValueNum === expectedValueNum) {
-          console.log(`[${exchange.name}] ✅ TP Price filled successfully after retry. Expected: ${intValue}, Actual: ${finalValue}`);
-        } else {
-          console.log(`[${exchange.name}] ⚠️  TP Price still incorrect after retry. Expected: ${intValue}, Actual: ${finalValue}`);
+        try {
+          // Retry by typing with timeout protection
+          await tpInputElement.focus();
+          await delay(200);
+          
+          // Clear using JavaScript (faster and more reliable)
+          await page.evaluate((el) => {
+            el.value = '';
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+          }, tpInputElement);
+          await delay(100);
+          
+          // Try typing with timeout
+          const typePromise = tpInputElement.type(intValue, { delay: 30 });
+          const timeoutPromise = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Type timeout')), 5000)
+          );
+          
+          await Promise.race([typePromise, timeoutPromise]).catch((error) => {
+            console.log(`[${exchange.name}] ⚠️  Type operation timed out or failed, using direct value assignment instead`);
+            // Fallback: Direct value assignment
+            return page.evaluate((el, value) => {
+              el.value = value;
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+            }, tpInputElement, intValue);
+          });
+          
+          await delay(500);
+          
+          await page.evaluate((el) => {
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            el.dispatchEvent(new Event('blur', { bubbles: true }));
+          }, tpInputElement);
+          await delay(300);
+          
+          const finalValue = await page.evaluate((el) => el.value || '', tpInputElement);
+          const finalValueNum = parseFloat(finalValue.replace(/,/g, '').replace(/ /g, ''));
+          if (finalValueNum === expectedValueNum) {
+            console.log(`[${exchange.name}] ✅ TP Price filled successfully after retry. Expected: ${intValue}, Actual: ${finalValue}`);
+          } else {
+            console.log(`[${exchange.name}] ⚠️  TP Price still incorrect after retry. Expected: ${intValue}, Actual: ${finalValue}`);
+            // Last resort: Direct assignment
+            console.log(`[${exchange.name}] Attempting direct value assignment as last resort...`);
+            await page.evaluate((el, value) => {
+              el.value = value;
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+              el.dispatchEvent(new Event('blur', { bubbles: true }));
+            }, tpInputElement, intValue);
+            await delay(500);
+          }
+        } catch (error) {
+          console.log(`[${exchange.name}] ⚠️  Error during TP Price retry: ${error.message}`);
+          // Continue anyway - value might still be set
         }
       }
       // Track TP input as last filled
@@ -947,31 +982,62 @@ export async function handleTpSlExtended(page, exchange, price = null, side = 'b
         console.log(`[${exchange.name}] ⚠️  SL Price value mismatch. Expected: ${intValue} (${expectedValueNum}), Actual: "${actualValue}" (${actualValueNum})`);
         console.log(`[${exchange.name}] ⚠️  Retrying by typing the value...`);
         
-        // Retry by typing
-        await slInputElement.focus();
-        await delay(200);
-        await page.evaluate((el) => {
-          el.value = '';
-          el.dispatchEvent(new Event('input', { bubbles: true }));
-        }, slInputElement);
-        await delay(100);
-        
-        await slInputElement.type(intValue, { delay: 30 });
-        await delay(500);
-        
-        await page.evaluate((el) => {
-          el.dispatchEvent(new Event('input', { bubbles: true }));
-          el.dispatchEvent(new Event('change', { bubbles: true }));
-          el.dispatchEvent(new Event('blur', { bubbles: true }));
-        }, slInputElement);
-        await delay(300);
-        
-        const finalValue = await page.evaluate((el) => el.value || '', slInputElement);
-        const finalValueNum = parseFloat(finalValue.replace(/,/g, '').replace(/ /g, ''));
-        if (finalValueNum === expectedValueNum) {
-          console.log(`[${exchange.name}] ✅ SL Price filled successfully after retry. Expected: ${intValue}, Actual: ${finalValue}`);
-        } else {
-          console.log(`[${exchange.name}] ⚠️  SL Price still incorrect after retry. Expected: ${intValue}, Actual: ${finalValue}`);
+        try {
+          // Retry by typing with timeout protection
+          await slInputElement.focus();
+          await delay(200);
+          
+          // Clear using JavaScript (faster and more reliable)
+          await page.evaluate((el) => {
+            el.value = '';
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+          }, slInputElement);
+          await delay(100);
+          
+          // Try typing with timeout
+          const typePromise = slInputElement.type(intValue, { delay: 30 });
+          const timeoutPromise = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Type timeout')), 5000)
+          );
+          
+          await Promise.race([typePromise, timeoutPromise]).catch((error) => {
+            console.log(`[${exchange.name}] ⚠️  Type operation timed out or failed, using direct value assignment instead`);
+            // Fallback: Direct value assignment
+            return page.evaluate((el, value) => {
+              el.value = value;
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+            }, slInputElement, intValue);
+          });
+          
+          await delay(500);
+          
+          await page.evaluate((el) => {
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            el.dispatchEvent(new Event('blur', { bubbles: true }));
+          }, slInputElement);
+          await delay(300);
+          
+          const finalValue = await page.evaluate((el) => el.value || '', slInputElement);
+          const finalValueNum = parseFloat(finalValue.replace(/,/g, '').replace(/ /g, ''));
+          if (finalValueNum === expectedValueNum) {
+            console.log(`[${exchange.name}] ✅ SL Price filled successfully after retry. Expected: ${intValue}, Actual: ${finalValue}`);
+          } else {
+            console.log(`[${exchange.name}] ⚠️  SL Price still incorrect after retry. Expected: ${intValue}, Actual: ${finalValue}`);
+            // Last resort: Direct assignment
+            console.log(`[${exchange.name}] Attempting direct value assignment as last resort...`);
+            await page.evaluate((el, value) => {
+              el.value = value;
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+              el.dispatchEvent(new Event('blur', { bubbles: true }));
+            }, slInputElement, intValue);
+            await delay(500);
+          }
+        } catch (error) {
+          console.log(`[${exchange.name}] ⚠️  Error during SL Price retry: ${error.message}`);
+          // Continue anyway - value might still be set
         }
       }
       // Track SL input as last filled (will override TP if both are filled)

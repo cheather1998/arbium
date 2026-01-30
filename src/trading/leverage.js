@@ -91,34 +91,89 @@ async function setLeverage(page, leverage) {
       // Step 2: Find the input field in the modal and enter the leverage value
       console.log(`Setting leverage to ${leverage} in the modal...`);
   
-      // Find the leverage input field
+      // Find the leverage input field - improved search for GRVT and other exchanges
       const inputInfo = await page.evaluate(() => {
-        const inputs = document.querySelectorAll(
-          'input[type="text"], input[type="number"], input:not([type])'
-        );
+        const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]');
+        if (!modal) {
+          console.log('No modal found');
+          return { success: false, error: "Modal not found" };
+        }
+        
+        const inputs = Array.from(modal.querySelectorAll(
+          'input[type="text"], input[type="number"], input:not([type="hidden"])'
+        ));
   
         console.log(`Found ${inputs.length} input fields in modal`);
   
-        // Strategy: Find input with numeric value in visible modal
+        // Strategy 1: Find input near "Leverage" label text (for GRVT)
         for (const input of inputs) {
           if (input.offsetParent === null) continue; // Skip hidden inputs
+          if (input.disabled || input.readOnly) continue; // Skip disabled/readonly inputs
+  
+          // Check parent elements for "Leverage" text
+          let parent = input.parentElement;
+          let foundLeverageLabel = false;
+          
+          for (let i = 0; i < 5 && parent; i++) {
+            const parentText = (parent.textContent || '').toLowerCase();
+            if (parentText.includes('leverage') && !parentText.includes('adjust')) {
+              foundLeverageLabel = true;
+              console.log(`Found input near "Leverage" label`);
+              break;
+            }
+            parent = parent.parentElement;
+          }
+          
+          if (foundLeverageLabel) {
+            const value = input.value || "";
+            console.log(`Found leverage input (near label) with current value: "${value}"`);
+            input.setAttribute("data-leverage-input", "true");
+            input.setAttribute("data-old-value", value);
+            return {
+              success: true,
+              oldValue: value,
+            };
+          }
+        }
+        
+        // Strategy 2: Find input with numeric value (for other exchanges)
+        for (const input of inputs) {
+          if (input.offsetParent === null) continue; // Skip hidden inputs
+          if (input.disabled || input.readOnly) continue; // Skip disabled/readonly inputs
   
           const value = input.value || "";
-          const placeholder = input.placeholder || "";
-  
-          console.log(`Input: value="${value}", placeholder="${placeholder}"`);
-  
+          const placeholder = (input.placeholder || "").toLowerCase();
+          const name = (input.name || "").toLowerCase();
+          const id = (input.id || "").toLowerCase();
+          
           // Check if this looks like a leverage input
           if (
             /^\d+$/.test(value) ||
-            placeholder.toLowerCase().includes("leverage")
+            placeholder.includes("leverage") ||
+            name.includes("leverage") ||
+            id.includes("leverage")
           ) {
-            console.log(`Found leverage input with current value: "${value}"`);
-  
-            // Mark the input with a unique attribute so we can find it again
+            console.log(`Found leverage input (numeric/placeholder) with current value: "${value}"`);
             input.setAttribute("data-leverage-input", "true");
             input.setAttribute("data-old-value", value);
-  
+            return {
+              success: true,
+              oldValue: value,
+            };
+          }
+        }
+        
+        // Strategy 3: Find any visible numeric input in modal (fallback)
+        for (const input of inputs) {
+          if (input.offsetParent === null) continue;
+          if (input.disabled || input.readOnly) continue;
+          
+          const value = input.value || "";
+          // If it has a numeric value, it might be leverage
+          if (/^\d+$/.test(value) && parseInt(value) > 0 && parseInt(value) <= 100) {
+            console.log(`Found potential leverage input (fallback) with value: "${value}"`);
+            input.setAttribute("data-leverage-input", "true");
+            input.setAttribute("data-old-value", value);
             return {
               success: true,
               oldValue: value,
@@ -220,27 +275,146 @@ async function setLeverage(page, leverage) {
       console.log("Waiting for UI to register the leverage change...");
       await delay(2000); // Reduced from 3000ms
   
-      // Step 3: Click the "Confirm" button
-      console.log("Clicking Confirm button...");
-      const confirmed = await page.evaluate(() => {
-        const buttons = Array.from(document.querySelectorAll("button"));
-        for (const btn of buttons) {
-          const text = btn.textContent?.trim();
-          if (text === "Confirm" && btn.offsetParent !== null) {
-            console.log(`Found and clicking Confirm button`);
-            btn.click();
-            return { success: true };
+      // Step 3: Click the "Confirm" button (or Cancel if Confirm is disabled)
+      console.log("Checking Confirm button status...");
+      
+      // Use Puppeteer to find buttons directly (more reliable than evaluate)
+      const allButtons = await page.$$('button, div[role="button"], span[role="button"]');
+      let confirmBtnElement = null;
+      let cancelBtnElement = null;
+      let confirmBtnDisabled = false;
+      
+      for (const btn of allButtons) {
+        const btnInfo = await page.evaluate((el) => {
+          const text = (el.textContent || '').trim().toLowerCase();
+          const isVisible = el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+          const isDisabled = el.disabled || el.getAttribute('aria-disabled') === 'true' || 
+                            el.classList.contains('disabled') || el.style.pointerEvents === 'none';
+          
+          return { text, isVisible, isDisabled, actualText: el.textContent?.trim() || '' };
+        }, btn);
+        
+        if (btnInfo.isVisible) {
+          if (btnInfo.text === 'confirm') {
+            confirmBtnElement = btn;
+            confirmBtnDisabled = btnInfo.isDisabled;
+            console.log(`Found Confirm button: "${btnInfo.actualText}" (disabled: ${btnInfo.isDisabled})`);
+          } else if (btnInfo.text === 'cancel' || btnInfo.text === 'close' || btnInfo.text === '×' || btnInfo.text === 'x') {
+            cancelBtnElement = btn;
+            console.log(`Found Cancel button: "${btnInfo.actualText}"`);
           }
         }
-        return { success: false };
-      });
-  
-      if (!confirmed.success) {
-        console.log("⚠ Confirm button not found");
-        return { success: false, error: "Confirm button not found" };
       }
-  
-      await delay(1500); // Reduced from 2000ms - wait for modal to close and settings to apply
+      
+      // If Confirm button is disabled, click Cancel instead
+      if (confirmBtnElement && confirmBtnDisabled) {
+        console.log("⚠️  Confirm button is disabled (leverage value unchanged), clicking Cancel to close modal...");
+        
+        if (cancelBtnElement) {
+          try {
+            await cancelBtnElement.click();
+            console.log("✓ Clicked Cancel button to close leverage modal");
+            await delay(1500);
+            
+            // Verify modal is closed
+            const modalClosed = await page.evaluate(() => {
+              const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]');
+              return modal === null;
+            });
+            
+            if (modalClosed) {
+              console.log("✓ Leverage modal closed successfully");
+            } else {
+              console.log("⚠️  Modal still open after Cancel, trying Escape...");
+              await page.keyboard.press('Escape');
+              await delay(1000);
+            }
+            
+            return { success: true, leverage: leverage, skipped: true, reason: "Leverage unchanged, modal closed" };
+          } catch (error) {
+            console.log(`⚠️  Error clicking Cancel: ${error.message}, trying Escape...`);
+            await page.keyboard.press('Escape');
+            await delay(1000);
+            return { success: true, leverage: leverage, skipped: true, reason: "Leverage unchanged, modal closed via Escape" };
+          }
+        } else {
+          // Try pressing Escape as fallback
+          console.log("⚠️  Cancel button not found, pressing Escape...");
+          await page.keyboard.press('Escape');
+          await delay(1500);
+          return { success: true, leverage: leverage, skipped: true, reason: "Leverage unchanged, modal closed via Escape" };
+        }
+      }
+      
+      // If Confirm button is enabled, click it
+      if (confirmBtnElement && !confirmBtnDisabled) {
+        console.log("Clicking Confirm button...");
+        try {
+          // Scroll into view if needed
+          await confirmBtnElement.evaluate(el => el.scrollIntoView({ behavior: 'smooth', block: 'center' }));
+          await delay(300);
+          
+          // Click the button
+          await confirmBtnElement.click();
+          console.log("✓ Clicked Confirm button");
+          await delay(2000); // Wait for modal to close and settings to apply
+          
+          // Verify modal is closed
+          const modalClosed = await page.evaluate(() => {
+            const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]');
+            return modal === null;
+          });
+          
+          if (modalClosed) {
+            console.log("✓ Leverage modal closed successfully after Confirm");
+          } else {
+            console.log("⚠️  Modal still open after Confirm, waiting longer...");
+            await delay(2000);
+            
+            // Try clicking Confirm again or pressing Escape
+            const stillOpen = await page.evaluate(() => {
+              const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]');
+              return modal !== null;
+            });
+            
+            if (stillOpen) {
+              console.log("⚠️  Modal still open, pressing Escape as fallback...");
+              await page.keyboard.press('Escape');
+              await delay(1000);
+            }
+          }
+        } catch (error) {
+          console.log(`⚠️  Error clicking Confirm: ${error.message}`);
+          // Try pressing Enter as fallback
+          console.log("Trying Enter key as fallback...");
+          await page.keyboard.press('Enter');
+          await delay(2000);
+        }
+      } else {
+        console.log("⚠️  Confirm button not found or not enabled");
+        // Try to find any button with "confirm" in text (case-insensitive)
+        const fallbackConfirm = await page.evaluate(() => {
+          const buttons = Array.from(document.querySelectorAll('button, div[role="button"], span[role="button"]'));
+          for (const btn of buttons) {
+            const text = (btn.textContent || '').trim().toLowerCase();
+            const isVisible = btn.offsetParent !== null && btn.offsetWidth > 0 && btn.offsetHeight > 0;
+            if (isVisible && text.includes('confirm') && !btn.disabled) {
+              btn.click();
+              return true;
+            }
+          }
+          return false;
+        });
+        
+        if (fallbackConfirm) {
+          console.log("✓ Found and clicked Confirm button via fallback search");
+          await delay(2000);
+        } else {
+          console.log("⚠️  Could not find Confirm button, pressing Enter as last resort...");
+          await page.keyboard.press('Enter');
+          await delay(2000);
+        }
+      }
   
       // Verify the leverage was actually applied by checking the display button
       console.log("Verifying leverage was applied...");

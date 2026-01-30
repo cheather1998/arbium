@@ -10,11 +10,11 @@ import { getCurrentMarketPrice } from './executeBase.js';
  * Maintains the same function signature for backward compatibility
  */
 export async function executeTrade(
-  page,
-  { side, orderType, price, qty, setLeverageFirst = false, leverage = null },
-  exchangeConfig = null
-) {
-  const exchange = exchangeConfig || EXCHANGE_CONFIGS.paradex; // Default to Paradex
+    page,
+    { side, orderType, price, qty, setLeverageFirst = false, leverage = null },
+    exchangeConfig = null
+  ) {
+    const exchange = exchangeConfig || EXCHANGE_CONFIGS.paradex; // Default to Paradex
   
   // Detect exchange type and route to appropriate handler
   const exchangeName = exchange.name?.toLowerCase() || '';
@@ -25,7 +25,7 @@ export async function executeTrade(
     return await executeTradeGrvt(page, { side, orderType, price, qty, setLeverageFirst, leverage }, exchange);
   } else if (exchangeName.includes('kraken')) {
     return await executeTradeKraken(page, { side, orderType, price, qty, setLeverageFirst, leverage }, exchange);
-  } else {
+    } else {
     // Default to Paradex (includes Paradex and any other exchanges)
     return await executeTradeParadex(page, { side, orderType, price, qty, setLeverageFirst, leverage }, exchange);
   }

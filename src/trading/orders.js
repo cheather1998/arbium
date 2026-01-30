@@ -345,7 +345,8 @@ async function cancelAllOrders(page) {
  */
 async function verifyOrderPlaced(page, exchange, side, qty, maxWaitTime = 10000) {
     const startTime = Date.now();
-    const checkInterval = 1000; // Check every 1 second
+    // Use shorter check interval for Extended Exchange (500ms) to verify faster
+    const checkInterval = exchange.name?.toLowerCase().includes('extended') ? 500 : 1000;
     const maxChecks = Math.ceil(maxWaitTime / checkInterval);
     
     for (let i = 0; i < maxChecks; i++) {
@@ -442,7 +443,10 @@ async function verifyOrderPlaced(page, exchange, side, qty, maxWaitTime = 10000)
         });
       });
       
-      if (modalClosed && i > 2) { // Wait at least 2 seconds before checking modal
+      // For Extended Exchange, check modal closure earlier (after 1 check = 0.5s)
+      // For other exchanges, wait at least 2 seconds before checking modal
+      const minChecksForModal = exchange.name?.toLowerCase().includes('extended') ? 1 : 2;
+      if (modalClosed && i >= minChecksForModal) {
         // Modal closed and no errors found - order likely placed
         return { success: true, status: 'pending', method: 'modal_closed' };
       }

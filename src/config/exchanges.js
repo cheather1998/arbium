@@ -22,17 +22,16 @@ const EXCHANGE_CONFIGS = {
       url: "https://app.extended.exchange/perp",
       referralUrl: "https://app.extended.exchange/perp",
       urlPattern: "app.extended.exchange/perp",
-      // UI selectors - will need to be updated after inspecting Extended Exchange UI
-      // For now, using generic text-based selectors (same as Paradex)
+      // UI selectors - updated for Extended Exchange UI
       selectors: {
         loginButton: null, // Will use text-based search
         buyButton: "Buy",
         sellButton: "Sell",
         marketButton: "Market",
         limitButton: "Limit",
-        confirmBuy: "Confirm Buy", // May need to change
+        confirmBuy: "Buy", // Extended Exchange uses "Buy" button, not "Confirm Buy"
         confirmSell: "Sell", // Extended Exchange uses "Sell" button, not "Confirm Sell"
-        positionsTab: "Positions", // May need to change
+        positionsTab: "Positions",
       }
     },
     grvt: {
@@ -40,17 +39,16 @@ const EXCHANGE_CONFIGS = {
       url: "https://grvt.io/exchange/perpetual/BTC-USDT",
       referralUrl: "https://grvt.io/exchange/perpetual/BTC-USDT",
       urlPattern: "grvt.io/exchange",
-      // UI selectors - will need to be updated after inspecting GRVT UI
-      // For now, using generic text-based selectors
+      // UI selectors - updated for GRVT UI
       selectors: {
         loginButton: null, // Will use text-based search
-        buyButton: "Buy",
-        sellButton: "Sell",
+        buyButton: "Buy / Long", // GRVT uses "Buy / Long"
+        sellButton: "Sell / Short", // GRVT uses "Sell / Short"
         marketButton: "Market",
         limitButton: "Limit",
-        confirmBuy: "Confirm Buy", // May need to change after UI inspection
-        confirmSell: "Confirm Sell", // May need to change after UI inspection
-        positionsTab: "Positions", // May need to change after UI inspection
+        confirmBuy: "Confirm Buy",
+        confirmSell: "Confirm Sell",
+        positionsTab: "Positions",
       }
     },
     kraken: {
