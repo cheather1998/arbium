@@ -1,6 +1,6 @@
 import dotenv from 'dotenv';
 import { chooseTradingMode, delay } from '../utils/helpers.js';
-import { closeAllPositionsOnShutdown, automatedTradingLoop, automatedTradingLoop3Exchanges, testSingleExchangeTrading } from '../core/loop.js';
+import { closeAllPositionsOnShutdown, automatedTradingLoop, automatedTradingLoop3Exchanges, automatedTradingLoop2Exchanges, testSingleExchangeTrading } from '../core/loop.js';
 import { launchAccount } from '../core/launch.js';
 import EXCHANGE_CONFIGS from '../config/exchanges.js';
 import { ACCOUNTS } from '../config/accounts.js';
@@ -146,17 +146,19 @@ async function main() {
       return;
     }
   
-    // Handle option 3 (Multi-Exchange Mode) separately
-    if (tradingMode.mode === 3) {
-      // Option 3: Kraken, GRVT, Extended
-      if (ACCOUNTS.length < 3) {
-        console.log(`\n✗ Error: Option 3 requires at least 3 accounts in EXCHANGE_ACCOUNTS or ACCOUNT_EMAILS.`);
+    // Handle option 3 (Multi-Exchange Mode) - supports both 2 and 3 exchanges
+    if (tradingMode.mode === 3 || tradingMode.mode === '3d' || tradingMode.mode === '3e' || tradingMode.mode === '3f') {
+      const exchanges = tradingMode.exchanges; // ['kraken', 'grvt', 'extended'] or ['kraken', 'grvt'] etc.
+      const exchangeCount = exchanges.length;
+      const is2ExchangeMode = exchangeCount === 2;
+      
+      if (ACCOUNTS.length < exchangeCount) {
+        console.log(`\n✗ Error: This option requires at least ${exchangeCount} accounts in EXCHANGE_ACCOUNTS or ACCOUNT_EMAILS.`);
         console.log(`Currently ${ACCOUNTS.length} accounts configured.`);
         process.exit(1);
       }
       
-      const exchanges = tradingMode.exchanges; // ['kraken', 'grvt', 'extended']
-      const accountsWithExchanges = ACCOUNTS.slice(0, 3).map((account, index) => {
+      const accountsWithExchanges = ACCOUNTS.slice(0, exchangeCount).map((account, index) => {
         const exchangeName = exchanges[index];
         return {
           ...account,
@@ -165,7 +167,7 @@ async function main() {
         };
       });
       
-      console.log(`\n📋 Account Configuration for Option 3:`);
+      console.log(`\n📋 Account Configuration for ${tradingMode.description}:`);
       accountsWithExchanges.forEach((acc, idx) => {
         console.log(`   Account ${idx + 1} (${acc.email}): ${acc.exchangeConfig.name}`);
       });
@@ -178,7 +180,7 @@ async function main() {
         `    You can also manually delete paradex-cookies-*.json files to reset.\n`
       );
       
-      // Launch all 3 accounts in parallel
+      // Launch all accounts in parallel
       const accountPromises = accountsWithExchanges.map((account) => 
         launchAccount(account, account.exchangeConfig)
       );
@@ -211,22 +213,20 @@ async function main() {
         process.exit(1);
       }
       
-      // For option 3, require all 3 accounts to be logged in
-      if (successful.length !== 3) {
-        console.log(`\n⚠️  Warning: Option 3 requires exactly 3 accounts.`);
+      // Require all accounts to be logged in
+      if (successful.length !== exchangeCount) {
+        console.log(`\n⚠️  Warning: This option requires exactly ${exchangeCount} accounts.`);
         console.log(`Currently ${successful.length} accounts logged in.`);
         console.log(
           `Bot will run API servers but won't start automated trading.\n`
         );
       } else {
-        console.log(`\n✅ All 3 exchanges are ready!`);
+        console.log(`\n✅ All ${exchangeCount} exchanges are ready!`);
         console.log(`API servers are running for all exchanges.\n`);
       }
       
       // First step: Compare prices from all exchanges (initial comparison)
-      // For Extended Exchange, even if login failed but browser is open, try to get price
-      // (Extended Exchange uses wallet connection, not email login)
-      const accountsWithPages = results.filter(r => r.page && r.browser); // All accounts with open pages
+      const accountsWithPages = results.filter(r => r.page && r.browser);
       
       if (accountsWithPages.length > 0) {
         console.log(`\n📊 Step 1: Comparing prices from all exchanges...`);
@@ -245,9 +245,9 @@ async function main() {
               email: result.email,
               exchange: result.exchange || account.exchangeConfig.name,
               exchangeConfig: account.exchangeConfig,
-              loginStatus: result.success ? 'logged_in' : 'browser_open' // Track login status
+              loginStatus: result.success ? 'logged_in' : 'browser_open'
             };
-          }).filter(acc => acc !== null); // Remove null entries
+          }).filter(acc => acc !== null);
           
           if (exchangeAccounts.length > 0) {
             const priceComparison = await comparePricesFromExchanges(exchangeAccounts);
@@ -272,42 +272,73 @@ async function main() {
         console.log(`\n⚠️  No accounts with open pages - skipping price comparison`);
       }
       
-      // Start automated trading loop if all 3 accounts are logged in
-      if (successful.length === 3) {
-        // Find accounts by exchange name
-        const krakenAccount = successful.find((r) => {
-          const account = accountsWithExchanges.find((a) => a.email === r.email);
-          return account && account.exchange === 'kraken';
-        });
-        const grvtAccount = successful.find((r) => {
-          const account = accountsWithExchanges.find((a) => a.email === r.email);
-          return account && account.exchange === 'grvt';
-        });
-        const extendedAccount = successful.find((r) => {
-          const account = accountsWithExchanges.find((a) => a.email === r.email);
-          return account && account.exchange === 'extended';
-        });
-        
-        if (krakenAccount && grvtAccount && extendedAccount) {
-          console.log(`\n🤖 Starting automated trading loop in 5 seconds...`);
-          console.log(`   The loop will compare prices and execute trades automatically.`);
-          console.log(`   Highest price exchange → SELL`);
-          console.log(`   Lowest price exchange → BUY\n`);
-          await delay(5000);
-          
-          // Start the 3-exchange trading loop
-          console.log(`\n🔄 Launching automated trading loop (running in background)...`);
-          automatedTradingLoop3Exchanges(krakenAccount, grvtAccount, extendedAccount).catch((error) => {
-            console.error(`\n❌ Trading loop error:`, error);
-            console.error(error.stack);
+      // Start automated trading loop if all accounts are logged in
+      if (successful.length === exchangeCount) {
+        if (is2ExchangeMode) {
+          // 2-exchange mode
+          const account1 = successful.find((r) => {
+            const account = accountsWithExchanges.find((a) => a.email === r.email);
+            return account && account.exchange === exchanges[0];
           });
-          console.log(`✅ Trading loop started successfully. It will run in the background.\n`);
+          const account2 = successful.find((r) => {
+            const account = accountsWithExchanges.find((a) => a.email === r.email);
+            return account && account.exchange === exchanges[1];
+          });
+          
+          if (account1 && account2) {
+            console.log(`\n🤖 Starting automated trading loop in 5 seconds...`);
+            console.log(`   The loop will compare prices and execute trades automatically.`);
+            console.log(`   Highest price exchange → SELL`);
+            console.log(`   Lowest price exchange → BUY\n`);
+            await delay(5000);
+            
+            console.log(`\n🔄 Launching automated trading loop (running in background)...`);
+            automatedTradingLoop2Exchanges(account1, account2).catch((error) => {
+              console.error(`\n❌ Trading loop error:`, error);
+              console.error(error.stack);
+            });
+            console.log(`✅ Trading loop started successfully. It will run in the background.\n`);
+          } else {
+            console.log(`\n⚠️  Could not find both exchange accounts.`);
+            console.log(`   ${exchanges[0]}: ${account1 ? '✓' : '✗'}`);
+            console.log(`   ${exchanges[1]}: ${account2 ? '✓' : '✗'}`);
+            console.log(`   Bot will run API servers but won't start automated trading.\n`);
+          }
         } else {
-          console.log(`\n⚠️  Could not find all 3 exchange accounts.`);
-          console.log(`   Kraken: ${krakenAccount ? '✓' : '✗'}`);
-          console.log(`   GRVT: ${grvtAccount ? '✓' : '✗'}`);
-          console.log(`   Extended: ${extendedAccount ? '✓' : '✗'}`);
-          console.log(`   Bot will run API servers but won't start automated trading.\n`);
+          // 3-exchange mode
+          const krakenAccount = successful.find((r) => {
+            const account = accountsWithExchanges.find((a) => a.email === r.email);
+            return account && account.exchange === 'kraken';
+          });
+          const grvtAccount = successful.find((r) => {
+            const account = accountsWithExchanges.find((a) => a.email === r.email);
+            return account && account.exchange === 'grvt';
+          });
+          const extendedAccount = successful.find((r) => {
+            const account = accountsWithExchanges.find((a) => a.email === r.email);
+            return account && account.exchange === 'extended';
+          });
+          
+          if (krakenAccount && grvtAccount && extendedAccount) {
+            console.log(`\n🤖 Starting automated trading loop in 5 seconds...`);
+            console.log(`   The loop will compare prices and execute trades automatically.`);
+            console.log(`   Highest price exchange → SELL`);
+            console.log(`   Lowest price exchange → BUY\n`);
+            await delay(5000);
+            
+            console.log(`\n🔄 Launching automated trading loop (running in background)...`);
+            automatedTradingLoop3Exchanges(krakenAccount, grvtAccount, extendedAccount).catch((error) => {
+              console.error(`\n❌ Trading loop error:`, error);
+              console.error(error.stack);
+            });
+            console.log(`✅ Trading loop started successfully. It will run in the background.\n`);
+          } else {
+            console.log(`\n⚠️  Could not find all 3 exchange accounts.`);
+            console.log(`   Kraken: ${krakenAccount ? '✓' : '✗'}`);
+            console.log(`   GRVT: ${grvtAccount ? '✓' : '✗'}`);
+            console.log(`   Extended: ${extendedAccount ? '✓' : '✗'}`);
+            console.log(`   Bot will run API servers but won't start automated trading.\n`);
+          }
         }
       }
       
