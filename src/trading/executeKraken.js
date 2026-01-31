@@ -1,4 +1,5 @@
 import { delay } from '../utils/helpers.js';
+import { cancelKrakenOrders } from './orders.js';
 import { findByText, findByExactText } from '../utils/helpers.js';
 import {
   getCurrentMarketPrice,
@@ -851,6 +852,11 @@ export async function executeTradeKraken(
   exchange
 ) {
   console.log(`\n=== Executing Trade on ${exchange.name} ===`);
+
+  // Step 0: Cancel all existing orders first (modal-based flow for Kraken)
+  console.log(`[${exchange.name}] Step 0: Canceling all existing orders...`);
+  await cancelKrakenOrders(page);
+  console.log(`[${exchange.name}] ✅ Order cancellation completed\n`);
 
   // Set leverage first if requested
   if (setLeverageFirst && leverage) {
