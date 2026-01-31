@@ -19,8 +19,8 @@ export async function comparePricesFromExchanges(exchangeAccounts) {
     try {
       console.log(`[${exchangeConfig.name}] Preparing to fetch price for ${email}...`);
       
-      // Wait for page to load, especially important for Kraken
-      if (exchangeConfig.name === 'Kraken' || exchangeConfig.name === 'GRVT') {
+      // Wait for page to load, especially important for Kraken, GRVT, and Extended Exchange
+      if (exchangeConfig.name === 'Kraken' || exchangeConfig.name === 'GRVT' || exchangeConfig.name === 'Extended Exchange') {
         console.log(`[${exchangeConfig.name}] Waiting for page to fully load...`);
         
         // Wait for page to be ready
@@ -56,11 +56,14 @@ export async function comparePricesFromExchanges(exchangeAccounts) {
           }
         }
         
-        // Additional wait for Kraken specifically (it might need more time to load price data)
+        // Additional wait for specific exchanges (they might need more time to load price data)
         if (exchangeConfig.name === 'Kraken') {
           console.log(`[${exchangeConfig.name}] Additional wait for Kraken page to stabilize...`);
           await delay(3000);
         } else if (exchangeConfig.name === 'GRVT') {
+          await delay(2000);
+        } else if (exchangeConfig.name === 'Extended Exchange') {
+          console.log(`[${exchangeConfig.name}] Additional wait for Extended Exchange page to stabilize...`);
           await delay(2000);
         }
         
@@ -111,6 +114,15 @@ export async function comparePricesFromExchanges(exchangeAccounts) {
 
   // Filter successful price fetches
   const successfulPrices = results.filter(r => r.success && r.price !== null);
+  const failedPrices = results.filter(r => !r.success || r.price === null);
+  
+  // Log failed exchanges
+  if (failedPrices.length > 0) {
+    console.log(`\n⚠️  Failed to fetch prices from ${failedPrices.length} exchange(s):`);
+    failedPrices.forEach((result) => {
+      console.log(`   ✗ ${result.exchange} (${result.email}): ${result.error || 'Could not fetch price'}`);
+    });
+  }
   
   if (successfulPrices.length === 0) {
     console.log(`\n❌ No prices could be fetched from any exchange`);
@@ -140,6 +152,14 @@ export async function comparePricesFromExchanges(exchangeAccounts) {
     const marker = isHighest ? '🔺 HIGHEST' : isLowest ? '🔻 LOWEST' : '  ';
     console.log(`${marker} ${result.exchange}: $${result.price.toLocaleString()} (${result.email})`);
   });
+  
+  if (failedPrices.length > 0) {
+    console.log(`\n⚠️  Missing prices from:`);
+    failedPrices.forEach((result) => {
+      console.log(`   ✗ ${result.exchange} (${result.email})`);
+    });
+  }
+  
   console.log(`\n📊 Price Spread:`);
   console.log(`   Difference: $${priceDiff.toLocaleString()} (${priceDiffPercent}%)`);
   console.log(`   Highest: ${highest.exchange} at $${highest.price.toLocaleString()}`);
