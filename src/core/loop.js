@@ -19,6 +19,8 @@ const TRADE_CONFIG = {
   waitTime: parseInt(process.env.TRADE_TIME) || 60000,
   leverage: parseInt(process.env.LEVERAGE) || 20,
   stopLoss: parseFloat(process.env.STOP_LOSS) || null,
+  openingThreshold: parseFloat(process.env.OPENING_THRESHOLD) || 0.0, // Absolute price difference threshold (in dollars: highest - lowest)
+  closingThreshold: parseFloat(process.env.CLOSING_THRESHOLD) || 0.0, // Absolute price difference threshold for closing (in dollars: highest - lowest)
 };
 
 // Debug: Log the configuration values being used
@@ -26,9 +28,112 @@ console.log('\n[TRADE_CONFIG] Loaded from environment:');
 console.log(`  BUY_QTY: ${process.env.BUY_QTY || 'not set'} -> ${TRADE_CONFIG.buyQty}`);
 console.log(`  SELL_QTY: ${process.env.SELL_QTY || 'not set'} -> ${TRADE_CONFIG.sellQty}`);
 console.log(`  LEVERAGE: ${process.env.LEVERAGE || 'not set'} -> ${TRADE_CONFIG.leverage}x`);
-console.log(`  STOP_LOSS: ${process.env.STOP_LOSS || 'not set'} -> ${TRADE_CONFIG.stopLoss || 'disabled'}\n`);
+console.log(`  STOP_LOSS: ${process.env.STOP_LOSS || 'not set'} -> ${TRADE_CONFIG.stopLoss || 'disabled'}`);
+console.log(`  OPENING_THRESHOLD: ${process.env.OPENING_THRESHOLD || 'not set'} -> $${TRADE_CONFIG.openingThreshold.toLocaleString()}`);
+console.log(`  CLOSING_THRESHOLD: ${process.env.CLOSING_THRESHOLD || 'not set'} -> $${TRADE_CONFIG.closingThreshold.toLocaleString()}\n`);
 
 let isShuttingDown = false;
+
+/**
+ * Helper function to check prices and wait until threshold is met
+ * Returns price comparison result when threshold is satisfied
+ * Uses absolute price difference (highest - lowest) instead of percentage
+ */
+async function waitForPriceThreshold(exchangeAccounts, threshold, cycleCount) {
+  let attemptCount = 0;
+  const maxAttempts = 1000; // Prevent infinite loop (safety limit)
+  
+  while (!isShuttingDown && attemptCount < maxAttempts) {
+    attemptCount++;
+    
+    const priceComparison = await comparePricesFromExchanges(exchangeAccounts);
+    
+    if (!priceComparison.success || priceComparison.successfulPrices.length < 2) {
+      console.log(`\n[CYCLE ${cycleCount}] ⚠️  Price comparison failed or insufficient prices. Retrying in 2 seconds...`);
+      await delay(2000);
+      continue;
+    }
+    
+    // Use absolute price difference (highest - lowest)
+    const priceDiff = Math.abs(priceComparison.comparison.priceDiff);
+    
+    console.log(`\n[CYCLE ${cycleCount}] Price check attempt ${attemptCount}:`);
+    console.log(`   Highest: ${priceComparison.highest.exchange} at $${priceComparison.highest.price.toLocaleString()}`);
+    console.log(`   Lowest: ${priceComparison.lowest.exchange} at $${priceComparison.lowest.price.toLocaleString()}`);
+    console.log(`   Price difference: $${priceDiff.toLocaleString()}`);
+    console.log(`   Threshold required: $${threshold.toLocaleString()}`);
+    
+    if (priceDiff >= threshold) {
+      console.log(`\n✅ [CYCLE ${cycleCount}] Price difference ($${priceDiff.toLocaleString()}) >= threshold ($${threshold.toLocaleString()}). Proceeding with trade.`);
+      return priceComparison;
+    } else {
+      console.log(`\n⏳ [CYCLE ${cycleCount}] Price difference ($${priceDiff.toLocaleString()}) < threshold ($${threshold.toLocaleString()}). Waiting 2 seconds and checking again...`);
+      await delay(2000);
+    }
+  }
+  
+  // If we exit the loop without meeting threshold
+  if (attemptCount >= maxAttempts) {
+    console.log(`\n⚠️  [CYCLE ${cycleCount}] Maximum attempts (${maxAttempts}) reached. Threshold may not be met.`);
+    return null;
+  }
+  
+  return null;
+}
+
+/**
+ * Helper function to check prices and wait until closing threshold is met
+ * Returns price comparison result when threshold is satisfied (price difference <= threshold)
+ * If threshold not met after 15 minutes, returns null to force close
+ * Uses absolute price difference (highest - lowest)
+ */
+async function waitForClosingThreshold(exchangeAccounts, threshold, cycleCount) {
+  const startTime = Date.now();
+  const maxWaitTime = 15 * 60 * 1000; // 15 minutes in milliseconds
+  let attemptCount = 0;
+  
+  while (!isShuttingDown) {
+    attemptCount++;
+    const elapsedTime = Date.now() - startTime;
+    
+    // Check if 15 minutes have passed
+    if (elapsedTime >= maxWaitTime) {
+      console.log(`\n⏰ [CYCLE ${cycleCount}] 15 minutes elapsed. Force closing positions regardless of threshold.`);
+      return null; // Return null to indicate force close
+    }
+    
+    const priceComparison = await comparePricesFromExchanges(exchangeAccounts);
+    
+    if (!priceComparison.success || priceComparison.successfulPrices.length < 2) {
+      console.log(`\n[CYCLE ${cycleCount}] ⚠️  Price comparison failed or insufficient prices. Retrying in 2 seconds...`);
+      await delay(2000);
+      continue;
+    }
+    
+    // Use absolute price difference (highest - lowest)
+    const priceDiff = Math.abs(priceComparison.comparison.priceDiff);
+    const remainingTime = Math.max(0, maxWaitTime - elapsedTime);
+    const remainingMinutes = Math.floor(remainingTime / 60000);
+    const remainingSeconds = Math.floor((remainingTime % 60000) / 1000);
+    
+    console.log(`\n[CYCLE ${cycleCount}] Closing threshold check attempt ${attemptCount} (${Math.floor(elapsedTime / 1000)}s elapsed):`);
+    console.log(`   Highest: ${priceComparison.highest.exchange} at $${priceComparison.highest.price.toLocaleString()}`);
+    console.log(`   Lowest: ${priceComparison.lowest.exchange} at $${priceComparison.lowest.price.toLocaleString()}`);
+    console.log(`   Price difference: $${priceDiff.toLocaleString()}`);
+    console.log(`   Closing threshold: $${threshold.toLocaleString()}`);
+    console.log(`   Time remaining: ${remainingMinutes}m ${remainingSeconds}s`);
+    
+    if (priceDiff <= threshold) {
+      console.log(`\n✅ [CYCLE ${cycleCount}] Price difference ($${priceDiff.toLocaleString()}) <= closing threshold ($${threshold.toLocaleString()}). Proceeding to close positions.`);
+      return priceComparison;
+    } else {
+      console.log(`\n⏳ [CYCLE ${cycleCount}] Price difference ($${priceDiff.toLocaleString()}) > closing threshold ($${threshold.toLocaleString()}). Waiting 2 seconds and checking again...`);
+      await delay(2000);
+    }
+  }
+  
+  return null;
+}
 
 async function automatedTradingLoop(account1Result, account2Result) {
     const { page: page1, email: email1, exchange: exchange1Name } = account1Result;
@@ -682,6 +787,8 @@ async function automatedTradingLoop3Exchanges(krakenAccount, grvtAccount, extend
   console.log(`Extended (${extendedEmail}): ${extendedExchange.name}`);
   console.log(`Leverage: ${TRADE_CONFIG.leverage}x`);
   console.log(`Quantity: ${TRADE_CONFIG.buyQty} BTC`);
+  console.log(`Opening Threshold: $${TRADE_CONFIG.openingThreshold.toLocaleString()} (will wait until price difference >= threshold)`);
+  console.log(`Closing Threshold: $${TRADE_CONFIG.closingThreshold.toLocaleString()} (will wait until price difference <= threshold, max 15 min)`);
   console.log(`========================================\n`);
   
   // Clean up any existing positions and orders BEFORE setting leverage
@@ -800,7 +907,7 @@ async function automatedTradingLoop3Exchanges(krakenAccount, grvtAccount, extend
     console.log(`\n>>> CYCLE ${cycleCount} - ${new Date().toLocaleTimeString()}`);
     
     try {
-      // Step 0: Price Comparison (first step of each cycle)
+      // Step 0: Price Comparison with Threshold Check (first step of each cycle)
       console.log(`\n[CYCLE ${cycleCount}] Step 1: Comparing prices from all exchanges...`);
       
       const exchangeAccounts = [
@@ -824,10 +931,15 @@ async function automatedTradingLoop3Exchanges(krakenAccount, grvtAccount, extend
         }
       ];
       
-      const priceComparison = await comparePricesFromExchanges(exchangeAccounts);
+      // Wait for price difference to meet threshold
+      const priceComparison = await waitForPriceThreshold(
+        exchangeAccounts, 
+        TRADE_CONFIG.openingThreshold, 
+        cycleCount
+      );
       
-      if (!priceComparison.success || priceComparison.successfulPrices.length < 2) {
-        console.log(`\n[CYCLE ${cycleCount}] ⚠️  Price comparison failed or insufficient prices. Skipping this cycle...`);
+      if (!priceComparison) {
+        console.log(`\n[CYCLE ${cycleCount}] ⚠️  Could not get valid price comparison meeting threshold. Skipping this cycle...`);
         console.log(`[CYCLE ${cycleCount}] Waiting ${TRADE_CONFIG.waitTime / 1000} seconds before next cycle...`);
         await delay(TRADE_CONFIG.waitTime);
         continue;
@@ -870,6 +982,24 @@ async function automatedTradingLoop3Exchanges(krakenAccount, grvtAccount, extend
         initialCleanupDone = false;
         skipCleanup = true;
       }
+
+      // Check closing threshold before closing positions
+      console.log(`\n[CYCLE ${cycleCount}] Checking closing threshold before closing positions...`);
+      const closingPriceCheck = await waitForClosingThreshold(
+        exchangeAccounts,
+        TRADE_CONFIG.closingThreshold,
+        cycleCount
+      );
+      
+      // Close positions (skip for Extended Exchange - handled in clickOrdersTab)
+      // closingPriceCheck can be null (force close after 15 min) or a valid comparison (threshold met)
+      // Always close - either threshold is met or 15 minutes elapsed
+      if (closingPriceCheck === null) {
+        console.log(`\n[CYCLE ${cycleCount}] Force closing positions (15 minutes elapsed or threshold not met)...`);
+      } else {
+        console.log(`\n[CYCLE ${cycleCount}] Closing threshold met. Closing positions...`);
+      }
+              
       
       if (!skipCleanup) {
         // Cancel orders and close positions before new trades
@@ -903,15 +1033,15 @@ async function automatedTradingLoop3Exchanges(krakenAccount, grvtAccount, extend
         
         await delay(500);
         
-        // Close positions (skip for Extended Exchange - handled in clickOrdersTab)
+        // Close positions (skip for Kraken - already handled by cancelKrakenOrders, skip for Extended Exchange - handled in clickOrdersTab)
         const closePromises = [];
-        if (buyAccount.exchange.name !== 'Extended Exchange') {
+        if (buyAccount.exchange.name !== 'Extended Exchange' && !buyIsKraken) {
           closePromises.push((async () => {
             const result = await closeAllPositions(buyAccount.page, 100, buyAccount.exchange);
             return { email: buyAccount.email, result };
           })());
         }
-        if (sellAccount.exchange.name !== 'Extended Exchange') {
+        if (sellAccount.exchange.name !== 'Extended Exchange' && !sellIsKraken) {
           closePromises.push((async () => {
             const result = await closeAllPositions(sellAccount.page, 100, sellAccount.exchange);
             return { email: sellAccount.email, result };
@@ -926,6 +1056,8 @@ async function automatedTradingLoop3Exchanges(krakenAccount, grvtAccount, extend
             }
           }
           await delay(300);
+        } else if (buyIsKraken || sellIsKraken) {
+          console.log(`✓ Positions already closed by cancelKrakenOrders() for Kraken accounts`);
         }
         
         // Pre-trade flow for Extended Exchange
@@ -1051,55 +1183,9 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
   console.log(`Exchange 2 (${email2}): ${exchange2.name}`);
   console.log(`Leverage: ${TRADE_CONFIG.leverage}x`);
   console.log(`Quantity: ${TRADE_CONFIG.buyQty} BTC`);
+  console.log(`Opening Threshold: $${TRADE_CONFIG.openingThreshold.toLocaleString()} (will wait until price difference >= threshold)`);
+  console.log(`Closing Threshold: $${TRADE_CONFIG.closingThreshold.toLocaleString()} (will wait until price difference <= threshold, max 15 min)`);
   console.log(`========================================\n`);
-  
-  // Clean up any existing positions and orders BEFORE setting leverage
-  console.log(`\n🧹 Phase 1: Cleaning up existing positions and orders...`);
-  const cleanupPromises = [];
-  
-  // Helper function to add cleanup for an account
-  const addCleanupForAccount = (page, email, exchangeName, exchangeConfig) => {
-    if (exchangeName !== 'Extended Exchange') {
-      cleanupPromises.push((async () => {
-        console.log(`\n[${email}] Checking for open positions and orders...`);
-        const closeResult = await closeAllPositions(page, 100, exchangeConfig);
-        const isKraken = exchangeName === 'Kraken' || exchangeConfig?.name === 'Kraken' || 
-                        exchangeName?.toLowerCase() === 'kraken' || 
-                        exchangeConfig?.name?.toLowerCase() === 'kraken';
-        const cancelResult = isKraken 
-          ? await cancelKrakenOrders(page)
-          : await cancelAllOrders(page);
-        return { email, close: closeResult, cancel: cancelResult };
-      })());
-    } else {
-      console.log(`\n[${email}] Skipping cleanup - already done in clickOrdersTab() during login`);
-    }
-  };
-  
-  addCleanupForAccount(page1, email1, exchange1Name, exchange1);
-  addCleanupForAccount(page2, email2, exchange2Name, exchange2);
-  
-  if (cleanupPromises.length > 0) {
-    console.log(`   Processing cleanup for ${cleanupPromises.length} account(s)...`);
-    const cleanupResults = await Promise.all(cleanupPromises);
-    
-    for (const result of cleanupResults) {
-      if (result.close.success) {
-        console.log(`✓ [${result.email}] Positions: ${result.close.message || 'checked'}`);
-      } else {
-        console.log(`⚠ [${result.email}] Positions: ${result.close.error || 'check failed'}`);
-      }
-      if (result.cancel.success) {
-        console.log(`✓ [${result.email}] Orders: ${result.cancel.message || 'checked'}`);
-      } else {
-        console.log(`⚠ [${result.email}] Orders: ${result.cancel.error || 'check failed'}`);
-      }
-    }
-  } else {
-    console.log(`   Cleanup skipped (Extended Exchange handles it during login)`);
-  }
-  
-  console.log(`\n✓ Phase 1 completed.`);
   
   // Set leverage ONCE at the beginning (AFTER cleanup)
   console.log(`\n🔧 Phase 2: Setting leverage for accounts...`);
@@ -1153,9 +1239,7 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
     console.log(`\n>>> CYCLE ${cycleCount} - ${new Date().toLocaleTimeString()}`);
     
     try {
-      // Step 0: Price Comparison (first step of each cycle)
-      console.log(`\n[CYCLE ${cycleCount}] Step 1: Comparing prices from all exchanges...`);
-      
+      // Setup exchange accounts array
       const exchangeAccounts = [
         {
           page: page1,
@@ -1171,10 +1255,96 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
         }
       ];
       
+      // Map exchanges to their pages and configs for trade execution
+      const getAccountForExchange = (exchangeName) => {
+        if (exchangeName === exchange1.name) {
+          return { page: page1, email: email1, exchange: exchange1 };
+        } else if (exchangeName === exchange2.name) {
+          return { page: page2, email: email2, exchange: exchange2 };
+        }
+        return null;
+      };
+      
+      // Create account objects for both exchanges
+      const account1Obj = { page: page1, email: email1, exchange: exchange1 };
+      const account2Obj = { page: page2, email: email2, exchange: exchange2 };
+      
+      // Step 1: Check closing threshold before closing positions
+      console.log(`\n[CYCLE ${cycleCount}] Step 1: Checking closing threshold before closing positions...`);
+      const closingPriceCheck = await waitForClosingThreshold(
+        exchangeAccounts,
+        TRADE_CONFIG.closingThreshold,
+        cycleCount
+      );
+      
+      // Close positions (skip for Extended Exchange - handled in clickOrdersTab)
+      // closingPriceCheck can be null (force close after 15 min) or a valid comparison (threshold met)
+      // Always close - either threshold is met or 15 minutes elapsed
+      if (closingPriceCheck === null) {
+        console.log(`\n[CYCLE ${cycleCount}] Force closing positions (15 minutes elapsed or threshold not met)...`);
+      } else {
+        console.log(`\n[CYCLE ${cycleCount}] Closing threshold met. Closing positions...`);
+      }
+      
+      // Step 2: Cancel orders and close positions for BOTH accounts (before determining buy/sell)
+      console.log(`\n[CYCLE ${cycleCount}] Step 2: Canceling orders and closing positions for both accounts...`);
+      
+      const account1IsKraken = exchange1.name === 'Kraken' || exchange1Name?.toLowerCase() === 'kraken';
+      const account2IsKraken = exchange2.name === 'Kraken' || exchange2Name?.toLowerCase() === 'kraken';
+      
+      const cancelPromises = [
+        account1IsKraken 
+          ? cancelKrakenOrders(page1)
+          : cancelAllOrders(page1),
+        account2IsKraken 
+          ? cancelKrakenOrders(page2)
+          : cancelAllOrders(page2)
+      ];
+      
+      // YES - it waits for cancelKrakenOrders to complete all its work (cancels orders AND closes positions)
+      const cancelResults = await Promise.all(cancelPromises);
+      if (cancelResults[0].success) {
+        console.log(`✓ [${email1}] Orders canceled`);
+      }
+      if (cancelResults[1].success) {
+        console.log(`✓ [${email2}] Orders canceled`);
+      }
+      
+      await delay(500);
+      
+      // Close positions (skip for Kraken - already handled by cancelKrakenOrders, skip for Extended Exchange - handled in clickOrdersTab)
+      const closePromises = [];
+      if (exchange1.name !== 'Extended Exchange' && !account1IsKraken) {
+        closePromises.push((async () => {
+          const result = await closeAllPositions(page1, 100, exchange1);
+          return { email: email1, result };
+        })());
+      }
+      if (exchange2.name !== 'Extended Exchange' && !account2IsKraken) {
+        closePromises.push((async () => {
+          const result = await closeAllPositions(page2, 100, exchange2);
+          return { email: email2, result };
+        })());
+      }
+      
+      if (closePromises.length > 0) {
+        const closeResults = await Promise.all(closePromises);
+        for (const { email, result } of closeResults) {
+          if (result.success) {
+            console.log(`✓ [${email}] Positions closed`);
+          }
+        }
+        await delay(300);
+      } else if (account1IsKraken || account2IsKraken) {
+        console.log(`✓ Positions already closed by cancelKrakenOrders() for Kraken accounts`);
+      }
+      
+      // Step 3: Get price comparison to determine buy/sell accounts (AFTER closing positions)
+      console.log(`\n[CYCLE ${cycleCount}] Step 3: Getting price comparison to determine buy/sell accounts...`);
       const priceComparison = await comparePricesFromExchanges(exchangeAccounts);
       
       if (!priceComparison.success || priceComparison.successfulPrices.length < 2) {
-        console.log(`\n[CYCLE ${cycleCount}] ⚠️  Price comparison failed or insufficient prices. Skipping this cycle...`);
+        console.log(`\n[CYCLE ${cycleCount}] ⚠️  Price comparison failed. Skipping this cycle...`);
         console.log(`[CYCLE ${cycleCount}] Waiting ${TRADE_CONFIG.waitTime / 1000} seconds before next cycle...`);
         await delay(TRADE_CONFIG.waitTime);
         continue;
@@ -1189,16 +1359,6 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
       console.log(`   🔻 BUY on ${lowestPriceExchange.exchange} (lowest price: $${lowestPriceExchange.price.toLocaleString()})`);
       console.log(`   Price spread: ${priceComparison.comparison.priceDiffPercent}%`);
       
-      // Map exchanges to their pages and configs for trade execution
-      const getAccountForExchange = (exchangeName) => {
-        if (exchangeName === exchange1.name) {
-          return { page: page1, email: email1, exchange: exchange1 };
-        } else if (exchangeName === exchange2.name) {
-          return { page: page2, email: email2, exchange: exchange2 };
-        }
-        return null;
-      };
-      
       const buyAccount = getAccountForExchange(lowestPriceExchange.exchange);
       const sellAccount = getAccountForExchange(highestPriceExchange.exchange);
       
@@ -1208,91 +1368,65 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
         continue;
       }
       
-      // Skip cleanup on first cycle (already done)
-      let skipCleanup = false;
-      if (initialCleanupDone && cycleCount === 1) {
-        console.log(`\n[CYCLE ${cycleCount}] Skipping cleanup - initial cleanup was already done`);
-        initialCleanupDone = false;
-        skipCleanup = true;
-      }
-      
-      if (!skipCleanup) {
-        // Cancel orders and close positions before new trades
-        console.log(`\n[CYCLE ${cycleCount}] Canceling orders and closing positions...`);
-        
-        const buyIsKraken = buyAccount.exchange?.name === 'Kraken' || 
-                           buyAccount.exchange?.name?.toLowerCase() === 'kraken' ||
-                           buyAccount.exchange === 'Kraken';
-        const sellIsKraken = sellAccount.exchange?.name === 'Kraken' || 
-                            sellAccount.exchange?.name?.toLowerCase() === 'kraken' ||
-                            sellAccount.exchange === 'Kraken';
-        
-        const cancelPromises = [
-          buyIsKraken 
-            ? cancelKrakenOrders(buyAccount.page)
-            : cancelAllOrders(buyAccount.page),
-          sellIsKraken 
-            ? cancelKrakenOrders(sellAccount.page)
-            : cancelAllOrders(sellAccount.page)
-        ];
-        
-        const cancelResults = await Promise.all(cancelPromises);
-        if (cancelResults[0].success) {
-          console.log(`✓ [${buyAccount.email}] Orders canceled`);
+      // Pre-trade flow for Extended Exchange
+      const hasExtendedExchange = buyAccount.exchange.name === 'Extended Exchange' || sellAccount.exchange.name === 'Extended Exchange';
+      if (hasExtendedExchange) {
+        console.log(`\n[CYCLE ${cycleCount}] Running pre-trade flow for Extended Exchange...`);
+        const preTradePromises = [];
+        if (buyAccount.exchange.name === 'Extended Exchange') {
+          preTradePromises.push(clickOrdersTab(buyAccount.page, buyAccount.email, true));
         }
-        if (cancelResults[1].success) {
-          console.log(`✓ [${sellAccount.email}] Orders canceled`);
+        if (sellAccount.exchange.name === 'Extended Exchange') {
+          preTradePromises.push(clickOrdersTab(sellAccount.page, sellAccount.email, true));
         }
-        
-        await delay(500);
-        
-        // Close positions (skip for Extended Exchange - handled in clickOrdersTab)
-        const closePromises = [];
-        if (buyAccount.exchange.name !== 'Extended Exchange') {
-          closePromises.push((async () => {
-            const result = await closeAllPositions(buyAccount.page, 100, buyAccount.exchange);
-            return { email: buyAccount.email, result };
-          })());
-        }
-        if (sellAccount.exchange.name !== 'Extended Exchange') {
-          closePromises.push((async () => {
-            const result = await closeAllPositions(sellAccount.page, 100, sellAccount.exchange);
-            return { email: sellAccount.email, result };
-          })());
-        }
-        
-        if (closePromises.length > 0) {
-          const closeResults = await Promise.all(closePromises);
-          for (const { email, result } of closeResults) {
-            if (result.success) {
-              console.log(`✓ [${email}] Positions closed`);
-            }
-          }
-          await delay(300);
-        }
-        
-        // Pre-trade flow for Extended Exchange
-        const hasExtendedExchange = buyAccount.exchange.name === 'Extended Exchange' || sellAccount.exchange.name === 'Extended Exchange';
-        if (hasExtendedExchange) {
-          console.log(`\n[CYCLE ${cycleCount}] Running pre-trade flow for Extended Exchange...`);
-          const preTradePromises = [];
-          if (buyAccount.exchange.name === 'Extended Exchange') {
-            preTradePromises.push(clickOrdersTab(buyAccount.page, buyAccount.email, true));
-          }
-          if (sellAccount.exchange.name === 'Extended Exchange') {
-            preTradePromises.push(clickOrdersTab(sellAccount.page, sellAccount.email, true));
-          }
-          if (preTradePromises.length > 0) {
-            await Promise.all(preTradePromises);
-            await delay(2000);
-          }
+        if (preTradePromises.length > 0) {
+          await Promise.all(preTradePromises);
+          await delay(2000);
         }
       }
       
-      // Step 2: Execute trades based on price comparison
+      // Step 4: Wait for opening threshold (AFTER determining buy/sell) before placing new trades
+      console.log(`\n[CYCLE ${cycleCount}] Step 4: Checking opening threshold before placing new trades...`);
+      const thresholdPriceComparison = await waitForPriceThreshold(
+        exchangeAccounts, 
+        TRADE_CONFIG.openingThreshold, 
+        cycleCount
+      );
+      
+      if (!thresholdPriceComparison) {
+        console.log(`\n[CYCLE ${cycleCount}] ⚠️  Opening threshold not met. Skipping trade execution this cycle...`);
+        console.log(`[CYCLE ${cycleCount}] Waiting ${TRADE_CONFIG.waitTime / 1000} seconds before next cycle...`);
+        await delay(TRADE_CONFIG.waitTime);
+        continue;
+      }
+      
+      // Verify buy/sell accounts are still correct (prices may have changed during threshold wait)
+      const finalHighestPriceExchange = thresholdPriceComparison.highest;
+      const finalLowestPriceExchange = thresholdPriceComparison.lowest;
+      
+      console.log(`\n[CYCLE ${cycleCount}] Opening threshold met. Final price-based trading decision:`);
+      console.log(`   🔺 SELL on ${finalHighestPriceExchange.exchange} (highest price: $${finalHighestPriceExchange.price.toLocaleString()})`);
+      console.log(`   🔻 BUY on ${finalLowestPriceExchange.exchange} (lowest price: $${finalLowestPriceExchange.price.toLocaleString()})`);
+      console.log(`   Price spread: ${thresholdPriceComparison.comparison.priceDiffPercent}%`);
+      
+      // Re-determine accounts in case prices changed during threshold wait
+      const finalBuyAccount = getAccountForExchange(finalLowestPriceExchange.exchange);
+      const finalSellAccount = getAccountForExchange(finalHighestPriceExchange.exchange);
+      
+      if (!finalBuyAccount || !finalSellAccount) {
+        console.log(`\n[CYCLE ${cycleCount}] ⚠️  Could not map exchanges to accounts after threshold check. Skipping this cycle...`);
+        await delay(TRADE_CONFIG.waitTime);
+        continue;
+      }
+      
+      // Use final accounts for trade execution
+      const tradeBuyAccount = finalBuyAccount;
+      const tradeSellAccount = finalSellAccount;
+      
+      // Step 5: Execute trades based on price comparison
       console.log(`\n[CYCLE ${cycleCount}] Executing trades...`);
-      console.log(`   BUY on ${buyAccount.exchange.name} (${buyAccount.email})`);
-      console.log(`   SELL on ${sellAccount.exchange.name} (${sellAccount.email})`);
+      console.log(`   BUY on ${tradeBuyAccount.exchange.name} (${tradeBuyAccount.email})`);
+      console.log(`   SELL on ${tradeSellAccount.exchange.name} (${tradeSellAccount.email})`);
       
       // Helper function to wrap trade execution with timeout
       const executeTradeWithTimeout = async (page, tradeParams, exchange, timeoutMs = 30000) => {
@@ -1310,16 +1444,16 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
       };
       
       const tradePromises = [
-        executeTradeWithTimeout(buyAccount.page, {
+        executeTradeWithTimeout(tradeBuyAccount.page, {
           side: "buy",
           orderType: "limit",
           qty: TRADE_CONFIG.buyQty,
-        }, buyAccount.exchange, 30000),
-        executeTradeWithTimeout(sellAccount.page, {
+        }, tradeBuyAccount.exchange, 30000),
+        executeTradeWithTimeout(tradeSellAccount.page, {
           side: "sell",
           orderType: "limit",
           qty: TRADE_CONFIG.sellQty,
-        }, sellAccount.exchange, 30000),
+        }, tradeSellAccount.exchange, 30000),
       ];
       
       // Use allSettled so one trade doesn't block the other
@@ -1330,9 +1464,9 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
       const buySuccess = buyResult.success;
       
       if (buySuccess) {
-        console.log(`✓ [${buyAccount.email}] BUY order placed successfully`);
+        console.log(`✓ [${tradeBuyAccount.email}] BUY order placed successfully`);
       } else {
-        console.log(`✗ [${buyAccount.email}] BUY order failed: ${buyResult.error || 'unknown error'}`);
+        console.log(`✗ [${tradeBuyAccount.email}] BUY order failed: ${buyResult.error || 'unknown error'}`);
       }
       
       // Process sell result
@@ -1340,9 +1474,9 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
       const sellSuccess = sellResult.success;
       
       if (sellSuccess) {
-        console.log(`✓ [${sellAccount.email}] SELL order placed successfully`);
+        console.log(`✓ [${tradeSellAccount.email}] SELL order placed successfully`);
       } else {
-        console.log(`✗ [${sellAccount.email}] SELL order failed: ${sellResult.error || 'unknown error'}`);
+        console.log(`✗ [${tradeSellAccount.email}] SELL order failed: ${sellResult.error || 'unknown error'}`);
       }
       
       console.log(`\n[CYCLE ${cycleCount}] Trade execution completed (both trades processed)`);

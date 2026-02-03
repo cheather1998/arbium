@@ -482,9 +482,63 @@ async function verifyOrderPlaced(page, exchange, side, qty, maxWaitTime = 10000)
 async function cancelKrakenOrders(page) {
   console.log(`\n=== Canceling Kraken Orders via Modal Flow (KRAKEN-SPECIFIC FUNCTION) ===`);
   
-  // Wait for Kraken page to fully load before proceeding
-  console.log(`[Kraken] Waiting 20 seconds for page to fully load...`);
-  await delay(20000); // Wait 20 seconds for page to fully load and show Open orders tab
+  // Smart wait for Kraken page to be ready (check for Open Orders tab instead of fixed delay)
+  console.log(`[Kraken] Waiting for page to be ready...`);
+  let pageReady = false;
+  const maxWaitTime = 15000; // Max 15 seconds (reduced from 20s fixed)
+  const startTime = Date.now();
+  
+  while (Date.now() - startTime < maxWaitTime) {
+    // Check if Open Orders tab is available
+    const tabFound = await page.evaluate(() => {
+      const text = document.body.innerText || '';
+      return text.toLowerCase().includes('open orders') || 
+             text.toLowerCase().includes('order history') ||
+             document.querySelector('div[data-layout-path*="/c1/ts1/tb"]') !== null;
+    });
+    
+    if (tabFound) {
+      // Additional check: try to find the tab element
+      let tabElement = null;
+      try {
+        tabElement = await findByExactText(page, "Open orders", ["button", "div", "span", "a"]);
+      } catch (e) {
+        try {
+          tabElement = await findByExactText(page, "Open Orders", ["button", "div", "span", "a"]);
+        } catch (e2) {
+          try {
+            tabElement = await findByText(page, "Open orders", ["button", "div", "span", "a"]);
+          } catch (e3) {
+            // Continue checking
+          }
+        }
+      }
+      
+      if (tabElement) {
+        try {
+          const isVisible = await page.evaluate((el) => {
+            return el && el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+          }, tabElement);
+          
+          if (isVisible) {
+            pageReady = true;
+            const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+            console.log(`[Kraken] ✅ Page ready (took ${elapsed}s)`);
+            break;
+          }
+        } catch (e) {
+          // Element might have been removed, continue checking
+        }
+      }
+    }
+    
+    await delay(500); // Check every 500ms
+  }
+  
+  if (!pageReady) {
+    console.log(`[Kraken] ⚠️  Page readiness check timeout, proceeding anyway...`);
+    await delay(2000); // Fallback: wait 2 seconds
+  }
   
   // Step 1: Go to Open Orders tab
   console.log(`[Kraken] Step 1: Going to Open Orders tab...`);
@@ -514,7 +568,28 @@ async function cancelKrakenOrders(page) {
     if (isVisible) {
       await openOrdersTab.click();
       console.log(`[Kraken] ✅ Clicked Open Orders tab`);
-      await delay(2000); // Wait longer for orders to load and table to render
+      
+      // Smart wait for orders table to load (check for table elements instead of fixed delay)
+      let tableReady = false;
+      for (let i = 0; i < 10; i++) {
+        tableReady = await page.evaluate(() => {
+          const hasTable = document.querySelector('[role="table"]') !== null ||
+                          document.getElementById('open-orders') !== null ||
+                          document.querySelector('[role="rowgroup"]') !== null;
+          const hasOrderText = document.body.innerText.toLowerCase().includes('limit') ||
+                              document.body.innerText.toLowerCase().includes('market');
+          return hasTable || hasOrderText;
+        });
+        if (tableReady) {
+          console.log(`[Kraken] ✅ Orders table loaded`);
+          break;
+        }
+        await delay(300);
+      }
+      if (!tableReady) {
+        console.log(`[Kraken] ⚠️  Orders table may not be fully loaded, proceeding...`);
+        await delay(500); // Fallback delay
+      }
     } else {
       console.log(`[Kraken] ⚠️  Open Orders tab found but not visible`);
       return { success: false, message: "Open Orders tab not visible" };
@@ -527,8 +602,8 @@ async function cancelKrakenOrders(page) {
   // Step 2: Check if there are any orders
   console.log(`[Kraken] Step 2: Checking for open orders...`);
   
-  // Wait a bit more for the table to fully render
-  await delay(500);
+  // Small delay to ensure DOM is stable
+  await delay(300);
   const hasOrders = await page.evaluate(() => {
     // Strategy 1: Look for container with id="open-orders" (Kraken-specific)
     let container = document.getElementById('open-orders');
@@ -930,30 +1005,48 @@ async function cancelKrakenOrders(page) {
       // Step 3a: Wait for FIRST modal to open (order details modal)
       console.log(`[Kraken] Step 3a: Waiting for first modal (order details) to open...`);
       let firstModalOpen = false;
-      for (let i = 0; i < 10; i++) {
-      firstModalOpen = await page.evaluate(() => {
-        const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="overlay"]'));
-        return modals.some(modal => {
-          const style = window.getComputedStyle(modal);
-          return style.display !== 'none' && style.visibility !== 'hidden' && 
-                 (modal.offsetWidth > 0 && modal.offsetHeight > 0);
+      for (let i = 0; i < 12; i++) { // Increased attempts slightly but shorter delay
+        firstModalOpen = await page.evaluate(() => {
+          const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="overlay"]'));
+          return modals.some(modal => {
+            const style = window.getComputedStyle(modal);
+            return style.display !== 'none' && style.visibility !== 'hidden' && 
+                   (modal.offsetWidth > 0 && modal.offsetHeight > 0);
+          });
         });
-      });
-      if (firstModalOpen) {
-        console.log(`[Kraken] ✅ First modal opened`);
-        break;
-      }
-        await delay(200);
+        if (firstModalOpen) {
+          console.log(`[Kraken] ✅ First modal opened`);
+          break;
+        }
+        await delay(150); // Reduced from 200ms
       }
     
       if (!firstModalOpen) {
         console.log(`[Kraken] ⚠️  First modal did not open, skipping this order`);
         await page.keyboard.press('Escape');
-        await delay(300);
+        await delay(200);
         continue;
       }
     
-      await delay(500); // Additional wait for modal to fully render
+      // Smart wait: check if modal content is ready (has buttons/text)
+      let modalReady = false;
+      for (let i = 0; i < 5; i++) {
+        modalReady = await page.evaluate(() => {
+          const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"]'));
+          return modals.some(modal => {
+            const style = window.getComputedStyle(modal);
+            if (style.display === 'none' || style.visibility === 'hidden') return false;
+            const hasButtons = modal.querySelectorAll('button').length > 0;
+            const hasText = (modal.textContent || '').trim().length > 10;
+            return hasButtons && hasText;
+          });
+        });
+        if (modalReady) break;
+        await delay(100);
+      }
+      if (!modalReady) {
+        await delay(200); // Fallback
+      }
     
       // Step 4: Find and click "Cancel order" button in FIRST modal
       console.log(`[Kraken] Step 4: Looking for "Cancel order" button in first modal...`);
@@ -991,7 +1084,7 @@ async function cancelKrakenOrders(page) {
         // Step 4a: Wait for FIRST modal to close and SECOND modal to open
         let secondModalOpen = false;
         let firstModalClosed = false;
-        for (let i = 0; i < 15; i++) {
+        for (let i = 0; i < 12; i++) { // Reduced from 15
           const modalState = await page.evaluate(() => {
             const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="overlay"]'));
             const visibleModals = modals.filter(modal => {
@@ -1014,7 +1107,7 @@ async function cancelKrakenOrders(page) {
             firstModalClosed = true;
           }
           
-          await delay(200);
+          await delay(150); // Reduced from 200ms
         }
         
         if (!secondModalOpen) {
@@ -1026,7 +1119,19 @@ async function cancelKrakenOrders(page) {
         }
         
         console.log(`[Kraken] ✅ Second modal (confirmation) opened`);
-        await delay(500); // Additional wait for second modal to fully render
+        // Smart wait: check if confirmation button is ready
+        let confirmReady = false;
+        for (let i = 0; i < 5; i++) {
+          confirmReady = await page.evaluate(() => {
+            const text = document.body.innerText.toLowerCase();
+            return text.includes('yes, cancel order') || text.includes('cancel order');
+          });
+          if (confirmReady) break;
+          await delay(100);
+        }
+        if (!confirmReady) {
+          await delay(200); // Fallback
+        }
       } else {
         console.log(`[Kraken] ⚠️  Found "Cancel order" button but it's not in a modal`);
         // Try to close any open modals and continue
@@ -1078,7 +1183,7 @@ async function cancelKrakenOrders(page) {
         
         // Step 5a: Wait for both modals to close
         let modalsClosed = false;
-        for (let i = 0; i < 20; i++) {
+        for (let i = 0; i < 15; i++) { // Reduced from 20
           const modalCount = await page.evaluate(() => {
             const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="overlay"]'));
             return modals.filter(modal => {
@@ -1092,7 +1197,7 @@ async function cancelKrakenOrders(page) {
             modalsClosed = true;
             break;
           }
-          await delay(200);
+          await delay(150); // Reduced from 200ms
         }
         
         if (modalsClosed) {
@@ -1118,14 +1223,39 @@ async function cancelKrakenOrders(page) {
         await delay(300);
       }
     
-      // Wait a bit before checking for next order
-      await delay(500);
+      // Wait a bit before checking for next order (reduced)
+      await delay(300);
     }
   }
   
-  // Wait additional time after canceling orders before proceeding to positions
-  console.log(`[Kraken] Waiting 2 seconds after cancel order flow before proceeding to positions...`);
-  await delay(2000);
+  // Wait for orders table to stabilize after canceling orders
+  console.log(`[Kraken] Waiting for orders table to stabilize after cancel order flow...`);
+  let tableStable = false;
+  for (let i = 0; i < 5; i++) {
+    tableStable = await page.evaluate(() => {
+      // Check if no more order rows are visible
+      const tables = Array.from(document.querySelectorAll('[role="table"]'));
+      for (const table of tables) {
+        const rows = Array.from(table.querySelectorAll('[role="button"], tr'));
+        const orderRows = rows.filter(row => {
+          const text = (row.textContent || '').toLowerCase();
+          return (text.includes('limit') || text.includes('market')) &&
+                 (text.includes('buy') || text.includes('sell')) &&
+                 !text.includes('canceled') && !text.includes('filled');
+        });
+        return orderRows.length === 0;
+      }
+      return true;
+    });
+    if (tableStable) {
+      console.log(`[Kraken] ✅ Orders table stabilized`);
+      break;
+    }
+    await delay(300);
+  }
+  if (!tableStable) {
+    await delay(500); // Fallback
+  }
   
   // Step 6: Navigate to Positions tab and close all positions
   console.log(`[Kraken] Step 6: Navigating to Positions tab...`);
@@ -1153,7 +1283,26 @@ async function cancelKrakenOrders(page) {
     if (isVisible) {
       console.log(`[Kraken] ✅ Found Positions tab, clicking...`);
       await positionsTabElement.click();
-      await delay(2000); // Wait for positions tab to load
+      
+      // Smart wait for positions tab to load
+      let positionsReady = false;
+      for (let i = 0; i < 8; i++) {
+        positionsReady = await page.evaluate(() => {
+          const hasPositionText = document.body.innerText.toLowerCase().includes('positions') ||
+                                 document.body.innerText.toLowerCase().includes('long') ||
+                                 document.body.innerText.toLowerCase().includes('short');
+          const hasPositionRows = document.querySelectorAll('div[role="button"]').length > 0;
+          return hasPositionText && hasPositionRows;
+        });
+        if (positionsReady) {
+          console.log(`[Kraken] ✅ Positions tab loaded`);
+          break;
+        }
+        await delay(300);
+      }
+      if (!positionsReady) {
+        await delay(500); // Fallback
+      }
       console.log(`[Kraken] ✅ Clicked Positions tab`);
     } else {
       console.log(`[Kraken] ⚠️  Positions tab found but not visible`);
@@ -1168,7 +1317,26 @@ async function cancelKrakenOrders(page) {
       if (isVisible) {
         console.log(`[Kraken] ✅ Found Positions tab via text search, clicking...`);
         await positionsTab.click();
-        await delay(2000);
+        
+        // Smart wait for positions tab to load
+        let positionsReady = false;
+        for (let i = 0; i < 8; i++) {
+          positionsReady = await page.evaluate(() => {
+            const hasPositionText = document.body.innerText.toLowerCase().includes('positions') ||
+                                   document.body.innerText.toLowerCase().includes('long') ||
+                                   document.body.innerText.toLowerCase().includes('short');
+            const hasPositionRows = document.querySelectorAll('div[role="button"]').length > 0;
+            return hasPositionText && hasPositionRows;
+          });
+          if (positionsReady) {
+            console.log(`[Kraken] ✅ Positions tab loaded`);
+            break;
+          }
+          await delay(300);
+        }
+        if (!positionsReady) {
+          await delay(500); // Fallback
+        }
         console.log(`[Kraken] ✅ Clicked Positions tab`);
       }
     } else {
@@ -1178,7 +1346,8 @@ async function cancelKrakenOrders(page) {
   
   // Step 7: Find all position rows and close them
   console.log(`[Kraken] Step 7: Finding all position rows in Positions tab...`);
-  await delay(2000); // Wait longer for positions to load
+  // Small delay to ensure DOM is stable
+  await delay(300);
   
   // Get count of position rows (divs with role="button" and cursor-pointer class)
   const positionCount = await page.evaluate(() => {
@@ -1296,12 +1465,12 @@ async function cancelKrakenOrders(page) {
       }
       
       console.log(`[Kraken] ✅ Clicked on position row: ${positionClicked.text}`);
-      await delay(500); // Wait a bit after clicking
+      await delay(300); // Reduced from 500ms
       
       // Step 7b: Wait for first modal to render
       console.log(`[Kraken] Waiting for position modal to open...`);
       let firstModalOpen = false;
-      for (let j = 0; j < 20; j++) { // Increased wait time
+      for (let j = 0; j < 15; j++) { // Reduced from 20
         firstModalOpen = await page.evaluate(() => {
           // Check for modals/dialogs
           const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="overlay"], [class*="dialog"]'));
@@ -1327,17 +1496,35 @@ async function cancelKrakenOrders(page) {
           console.log(`[Kraken] ✅ Position modal opened`);
           break;
         }
-        await delay(300); // Increased delay between checks
+        await delay(200); // Reduced from 300ms
       }
       
       if (!firstModalOpen) {
         console.log(`[Kraken] ⚠️  Position modal did not open after clicking, trying next element...`);
         // Don't press Escape here - might interfere with next click
-        await delay(300);
+        await delay(200);
         continue;
       }
       
-      await delay(500); // Wait for modal to fully render
+      // Smart wait: check if modal content is ready
+      let modalReady = false;
+      for (let i = 0; i < 5; i++) {
+        modalReady = await page.evaluate(() => {
+          const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"]'));
+          return modals.some(modal => {
+            const style = window.getComputedStyle(modal);
+            if (style.display === 'none' || style.visibility === 'hidden') return false;
+            const hasButtons = modal.querySelectorAll('button').length > 0;
+            const hasText = (modal.textContent || '').trim().length > 10;
+            return hasButtons && hasText;
+          });
+        });
+        if (modalReady) break;
+        await delay(100);
+      }
+      if (!modalReady) {
+        await delay(200); // Fallback
+      }
       
       // Step 7c: Find and click "Close position" button in first modal
       console.log(`[Kraken] Looking for "Close position" button in modal...`);
@@ -1370,12 +1557,12 @@ async function cancelKrakenOrders(page) {
         if (isInModal) {
           console.log(`[Kraken] ✅ Found "Close position" button, clicking...`);
           await closePositionBtn.click();
-          await delay(500);
+          await delay(300); // Reduced from 500ms
           
           // Step 7d: Wait for second modal to render
           console.log(`[Kraken] Waiting for close position modal to open...`);
           let secondModalOpen = false;
-          for (let j = 0; j < 15; j++) {
+          for (let j = 0; j < 12; j++) { // Reduced from 15
             secondModalOpen = await page.evaluate(() => {
               const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="overlay"]'));
               return modals.some(modal => {
@@ -1388,17 +1575,35 @@ async function cancelKrakenOrders(page) {
               console.log(`[Kraken] ✅ Close position modal opened`);
               break;
             }
-            await delay(200);
+            await delay(150); // Reduced from 200ms
           }
           
           if (!secondModalOpen) {
             console.log(`[Kraken] ⚠️  Close position modal did not open`);
             await page.keyboard.press('Escape');
-            await delay(300);
+            await delay(200);
             continue;
           }
           
-          await delay(500); // Wait for modal to fully render
+          // Smart wait: check if modal content is ready
+          let secondModalReady = false;
+          for (let i = 0; i < 5; i++) {
+            secondModalReady = await page.evaluate(() => {
+              const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"]'));
+              return modals.some(modal => {
+                const style = window.getComputedStyle(modal);
+                if (style.display === 'none' || style.visibility === 'hidden') return false;
+                const hasButtons = modal.querySelectorAll('button').length > 0;
+                const hasText = (modal.textContent || '').trim().length > 10;
+                return hasButtons && hasText;
+              });
+            });
+            if (secondModalReady) break;
+            await delay(100);
+          }
+          if (!secondModalReady) {
+            await delay(200); // Fallback
+          }
           
           // Step 7e: Find and click "Limit" option
           console.log(`[Kraken] Looking for "Limit" option in modal...`);
@@ -1423,7 +1628,7 @@ async function cancelKrakenOrders(page) {
             if (isVisible) {
               console.log(`[Kraken] ✅ Found "Limit" option, clicking...`);
               await limitElement.click();
-              await delay(500);
+              await delay(300); // Reduced from 500ms
             } else {
               console.log(`[Kraken] ⚠️  Limit option found but not visible`);
             }
@@ -1433,7 +1638,7 @@ async function cancelKrakenOrders(page) {
             if (limitBtn) {
               console.log(`[Kraken] ✅ Found "Limit" option via text search, clicking...`);
               await limitBtn.click();
-              await delay(500);
+              await delay(300); // Reduced from 500ms
             } else {
               console.log(`[Kraken] ⚠️  Could not find "Limit" option`);
             }
@@ -1470,11 +1675,11 @@ async function cancelKrakenOrders(page) {
             if (isInModal2) {
               console.log(`[Kraken] ✅ Found "Close BTC Perp" button, clicking...`);
               await closeBtcBtn.click();
-              await delay(1000);
+              await delay(500); // Reduced from 1000ms
               
               // Wait for modal to close
               let modalClosed = false;
-              for (let j = 0; j < 15; j++) {
+              for (let j = 0; j < 12; j++) { // Reduced from 15
                 const modalCount = await page.evaluate(() => {
                   const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="overlay"]'));
                   return modals.filter(modal => {
@@ -1488,7 +1693,7 @@ async function cancelKrakenOrders(page) {
                   modalClosed = true;
                   break;
                 }
-                await delay(200);
+                await delay(150); // Reduced from 200ms
               }
               
               if (modalClosed) {
@@ -1496,7 +1701,7 @@ async function cancelKrakenOrders(page) {
               } else {
                 console.log(`[Kraken] ⚠️  Modal may still be open, but position close was attempted`);
                 await page.keyboard.press('Escape');
-                await delay(300);
+                await delay(200);
               }
             } else {
               console.log(`[Kraken] ⚠️  Found "Close BTC Perp" button but it's not in a modal`);
@@ -1504,26 +1709,26 @@ async function cancelKrakenOrders(page) {
           } else {
             console.log(`[Kraken] ⚠️  Could not find "Close BTC Perp" button`);
             await page.keyboard.press('Escape');
-            await delay(300);
+            await delay(200);
           }
         } else {
           console.log(`[Kraken] ⚠️  Found "Close position" button but it's not in a modal`);
           await page.keyboard.press('Escape');
-          await delay(300);
+          await delay(200);
         }
       } else {
         console.log(`[Kraken] ⚠️  Could not find "Close position" button`);
         await page.keyboard.press('Escape');
-        await delay(300);
+        await delay(200);
       }
       
-      // Wait before processing next position
-      await delay(500);
+      // Wait before processing next position (reduced)
+      await delay(300);
     }
   }
   
   console.log(`[Kraken] ✅ Position closing flow completed`);
-  await delay(1000);
+  await delay(500); // Reduced from 1000ms
   
   if (canceledCount > 0) {
     return { success: true, message: `Canceled ${canceledCount} order(s)`, canceled: canceledCount };

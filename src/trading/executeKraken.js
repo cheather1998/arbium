@@ -855,7 +855,7 @@ export async function executeTradeKraken(
 
   // Step 0: Cancel all existing orders first (modal-based flow for Kraken)
   console.log(`[${exchange.name}] Step 0: Canceling all existing orders...`);
-  await cancelKrakenOrders(page);
+  // await cancelKrakenOrders(page);
   console.log(`[${exchange.name}] ✅ Order cancellation completed\n`);
 
   // Set leverage first if requested
