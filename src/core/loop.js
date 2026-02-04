@@ -4,6 +4,7 @@ import { delay } from '../utils/helpers.js';
 import { closeAllPositions } from '../trading/positions.js';
 import { cancelAllOrders, cancelKrakenOrders } from '../trading/orders.js';
 import { setLeverage } from '../trading/leverage.js';
+import { setLeverageKraken } from '../trading/executeKraken.js';
 import { clickOrdersTab } from '../ui/tabs.js';
 import { executeTrade } from '../trading/execute.js';
 import { getCurrentUnrealizedPnL } from '../trading/positions.js';
@@ -264,7 +265,11 @@ async function automatedTradingLoop(account1Result, account2Result) {
     // Only set leverage for Paradex accounts (Extended Exchange already set in clickOrdersTab)
     if (exchange1Name !== 'Extended Exchange') {
       leveragePromises.push((async () => {
-        const result = await setLeverage(page1, TRADE_CONFIG.leverage);
+        // Use Kraken-specific leverage function for Kraken exchange
+        const isKraken = exchange1Name?.toLowerCase().includes('kraken') || exchange1?.name?.toLowerCase().includes('kraken');
+        const result = isKraken 
+          ? await setLeverageKraken(page1, TRADE_CONFIG.leverage, exchange1)
+          : await setLeverage(page1, TRADE_CONFIG.leverage);
         return { email: email1, result };
       })());
     } else {
@@ -273,7 +278,11 @@ async function automatedTradingLoop(account1Result, account2Result) {
     
     if (exchange2Name !== 'Extended Exchange') {
       leveragePromises.push((async () => {
-        const result = await setLeverage(page2, TRADE_CONFIG.leverage);
+        // Use Kraken-specific leverage function for Kraken exchange
+        const isKraken = exchange2Name?.toLowerCase().includes('kraken') || exchange2?.name?.toLowerCase().includes('kraken');
+        const result = isKraken 
+          ? await setLeverageKraken(page2, TRADE_CONFIG.leverage, exchange2)
+          : await setLeverage(page2, TRADE_CONFIG.leverage);
         return { email: email2, result };
       })());
     } else {
@@ -852,7 +861,11 @@ async function automatedTradingLoop3Exchanges(krakenAccount, grvtAccount, extend
   if (krakenExchangeName !== 'Extended Exchange') {
     leveragePromises.push((async () => {
       console.log(`[${krakenEmail}] Setting leverage to ${TRADE_CONFIG.leverage}x...`);
-      const result = await setLeverage(krakenPage, TRADE_CONFIG.leverage);
+      // Use Kraken-specific leverage function for Kraken exchange
+      const isKraken = krakenExchangeName?.toLowerCase().includes('kraken') || krakenExchange?.name?.toLowerCase().includes('kraken');
+      const result = isKraken 
+        ? await setLeverageKraken(krakenPage, TRADE_CONFIG.leverage, krakenExchange)
+        : await setLeverage(krakenPage, TRADE_CONFIG.leverage);
       return { email: krakenEmail, result };
     })());
   } else {
@@ -1194,7 +1207,11 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
   if (exchange1Name !== 'Extended Exchange') {
     leveragePromises.push((async () => {
       console.log(`[${email1}] Setting leverage to ${TRADE_CONFIG.leverage}x...`);
-      const result = await setLeverage(page1, TRADE_CONFIG.leverage);
+      // Use Kraken-specific leverage function for Kraken exchange
+      const isKraken = exchange1Name?.toLowerCase().includes('kraken') || exchange1?.name?.toLowerCase().includes('kraken');
+      const result = isKraken 
+        ? await setLeverageKraken(page1, TRADE_CONFIG.leverage, exchange1)
+        : await setLeverage(page1, TRADE_CONFIG.leverage);
       return { email: email1, result };
     })());
   } else {
@@ -1204,7 +1221,11 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
   if (exchange2Name !== 'Extended Exchange') {
     leveragePromises.push((async () => {
       console.log(`[${email2}] Setting leverage to ${TRADE_CONFIG.leverage}x...`);
-      const result = await setLeverage(page2, TRADE_CONFIG.leverage);
+      // Use Kraken-specific leverage function for Kraken exchange
+      const isKraken = exchange2Name?.toLowerCase().includes('kraken') || exchange2?.name?.toLowerCase().includes('kraken');
+      const result = isKraken 
+        ? await setLeverageKraken(page2, TRADE_CONFIG.leverage, exchange2)
+        : await setLeverage(page2, TRADE_CONFIG.leverage);
       return { email: email2, result };
     })());
   } else {
@@ -1581,7 +1602,11 @@ async function testSingleExchangeTrading(accountResult, exchangeName) {
   // Set leverage
   console.log(`\n🔧 Step 2: Setting leverage to ${TRADE_CONFIG.leverage}x...`);
   if (exchange.name !== 'Extended Exchange') {
-    const leverageResult = await setLeverage(page, TRADE_CONFIG.leverage);
+    // Use Kraken-specific leverage function for Kraken exchange
+    const isKraken = exchangeName?.toLowerCase().includes('kraken') || exchange?.name?.toLowerCase().includes('kraken');
+    const leverageResult = isKraken 
+      ? await setLeverageKraken(page, TRADE_CONFIG.leverage, exchange)
+      : await setLeverage(page, TRADE_CONFIG.leverage);
     if (leverageResult.success) {
       console.log(`✓ Leverage set to ${TRADE_CONFIG.leverage}x`);
     } else {

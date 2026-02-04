@@ -18,14 +18,370 @@ import {
 
 /**
  * Set leverage for Kraken
- * TODO: Implement Kraken-specific leverage setting after UI inspection
+ * 1. Enable "Isolate position" toggle if not already enabled
+ * 2. Set leverage value using the slider
  */
 export async function setLeverageKraken(page, leverage, exchange) {
-  console.log(`[${exchange.name}] Setting leverage...`);
-  // TODO: Implement Kraken-specific leverage setting logic
-  // This will be implemented after inspecting Kraken UI
-  console.log(`[${exchange.name}] ⚠️  Leverage setting not yet implemented for Kraken`);
-  await delay(1000);
+  console.log(`[${exchange.name}] Setting leverage to ${leverage}x...`);
+  
+  try {
+    await delay(1000);
+    
+    // Step 1: Find and enable "Isolate position" toggle
+    console.log(`[${exchange.name}] Step 1: Checking and enabling "Isolate position" toggle...`);
+    const isolateToggleResult = await page.evaluate(() => {
+      // Find all elements that might be the "Isolate position" toggle
+      const allElements = Array.from(document.querySelectorAll('*'));
+      
+      for (const el of allElements) {
+        const text = el.textContent?.trim() || '';
+        const isVisible = el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+        
+        // Look for "Isolate position" text
+        if (isVisible && text.toLowerCase().includes('isolate position')) {
+          // Find the toggle switch near this text
+          // The toggle is usually a button or div with role="switch" or a checkbox-like element
+          let toggleElement = null;
+          
+          // Check if the element itself is clickable
+          if (el.tagName === 'BUTTON' || el.getAttribute('role') === 'switch' || el.getAttribute('role') === 'checkbox') {
+            toggleElement = el;
+          } else {
+            // Look for toggle in parent or sibling elements
+            let parent = el.parentElement;
+            for (let i = 0; i < 3 && parent; i++) {
+              const toggle = parent.querySelector('button[role="switch"], button[role="checkbox"], div[role="switch"], div[role="checkbox"], input[type="checkbox"]');
+              if (toggle && toggle.offsetParent !== null) {
+                toggleElement = toggle;
+                break;
+              }
+              parent = parent.parentElement;
+            }
+            
+            // Also check siblings
+            if (!toggleElement && el.parentElement) {
+              const siblings = Array.from(el.parentElement.children);
+              for (const sibling of siblings) {
+                if (sibling !== el && (sibling.tagName === 'BUTTON' || sibling.getAttribute('role') === 'switch' || sibling.getAttribute('role') === 'checkbox')) {
+                  const isSiblingVisible = sibling.offsetParent !== null && sibling.offsetWidth > 0 && sibling.offsetHeight > 0;
+                  if (isSiblingVisible) {
+                    toggleElement = sibling;
+                    break;
+                  }
+                }
+              }
+            }
+          }
+          
+          if (toggleElement) {
+            // Check current state
+            const isChecked = toggleElement.getAttribute('aria-checked') === 'true' ||
+                            toggleElement.getAttribute('data-state') === 'checked' ||
+                            toggleElement.classList.contains('checked') ||
+                            (toggleElement.tagName === 'INPUT' && toggleElement.checked);
+            
+            if (!isChecked) {
+              toggleElement.click();
+              return { success: true, wasEnabled: false, message: 'Enabled "Isolate position" toggle' };
+            } else {
+              return { success: true, wasEnabled: true, message: '"Isolate position" toggle already enabled' };
+            }
+          }
+        }
+      }
+      
+      return { success: false, error: 'Could not find "Isolate position" toggle' };
+    });
+    
+    if (isolateToggleResult.success) {
+      console.log(`[${exchange.name}] ✓ ${isolateToggleResult.message}`);
+      await delay(500);
+    } else {
+      console.log(`[${exchange.name}] ⚠️  ${isolateToggleResult.error || 'Could not find "Isolate position" toggle'}`);
+      // Continue anyway - toggle might not be critical
+    }
+    
+    // Step 2: Find and interact with leverage slider
+    console.log(`[${exchange.name}] Step 2: Finding leverage slider...`);
+    const leverageSliderResult = await page.evaluate((targetLeverage) => {
+      // Find "Leverage" label/text first
+      const allElements = Array.from(document.querySelectorAll('*'));
+      let leverageSection = null;
+      
+      for (const el of allElements) {
+        const text = el.textContent?.trim() || '';
+        const isVisible = el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+        
+        // Look for "Leverage" text
+        if (isVisible && text.toLowerCase().includes('leverage') && !text.toLowerCase().includes('isolate')) {
+          leverageSection = el;
+          break;
+        }
+      }
+      
+      if (!leverageSection) {
+        return { success: false, error: 'Could not find "Leverage" section' };
+      }
+      
+      // Find slider element near the Leverage text
+      // Slider is usually an input[type="range"] or a div with slider-like structure
+      let sliderElement = null;
+      let sliderInput = null;
+      
+      // Method 1: Look for input[type="range"]
+      const rangeInputs = Array.from(document.querySelectorAll('input[type="range"]'));
+      for (const input of rangeInputs) {
+        const isVisible = input.offsetParent !== null && input.offsetWidth > 0 && input.offsetHeight > 0;
+        if (isVisible) {
+          // Check if it's near the leverage section
+          const inputRect = input.getBoundingClientRect();
+          const sectionRect = leverageSection.getBoundingClientRect();
+          
+          // Check if input is below the leverage section (within reasonable distance)
+          if (inputRect.top >= sectionRect.top && inputRect.top <= sectionRect.bottom + 200) {
+            sliderInput = input;
+            break;
+          }
+        }
+      }
+      
+      // Method 2: Look for slider-like div structure (if no range input found)
+      if (!sliderInput) {
+        let parent = leverageSection.parentElement;
+        for (let i = 0; i < 5 && parent; i++) {
+          // Look for slider track (usually has specific classes or structure)
+          const sliderTrack = parent.querySelector('[class*="slider"], [class*="Slider"], [role="slider"]');
+          if (sliderTrack && sliderTrack.offsetParent !== null) {
+            sliderElement = sliderTrack;
+            
+            // Try to find input inside
+            sliderInput = sliderTrack.querySelector('input[type="range"], input[type="number"]');
+            break;
+          }
+          parent = parent.parentElement;
+        }
+      }
+      
+      if (!sliderInput && !sliderElement) {
+        return { success: false, error: 'Could not find leverage slider' };
+      }
+      
+      // If we found a slider element but no input, try to find the input that controls it
+      if (sliderElement && !sliderInput) {
+        // Look for hidden input or input in nearby elements
+        let searchParent = sliderElement.parentElement;
+        for (let i = 0; i < 3 && searchParent; i++) {
+          const inputs = searchParent.querySelectorAll('input');
+          for (const input of inputs) {
+            if (input.type === 'range' || input.type === 'number' || !input.type) {
+              sliderInput = input;
+              break;
+            }
+          }
+          if (sliderInput) break;
+          searchParent = searchParent.parentElement;
+        }
+      }
+      
+      // Method 3: Look for any input near the leverage value display (e.g., "10.00x")
+      if (!sliderInput) {
+        const leverageValueElements = Array.from(document.querySelectorAll('*'));
+        for (const el of leverageValueElements) {
+          const text = el.textContent?.trim() || '';
+          const isVisible = el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+          
+          // Look for pattern like "10.00x" or "10x"
+          if (isVisible && /^\d+(\.\d+)?x$/i.test(text)) {
+            // Find input near this element
+            let searchEl = el.parentElement;
+            for (let i = 0; i < 3 && searchEl; i++) {
+              const input = searchEl.querySelector('input[type="range"], input[type="number"]');
+              if (input && input.offsetParent !== null) {
+                sliderInput = input;
+                break;
+              }
+              searchEl = searchEl.parentElement;
+            }
+            if (sliderInput) break;
+          }
+        }
+      }
+      
+      if (!sliderInput) {
+        return { success: false, error: 'Could not find leverage slider input' };
+      }
+      
+      // Get current value and slider properties
+      const currentValue = sliderInput.value || sliderInput.getAttribute('value') || '0';
+      const currentLeverage = parseFloat(currentValue);
+      const min = parseFloat(sliderInput.min || '0');
+      const max = parseFloat(sliderInput.max || '100');
+      const rect = sliderInput.getBoundingClientRect();
+      
+      // Check if already set to target
+      if (Math.abs(currentLeverage - targetLeverage) < 0.01) {
+        return { success: true, wasChanged: false, message: `Leverage already set to ${targetLeverage}x`, alreadySet: true };
+      }
+      
+      // Calculate click position on slider track
+      const percentage = (targetLeverage - min) / (max - min);
+      const clickX = rect.left + (rect.width * percentage);
+      const clickY = rect.top + (rect.height / 2);
+      
+      return {
+        success: true,
+        clickPosition: { x: clickX, y: clickY },
+        sliderInfo: {
+          min: min,
+          max: max,
+          currentValue: currentLeverage,
+          targetValue: targetLeverage
+        },
+        alreadySet: false
+      };
+    }, leverage);
+    
+    if (!leverageSliderResult.success) {
+      console.log(`[${exchange.name}] ✗ ${leverageSliderResult.error || 'Failed to find leverage slider'}`);
+      return { success: false, error: leverageSliderResult.error };
+    }
+    
+    if (leverageSliderResult.alreadySet) {
+      console.log(`[${exchange.name}] ✓ ${leverageSliderResult.message}`);
+      return { success: true };
+    }
+    
+    // Interact with slider using mouse
+    console.log(`[${exchange.name}] Step 3: Clicking slider at position to set leverage to ${leverage}x...`);
+    
+    try {
+      // Method 1: Click on the slider track at target position
+      await page.mouse.click(leverageSliderResult.clickPosition.x, leverageSliderResult.clickPosition.y);
+      await delay(500);
+      
+      // Verify the value was updated by checking the displayed value
+      const verifyResult = await page.evaluate((targetLeverage) => {
+        // Check displayed value in UI (e.g., "14.00x")
+        const allElements = Array.from(document.querySelectorAll('*'));
+        for (const el of allElements) {
+          const text = el.textContent?.trim() || '';
+          if (/^\d+(\.\d+)?x$/i.test(text)) {
+            const displayedValue = parseFloat(text.replace(/x/i, ''));
+            if (Math.abs(displayedValue - targetLeverage) < 0.01) {
+              return { success: true, value: displayedValue, fromDisplay: true };
+            }
+          }
+        }
+        
+        // Also check input value
+        const rangeInputs = Array.from(document.querySelectorAll('input[type="range"]'));
+        for (const input of rangeInputs) {
+          const isVisible = input.offsetParent !== null && input.offsetWidth > 0 && input.offsetHeight > 0;
+          if (isVisible) {
+            const currentValue = parseFloat(input.value || '0');
+            return { success: Math.abs(currentValue - targetLeverage) < 0.01, value: currentValue, expected: targetLeverage };
+          }
+        }
+        
+        return { success: false, error: 'Could not verify leverage value' };
+      }, leverage);
+      
+      if (verifyResult.success) {
+        console.log(`[${exchange.name}] ✓ Leverage set to ${leverage}x (verified: ${verifyResult.value}x)`);
+        await delay(300);
+        return { success: true };
+      } else {
+        // Method 2: Try dragging the slider handle
+        console.log(`[${exchange.name}] Click didn't update value, trying drag method...`);
+        
+        const dragInfo = await page.evaluate((targetLeverage) => {
+          const rangeInputs = Array.from(document.querySelectorAll('input[type="range"]'));
+          for (const input of rangeInputs) {
+            const isVisible = input.offsetParent !== null && input.offsetWidth > 0 && input.offsetHeight > 0;
+            if (isVisible) {
+              const rect = input.getBoundingClientRect();
+              const min = parseFloat(input.min || '0');
+              const max = parseFloat(input.max || '100');
+              const currentValue = parseFloat(input.value || '0');
+              
+              // Calculate positions
+              const currentPercentage = (currentValue - min) / (max - min);
+              const targetPercentage = (targetLeverage - min) / (max - min);
+              
+              const startX = rect.left + (rect.width * currentPercentage);
+              const targetX = rect.left + (rect.width * targetPercentage);
+              const y = rect.top + (rect.height / 2);
+              
+              return {
+                success: true,
+                startX: startX,
+                targetX: targetX,
+                y: y
+              };
+            }
+          }
+          return { success: false, error: 'Could not find slider for dragging' };
+        }, leverage);
+        
+        if (dragInfo.success) {
+          // Drag from current position to target position
+          await page.mouse.move(dragInfo.startX, dragInfo.y);
+          await delay(100);
+          await page.mouse.down();
+          await delay(100);
+          await page.mouse.move(dragInfo.targetX, dragInfo.y, { steps: 20 });
+          await delay(100);
+          await page.mouse.up();
+          await delay(500);
+          
+          // Verify again
+          const verifyResult2 = await page.evaluate((targetLeverage) => {
+            // Check displayed value
+            const allElements = Array.from(document.querySelectorAll('*'));
+            for (const el of allElements) {
+              const text = el.textContent?.trim() || '';
+              if (/^\d+(\.\d+)?x$/i.test(text)) {
+                const displayedValue = parseFloat(text.replace(/x/i, ''));
+                if (Math.abs(displayedValue - targetLeverage) < 0.01) {
+                  return { success: true, value: displayedValue, fromDisplay: true };
+                }
+              }
+            }
+            
+            // Check input value
+            const rangeInputs = Array.from(document.querySelectorAll('input[type="range"]'));
+            for (const input of rangeInputs) {
+              const isVisible = input.offsetParent !== null && input.offsetWidth > 0 && input.offsetHeight > 0;
+              if (isVisible) {
+                const currentValue = parseFloat(input.value || '0');
+                return { success: Math.abs(currentValue - targetLeverage) < 0.01, value: currentValue, expected: targetLeverage };
+              }
+            }
+            return { success: false, error: 'Could not verify after drag' };
+          }, leverage);
+          
+          if (verifyResult2.success) {
+            console.log(`[${exchange.name}] ✓ Leverage set to ${leverage}x via drag (verified: ${verifyResult2.value}x)`);
+            await delay(300);
+            return { success: true };
+          } else {
+            console.log(`[${exchange.name}] ✗ Drag method failed. Current: ${verifyResult2.value || 'unknown'}, Expected: ${leverage}`);
+            return { success: false, error: `Failed to set leverage. Current: ${verifyResult2.value || 'unknown'}, Expected: ${leverage}` };
+          }
+        } else {
+          console.log(`[${exchange.name}] ✗ ${dragInfo.error || 'Failed to drag slider'}`);
+          return { success: false, error: dragInfo.error || 'Failed to drag slider' };
+        }
+      }
+    } catch (error) {
+      console.log(`[${exchange.name}] ✗ Error interacting with slider: ${error.message}`);
+      return { success: false, error: error.message };
+    }
+    
+  } catch (error) {
+    console.log(`[${exchange.name}] ✗ Error setting leverage: ${error.message}`);
+    return { success: false, error: error.message };
+  }
 }
 
 /**
