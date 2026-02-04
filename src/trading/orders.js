@@ -1401,7 +1401,7 @@ async function cancelKrakenOrders(page) {
     console.log(`[Kraken] ✅ No positions found to close`);
   } else {
     // Close each position by clicking on clickable elements one by one
-    for (let i = 0; i < positionCount; i++) {
+    for (let i = 1; i < positionCount; i++) {
       console.log(`[Kraken] Closing position ${i + 1}/${positionCount}...`);
       
       // Step 7a: Click on the position row to open modal
@@ -1470,7 +1470,7 @@ async function cancelKrakenOrders(page) {
       // Step 7b: Wait for first modal to render
       console.log(`[Kraken] Waiting for position modal to open...`);
       let firstModalOpen = false;
-      for (let j = 0; j < 15; j++) { // Reduced from 20
+      for (let j = 0; j < 5; j++) { // Reduced from 20
         firstModalOpen = await page.evaluate(() => {
           // Check for modals/dialogs
           const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="overlay"], [class*="dialog"]'));
