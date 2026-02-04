@@ -988,9 +988,9 @@ async function cancelKrakenOrders(page) {
         return isOrderRow && isActive;
       });
       
-      if (orderRows.length > 0 && rowIndex < orderRows.length) {
+      if (orderRows.length > 0 && targetIndex < orderRows.length) {
         // Click on the order row at the specified index
-        orderRows[rowIndex].click();
+        orderRows[targetIndex].click();
         return true;
       }
       
