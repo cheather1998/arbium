@@ -714,13 +714,13 @@ async function cancelKrakenOrders(page) {
     console.log(`[Kraken] ✅ No open orders found`);
     // Continue to position closing flow instead of returning early
   } else {
-    console.log(`[Kraken] Found ${hasOrders.count} open order(s), canceling all...`);
+  console.log(`[Kraken] Found ${hasOrders.count} open order(s), canceling all...`);
   
-    // Store the initial count - we'll use this to ensure we try to cancel at least this many
-    const initialOrderCount = hasOrders.count;
+  // Store the initial count - we'll use this to ensure we try to cancel at least this many
+  const initialOrderCount = hasOrders.count;
   
-    // Helper function to find all order rows (reusable)
-    const findOrderRows = async () => {
+  // Helper function to find all order rows (reusable)
+  const findOrderRows = async () => {
     try {
       const result = await page.evaluate(() => {
         try {
@@ -853,57 +853,57 @@ async function cancelKrakenOrders(page) {
     }
   };
   
-    // Cancel all orders one by one
-    const maxAttempts = initialOrderCount * 3; // Allow up to 3 attempts per order
-    let attempts = 0;
-    let lastOrderCount = initialOrderCount; // Track last known order count
+  // Cancel all orders one by one
+  const maxAttempts = initialOrderCount * 3; // Allow up to 3 attempts per order
+  let attempts = 0;
+  let lastOrderCount = initialOrderCount; // Track last known order count
+  
+  while (attempts < maxAttempts) {
+    attempts++;
     
-    while (attempts < maxAttempts) {
-      attempts++;
-      
-      console.log(`[Kraken] Loop iteration ${attempts}/${maxAttempts}, canceled so far: ${canceledCount}, initial count: ${initialOrderCount}`);
-      
-      // Get current list of order rows
-      const orderRows = await findOrderRows();
+    console.log(`[Kraken] Loop iteration ${attempts}/${maxAttempts}, canceled so far: ${canceledCount}, initial count: ${initialOrderCount}`);
     
-      // Safety check: ensure orderRows is an array
-      if (!Array.isArray(orderRows)) {
-        console.log(`[Kraken] ⚠️  findOrderRows returned non-array: ${typeof orderRows}, defaulting to empty array`);
+    // Get current list of order rows
+    const orderRows = await findOrderRows();
+    
+    // Safety check: ensure orderRows is an array
+    if (!Array.isArray(orderRows)) {
+      console.log(`[Kraken] ⚠️  findOrderRows returned non-array: ${typeof orderRows}, defaulting to empty array`);
+      break;
+    }
+    
+    console.log(`[Kraken] findOrderRows returned ${orderRows.length} order row(s)`);
+    
+    // If we haven't canceled any orders yet but findOrderRows returns empty,
+    // and we know there should be orders, try to click anyway using the initial count
+    if (orderRows.length === 0 && canceledCount === 0 && initialOrderCount > 0) {
+      console.log(`[Kraken] ⚠️  findOrderRows returned empty but initial check found ${initialOrderCount} order(s).`);
+      console.log(`[Kraken] Will attempt to click order row directly using index 0...`);
+      // Continue to the clicking logic - we'll use index 0 in the page.evaluate
+    } else if (orderRows.length === 0) {
+      // Only exit if we've canceled at least one order AND no orders remain
+      if (canceledCount > 0) {
+        console.log(`[Kraken] ✅ All orders canceled (${canceledCount} total)`);
+        break;
+      } else {
+        console.log(`[Kraken] ✅ No orders found - nothing to cancel`);
         break;
       }
+    }
     
-      console.log(`[Kraken] findOrderRows returned ${orderRows.length} order row(s)`);
+    const currentOrderCount = orderRows.length > 0 ? orderRows.length : (canceledCount === 0 ? initialOrderCount : 0);
+    console.log(`[Kraken] Canceling order ${canceledCount + 1}/${initialOrderCount} (${currentOrderCount} remaining)...`);
     
-      // If we haven't canceled any orders yet but findOrderRows returns empty,
-      // and we know there should be orders, try to click anyway using the initial count
-      if (orderRows.length === 0 && canceledCount === 0 && initialOrderCount > 0) {
-        console.log(`[Kraken] ⚠️  findOrderRows returned empty but initial check found ${initialOrderCount} order(s).`);
-        console.log(`[Kraken] Will attempt to click order row directly using index 0...`);
-        // Continue to the clicking logic - we'll use index 0 in the page.evaluate
-      } else if (orderRows.length === 0) {
-        // Only exit if we've canceled at least one order AND no orders remain
-        if (canceledCount > 0) {
-          console.log(`[Kraken] ✅ All orders canceled (${canceledCount} total)`);
-          break;
-        } else {
-          console.log(`[Kraken] ✅ No orders found - nothing to cancel`);
-          break;
-        }
-      }
+    // Step 3: Click on the first available order to open modal
+    console.log(`[Kraken] Step 3: Clicking on order row to open modal...`);
+    if (orderRows.length > 0 && orderRows[0]) {
+      const orderInfo = orderRows[0];
+      console.log(`[Kraken] Order info: ${orderInfo.text ? orderInfo.text.substring(0, 80) : 'N/A'}...`);
+    } else {
+      console.log(`[Kraken] No order info available, will try to click first order row by index 0...`);
+    }
     
-      const currentOrderCount = orderRows.length > 0 ? orderRows.length : (canceledCount === 0 ? initialOrderCount : 0);
-      console.log(`[Kraken] Canceling order ${canceledCount + 1}/${initialOrderCount} (${currentOrderCount} remaining)...`);
-    
-      // Step 3: Click on the first available order to open modal
-      console.log(`[Kraken] Step 3: Clicking on order row to open modal...`);
-      if (orderRows.length > 0 && orderRows[0]) {
-        const orderInfo = orderRows[0];
-        console.log(`[Kraken] Order info: ${orderInfo.text ? orderInfo.text.substring(0, 80) : 'N/A'}...`);
-      } else {
-        console.log(`[Kraken] No order info available, will try to click first order row by index 0...`);
-      }
-    
-      const orderClicked = await page.evaluate((targetIndex) => {
+    const orderClicked = await page.evaluate((targetIndex) => {
       // Strategy 1: Look for container with id="open-orders" (Kraken-specific)
       let container = document.getElementById('open-orders');
       
@@ -995,38 +995,38 @@ async function cancelKrakenOrders(page) {
       }
       
       return false;
-      }, 0); // Always click the first available order (index 0)
+    }, 0); // Always click the first available order (index 0)
     
-      if (!orderClicked) {
-        console.log(`[Kraken] ⚠️  Could not click on order row`);
+    if (!orderClicked) {
+      console.log(`[Kraken] ⚠️  Could not click on order row`);
+      break;
+    }
+    
+    // Step 3a: Wait for FIRST modal to open (order details modal)
+    console.log(`[Kraken] Step 3a: Waiting for first modal (order details) to open...`);
+    let firstModalOpen = false;
+      for (let i = 0; i < 12; i++) { // Increased attempts slightly but shorter delay
+      firstModalOpen = await page.evaluate(() => {
+        const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="overlay"]'));
+        return modals.some(modal => {
+          const style = window.getComputedStyle(modal);
+          return style.display !== 'none' && style.visibility !== 'hidden' && 
+                 (modal.offsetWidth > 0 && modal.offsetHeight > 0);
+        });
+      });
+      if (firstModalOpen) {
+        console.log(`[Kraken] ✅ First modal opened`);
         break;
       }
-    
-      // Step 3a: Wait for FIRST modal to open (order details modal)
-      console.log(`[Kraken] Step 3a: Waiting for first modal (order details) to open...`);
-      let firstModalOpen = false;
-      for (let i = 0; i < 12; i++) { // Increased attempts slightly but shorter delay
-        firstModalOpen = await page.evaluate(() => {
-          const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="overlay"]'));
-          return modals.some(modal => {
-            const style = window.getComputedStyle(modal);
-            return style.display !== 'none' && style.visibility !== 'hidden' && 
-                   (modal.offsetWidth > 0 && modal.offsetHeight > 0);
-          });
-        });
-        if (firstModalOpen) {
-          console.log(`[Kraken] ✅ First modal opened`);
-          break;
-        }
         await delay(150); // Reduced from 200ms
-      }
+    }
     
-      if (!firstModalOpen) {
-        console.log(`[Kraken] ⚠️  First modal did not open, skipping this order`);
-        await page.keyboard.press('Escape');
+    if (!firstModalOpen) {
+      console.log(`[Kraken] ⚠️  First modal did not open, skipping this order`);
+      await page.keyboard.press('Escape');
         await delay(200);
-        continue;
-      }
+      continue;
+    }
     
       // Smart wait: check if modal content is ready (has buttons/text)
       let modalReady = false;
@@ -1048,19 +1048,19 @@ async function cancelKrakenOrders(page) {
         await delay(200); // Fallback
       }
     
-      // Step 4: Find and click "Cancel order" button in FIRST modal
-      console.log(`[Kraken] Step 4: Looking for "Cancel order" button in first modal...`);
-      let cancelOrderBtn = await findByExactText(page, "Cancel order", ["button", "div", "span"]);
+    // Step 4: Find and click "Cancel order" button in FIRST modal
+    console.log(`[Kraken] Step 4: Looking for "Cancel order" button in first modal...`);
+    let cancelOrderBtn = await findByExactText(page, "Cancel order", ["button", "div", "span"]);
     
-      if (!cancelOrderBtn) {
-        cancelOrderBtn = await findByText(page, "Cancel order", ["button", "div", "span"]);
-      }
+    if (!cancelOrderBtn) {
+      cancelOrderBtn = await findByText(page, "Cancel order", ["button", "div", "span"]);
+    }
     
-      if (!cancelOrderBtn) {
-        cancelOrderBtn = await findByExactText(page, "Cancel", ["button", "div", "span"]);
-      }
+    if (!cancelOrderBtn) {
+      cancelOrderBtn = await findByExactText(page, "Cancel", ["button", "div", "span"]);
+    }
     
-      if (cancelOrderBtn) {
+    if (cancelOrderBtn) {
       // Verify it's in a modal
       const isInModal = await page.evaluate((el) => {
         let parent = el.parentElement;
@@ -1137,30 +1137,30 @@ async function cancelKrakenOrders(page) {
         // Try to close any open modals and continue
         await page.keyboard.press('Escape');
         await delay(300);
-          continue;
-        }
-      } else {
-        console.log(`[Kraken] ⚠️  Could not find "Cancel order" button in first modal`);
-        // Try to close any open modals and continue
-        await page.keyboard.press('Escape');
-        await delay(300);
         continue;
       }
+    } else {
+      console.log(`[Kraken] ⚠️  Could not find "Cancel order" button in first modal`);
+      // Try to close any open modals and continue
+      await page.keyboard.press('Escape');
+      await delay(300);
+      continue;
+    }
     
-      // Step 5: Find and click "Yes, cancel order" button in SECOND modal (confirmation modal)
-      console.log(`[Kraken] Step 5: Looking for "Yes, cancel order" button in second modal (confirmation)...`);
-      let confirmCancelBtn = await findByExactText(page, "Yes, cancel order", ["button", "div", "span"]);
+    // Step 5: Find and click "Yes, cancel order" button in SECOND modal (confirmation modal)
+    console.log(`[Kraken] Step 5: Looking for "Yes, cancel order" button in second modal (confirmation)...`);
+    let confirmCancelBtn = await findByExactText(page, "Yes, cancel order", ["button", "div", "span"]);
     
-      if (!confirmCancelBtn) {
-        confirmCancelBtn = await findByText(page, "Yes, cancel order", ["button", "div", "span"]);
-      }
+    if (!confirmCancelBtn) {
+      confirmCancelBtn = await findByText(page, "Yes, cancel order", ["button", "div", "span"]);
+    }
     
-      if (!confirmCancelBtn) {
-        // Try variations
-        confirmCancelBtn = await findByExactText(page, "Yes", ["button", "div", "span"]);
-      }
+    if (!confirmCancelBtn) {
+      // Try variations
+      confirmCancelBtn = await findByExactText(page, "Yes", ["button", "div", "span"]);
+    }
     
-      if (confirmCancelBtn) {
+    if (confirmCancelBtn) {
       // Verify it's in a modal
       const isInModal = await page.evaluate((el) => {
         let parent = el.parentElement;
@@ -1213,15 +1213,15 @@ async function cancelKrakenOrders(page) {
       } else {
         console.log(`[Kraken] ⚠️  Found "Yes, cancel order" button but it's not in a modal`);
         // Try to close any open modals and continue
-          await page.keyboard.press('Escape');
-          await delay(300);
-        }
-      } else {
-        console.log(`[Kraken] ⚠️  Could not find "Yes, cancel order" button in second modal`);
-        // Try to close any open modals and continue
         await page.keyboard.press('Escape');
         await delay(300);
       }
+    } else {
+      console.log(`[Kraken] ⚠️  Could not find "Yes, cancel order" button in second modal`);
+      // Try to close any open modals and continue
+      await page.keyboard.press('Escape');
+      await delay(300);
+    }
     
       // Wait a bit before checking for next order (reduced)
       await delay(300);
@@ -1401,7 +1401,7 @@ async function cancelKrakenOrders(page) {
     console.log(`[Kraken] ✅ No positions found to close`);
   } else {
     // Close each position by clicking on clickable elements one by one
-    for (let i = 0; i < positionCount; i++) {
+    for (let i = 1; i < positionCount; i++) {
       console.log(`[Kraken] Closing position ${i + 1}/${positionCount}...`);
       
       // Step 7a: Click on the position row to open modal
@@ -1470,7 +1470,7 @@ async function cancelKrakenOrders(page) {
       // Step 7b: Wait for first modal to render
       console.log(`[Kraken] Waiting for position modal to open...`);
       let firstModalOpen = false;
-      for (let j = 0; j < 15; j++) { // Reduced from 20
+      for (let j = 0; j < 5; j++) { // Reduced from 20
         firstModalOpen = await page.evaluate(() => {
           // Check for modals/dialogs
           const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="overlay"], [class*="dialog"]'));
@@ -1737,4 +1737,207 @@ async function cancelKrakenOrders(page) {
   }
 }
 
-export { cancelAllOrders, verifyOrderPlaced, cancelKrakenOrders };
+/**
+ * Check if there are any open positions on Kraken
+ * @param {Page} page - Puppeteer page object
+ * @returns {Promise<Object>} - { hasPositions: boolean, count: number, longCount: number, shortCount: number, positions: Array, success: boolean, message: string }
+ */
+async function checkKrakenOpenPositions(page) {
+  console.log(`[Kraken] Checking for open positions...`);
+  
+  try {
+    // Step 1: Navigate to Positions tab
+    console.log(`[Kraken] Step 1: Navigating to Positions tab...`);
+    let positionsTab = await page.evaluateHandle(() => {
+      // Find Positions tab using the provided HTML structure
+      const tabs = Array.from(document.querySelectorAll('div[data-layout-path*="/c1/ts1/tb"]'));
+      for (const tab of tabs) {
+        const tabContent = tab.querySelector('.flexlayout__tab_button_content');
+        if (tabContent) {
+          const text = tabContent.textContent || '';
+          if (text.toLowerCase().includes('positions')) {
+            return tab;
+          }
+        }
+      }
+      return null;
+    });
+    
+    if (positionsTab && positionsTab.asElement()) {
+      const positionsTabElement = positionsTab.asElement();
+      const isVisible = await page.evaluate((el) => {
+        return el && el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+      }, positionsTabElement);
+      
+      if (isVisible) {
+        console.log(`[Kraken] ✅ Found Positions tab, clicking...`);
+        await positionsTabElement.click();
+        
+        // Smart wait for positions tab to load
+        let positionsReady = false;
+        for (let i = 0; i < 8; i++) {
+          positionsReady = await page.evaluate(() => {
+            const hasPositionText = document.body.innerText.toLowerCase().includes('positions') ||
+                                   document.body.innerText.toLowerCase().includes('long') ||
+                                   document.body.innerText.toLowerCase().includes('short');
+            const hasPositionRows = document.querySelectorAll('div[role="button"]').length > 0;
+            return hasPositionText && hasPositionRows;
+          });
+          if (positionsReady) {
+            console.log(`[Kraken] ✅ Positions tab loaded`);
+            break;
+          }
+          await delay(300);
+        }
+        if (!positionsReady) {
+          await delay(500); // Fallback
+        }
+      } else {
+        console.log(`[Kraken] ⚠️  Positions tab found but not visible`);
+      }
+    } else {
+      // Fallback: Try text-based search
+      positionsTab = await findByText(page, "Positions", ["button", "div", "span", "a"]);
+      if (positionsTab) {
+        const isVisible = await page.evaluate((el) => {
+          return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+        }, positionsTab);
+        if (isVisible) {
+          console.log(`[Kraken] ✅ Found Positions tab via text search, clicking...`);
+          await positionsTab.click();
+          
+          // Smart wait for positions tab to load
+          let positionsReady = false;
+          for (let i = 0; i < 8; i++) {
+            positionsReady = await page.evaluate(() => {
+              const hasPositionText = document.body.innerText.toLowerCase().includes('positions') ||
+                                     document.body.innerText.toLowerCase().includes('long') ||
+                                     document.body.innerText.toLowerCase().includes('short');
+              const hasPositionRows = document.querySelectorAll('div[role="button"]').length > 0;
+              return hasPositionText && hasPositionRows;
+            });
+            if (positionsReady) {
+              console.log(`[Kraken] ✅ Positions tab loaded`);
+              break;
+            }
+            await delay(300);
+          }
+          if (!positionsReady) {
+            await delay(500); // Fallback
+          }
+        }
+      } else {
+        console.log(`[Kraken] ⚠️  Could not find Positions tab`);
+        return { 
+          success: false, 
+          hasPositions: false, 
+          count: 0,
+          longCount: 0,
+          shortCount: 0,
+          positions: [],
+          message: "Could not find Positions tab" 
+        };
+      }
+    }
+    
+    // Step 2: Check for position rows
+    console.log(`[Kraken] Step 2: Checking for position rows in Positions tab...`);
+    await delay(300); // Small delay to ensure DOM is stable
+    
+    const positionResult = await page.evaluate(() => {
+      // Find all position rows - they have role="button" and cursor-pointer class
+      const positionRows = Array.from(document.querySelectorAll('div[role="button"]'));
+      const validRows = [];
+      
+      for (const row of positionRows) {
+        // Skip if not visible
+        if (row.offsetParent === null) continue;
+        const style = window.getComputedStyle(row);
+        if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
+        
+        // Check if element has dimensions
+        const rect = row.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) continue;
+        
+        // Check if it has cursor-pointer class (position rows are clickable)
+        const className = row.className || '';
+        const hasCursorPointer = className.includes('cursor-pointer');
+        
+        // Check if it contains position data (BTC, Long, Short, etc.)
+        const text = (row.textContent || '').toLowerCase();
+        const hasPositionData = text.includes('btc') || 
+                                text.includes('long') || 
+                                text.includes('short') ||
+                                (text.includes('perp') && /\d/.test(text));
+        
+        // Exclude headers - look for header patterns
+        const isHeader = (text.includes('side') && text.includes('size') && text.includes('price')) ||
+                        (text.includes('pair') && text.includes('side') && text.includes('size')) ||
+                        row.querySelector('th') !== null ||
+                        (row.parentElement && row.parentElement.tagName === 'THEAD');
+        
+        // Include if it's a clickable row with position data and not a header
+        if (hasCursorPointer && hasPositionData && !isHeader) {
+          const isLong = text.includes('long');
+          const isShort = text.includes('short');
+          
+          validRows.push({
+            text: text.substring(0, 80),
+            side: isLong ? 'long' : (isShort ? 'short' : 'unknown'),
+            isLong: isLong,
+            isShort: isShort
+          });
+        }
+      }
+      
+      // Count long and short positions
+      const longCount = validRows.filter(row => row.isLong).length;
+      const shortCount = validRows.filter(row => row.isShort).length;
+      
+      return {
+        hasPositions: validRows.length -1 > 0,
+        count: validRows.length -1 ,
+        longCount: longCount,
+        shortCount: shortCount,
+        rows: validRows
+      };
+    });
+    
+    if (positionResult.hasPositions) {
+      console.log(`[Kraken] ✅ Found ${positionResult.count} open position(s) - Long: ${positionResult.longCount}, Short: ${positionResult.shortCount}`);
+      return {
+        success: true,
+        hasPositions: true,
+        count: positionResult.count,
+        longCount: positionResult.longCount,
+        shortCount: positionResult.shortCount,
+        positions: positionResult.rows,
+        message: `Found ${positionResult.count} open position(s) - Long: ${positionResult.longCount}, Short: ${positionResult.shortCount}`
+      };
+    } else {
+      console.log(`[Kraken] ✅ No open positions found`);
+      return {
+        success: true,
+        hasPositions: false,
+        count: 0,
+        longCount: 0,
+        shortCount: 0,
+        positions: [],
+        message: "No open positions found"
+      };
+    }
+  } catch (error) {
+    console.log(`[Kraken] ❌ Error checking for open positions: ${error.message}`);
+    return {
+      success: false,
+      hasPositions: false,
+      count: 0,
+      longCount: 0,
+      shortCount: 0,
+      positions: [],
+      message: `Error: ${error.message}`
+    };
+  }
+}
+
+export { cancelAllOrders, verifyOrderPlaced, cancelKrakenOrders, checkKrakenOpenPositions };

@@ -905,9 +905,18 @@ export async function executeTradeGrvt(
     }
   }
 
-  // GRVT: Fixed size to 0.002
-  const grvtSize = 0.002;
-  console.log(`[${exchange.name}] GRVT: Using fixed size ${grvtSize} BTC (overriding qty parameter: ${qty})`);
+  // GRVT: Use quantity from env if >= 0.002, otherwise default to 0.002
+  const envQty = side === 'buy' 
+    ? parseFloat(process.env.BUY_QTY) || 0
+    : parseFloat(process.env.SELL_QTY) || 0;
+  
+  const grvtSize = envQty >= 0.002 ? envQty : 0.002;
+  
+  if (envQty >= 0.002) {
+    console.log(`[${exchange.name}] GRVT: Using quantity from env (${side.toUpperCase()}_QTY=${envQty}): ${grvtSize} BTC`);
+  } else {
+    console.log(`[${exchange.name}] GRVT: Env quantity (${envQty}) < 0.002, using default: ${grvtSize} BTC`);
+  }
 
   console.log(
     `[${exchange.name}] Side: ${side}, Type: ${orderType}, Price: ${
@@ -933,19 +942,23 @@ export async function executeTradeGrvt(
   } catch (error) {
     console.log(`[${exchange.name}] ⚠️  Error selecting order type tab: ${error.message}, continuing...`);
   }
-  await delay(300); // Small delay for tab to activate
+  await delay(200); // Small delay for tab to activate
 
   // 2. Find inputs - GRVT has "Price" and "Quantity" inputs within CreateOrderPanel
-  console.log(`[${exchange.name}] Looking for Price and Quantity inputs in CreateOrderPanel...`);
+  console.log(`[${exchange.name}] ===== STARTING INPUT FINDING PROCESS =====`);
+  console.log(`[${exchange.name}] Looking for Price and Quantity inputs...`);
   
   let sizeInput = null;
   let priceInput = null;
+  let sizeInputMethod = null; // Track which method found sizeInput
+  let priceInputMethod = null; // Track which method found priceInput
   
-  // GRVT-specific: Find inputs within data-sentry-element="CreateOrderPanel"
+  // METHOD 1: GRVT-specific: Find inputs within data-sentry-element="CreateOrderPanel"
+  console.log(`[${exchange.name}] [METHOD 1] Attempting CreateOrderPanel search...`);
   const createOrderPanel = await page.$('[data-sentry-element="CreateOrderPanel"]');
   
   if (createOrderPanel) {
-    console.log(`[${exchange.name}] ✅ Found CreateOrderPanel, searching for inputs within it...`);
+    console.log(`[${exchange.name}] [METHOD 1] ✅ Found CreateOrderPanel, searching for inputs within it...`);
     
     // Find all inputs within the CreateOrderPanel
     const panelInputs = await createOrderPanel.$$('input[type="text"], input[type="number"], input:not([type="hidden"])');
@@ -1001,7 +1014,8 @@ export async function executeTradeGrvt(
         inputInfo.placeholder.includes('size')
       )) {
         sizeInput = input;
-        console.log(`[${exchange.name}] ✅ Found Quantity input in CreateOrderPanel`);
+        sizeInputMethod = 'METHOD 1: CreateOrderPanel (text matching)';
+        console.log(`[${exchange.name}] ✅ [${sizeInputMethod}] Found Quantity input in CreateOrderPanel`);
       }
       
       // Price input: has "price" or "mid" in label/parent/placeholder/value (for limit orders)
@@ -1013,13 +1027,14 @@ export async function executeTradeGrvt(
         inputInfo.parentText.includes('mid')
       )) {
         priceInput = input;
-        console.log(`[${exchange.name}] ✅ Found Price input in CreateOrderPanel`);
+        priceInputMethod = 'METHOD 1: CreateOrderPanel (text matching)';
+        console.log(`[${exchange.name}] ✅ [${priceInputMethod}] Found Price input in CreateOrderPanel`);
       }
     }
     
     // If we found one but not the other, try position-based matching within the panel
     if (sizeInput && !priceInput && orderType === "limit") {
-      console.log(`[${exchange.name}] Found Quantity but not Price, trying position-based search within panel...`);
+      console.log(`[${exchange.name}] [METHOD 1] Found Quantity but not Price, trying position-based search within panel...`);
       const sizeRect = await sizeInput.boundingBox();
       if (sizeRect) {
         for (const input of panelInputs) {
@@ -1032,436 +1047,33 @@ export async function executeTradeGrvt(
                                  inputRect.x !== sizeRect.x;
           if (isNearQuantity) {
             priceInput = input;
-            console.log(`[${exchange.name}] ✅ Found Price input via position-based search near Quantity`);
+            priceInputMethod = 'METHOD 1: CreateOrderPanel (position-based)';
+            console.log(`[${exchange.name}] ✅ [${priceInputMethod}] Found Price input via position-based search near Quantity`);
             break;
           }
         }
       }
     }
+    console.log(`[${exchange.name}] [METHOD 1] Result: Quantity=${sizeInput ? 'FOUND' : 'NOT FOUND'}, Price=${priceInput ? 'FOUND' : 'NOT FOUND'}`);
   } else {
-    console.log(`[${exchange.name}] ⚠️  CreateOrderPanel not found, falling back to standard search...`);
+    console.log(`[${exchange.name}] [METHOD 1] ❌ CreateOrderPanel not found, skipping this method`);
   }
   
-  // Fallback to standard search if CreateOrderPanel method didn't find inputs
-  if (!sizeInput || (orderType === "limit" && !priceInput)) {
-    console.log(`[${exchange.name}] CreateOrderPanel search incomplete, trying fallback methods...`);
-    const inputs = await findSizeAndPriceInputs(page, orderType);
-    if (!sizeInput) sizeInput = inputs.sizeInput;
-    if (!priceInput && orderType === "limit") priceInput = inputs.priceInput;
-    
-    // Additional fallback: Find "Available to trade" text, then next two inputs (Price, then Quantity)
-    if (!sizeInput || (orderType === "limit" && !priceInput)) {
-      console.log(`[${exchange.name}] Standard search incomplete, trying GRVT-specific search...`);
-      const allInputs = await page.$$('input[type="text"], input[type="number"], input:not([type="hidden"])');
-      const screenWidth = await page.evaluate(() => window.innerWidth);
-      // Use stricter threshold - only inputs in the rightmost 30% of screen (most right sidebar)
-      const rightSideThreshold = screenWidth * 0.7; // 70% from left = rightmost 30%
-      
-      // GRVT-specific: Find "Available to trade" text in right half, then next two inputs using DOM traversal
-      if (!sizeInput || (orderType === "limit" && !priceInput)) {
-      console.log(`[${exchange.name}] GRVT method: Looking for "Available to trade" text, then traversing DOM to find inputs...`);
-      
-      // Use a more robust method: Find text node with "Available to trade", then traverse DOM
-      const inputsFound = await page.evaluate((rightThreshold) => {
-        // Method 1: Use TreeWalker to find text node containing "Available to trade"
-        const walker = document.createTreeWalker(
-          document.body,
-          NodeFilter.SHOW_TEXT,
-          null
-        );
-        
-        let availableToTradeNode = null;
-        let node;
-        while (node = walker.nextNode()) {
-          const text = node.textContent?.trim() || '';
-          if (text.includes('Available to trade') || text === 'Available to trade') {
-            // Check if parent element is in right half
-            const parent = node.parentElement;
-            if (parent) {
-              const rect = parent.getBoundingClientRect();
-              if (rect.x >= rightThreshold && parent.offsetParent !== null) {
-                availableToTradeNode = node;
-                break;
-              }
-            }
-          }
-        }
-        
-        if (!availableToTradeNode) {
-          // Fallback: Search all elements
-          const allElements = Array.from(document.querySelectorAll('*'));
-          for (const el of allElements) {
-            const text = (el.textContent || '').trim();
-            if (text.includes('Available to trade') || text === 'Available to trade') {
-              const rect = el.getBoundingClientRect();
-              if (rect.x >= rightThreshold && el.offsetParent !== null) {
-                availableToTradeNode = el;
-                break;
-              }
-            }
-          }
-        }
-        
-        if (!availableToTradeNode) {
-          console.log('Could not find "Available to trade" text');
-          return { priceInput: null, sizeInput: null, found: false };
-        }
-        
-        // Get the parent element containing the text
-        let container = availableToTradeNode.parentElement || availableToTradeNode;
-        if (!container) {
-          return { priceInput: null, sizeInput: null, found: false };
-        }
-        
-        // Traverse up to find a common container (likely a form or div containing both inputs)
-        let commonContainer = container;
-        for (let i = 0; i < 5 && commonContainer; i++) {
-          const inputs = commonContainer.querySelectorAll('input[type="text"], input[type="number"], input:not([type="hidden"])');
-          if (inputs.length >= 2) {
-            break;
-          }
-          commonContainer = commonContainer.parentElement;
-        }
-        
-        // Get all visible inputs in the container, sorted by DOM order
-        const allInputs = Array.from(commonContainer.querySelectorAll('input[type="text"], input[type="number"], input:not([type="hidden"])'));
-        
-        // Filter to visible, enabled inputs in the rightmost 30% of screen (strict)
-        const visibleInputs = allInputs.filter(input => {
-          if (input.offsetParent === null || input.disabled || input.readOnly) return false;
-          const rect = input.getBoundingClientRect();
-          // Must be in rightmost 30% of screen (strict)
-          return rect.x >= rightThreshold && rect.width > 0 && rect.height > 0;
-        });
-        
-        // Get position of "Available to trade" element
-        const availableRect = (availableToTradeNode.parentElement || availableToTradeNode).getBoundingClientRect();
-        
-        // Find inputs that come after "Available to trade" in DOM order and position
-        // Also ensure they're in the same rightmost panel (check X position is close to "Available to trade")
-        const inputsAfterAvailable = [];
-        for (const input of visibleInputs) {
-          const inputRect = input.getBoundingClientRect();
-          // Input should be below "Available to trade" (with tolerance)
-          // AND in the same rightmost panel (X position should be close to "Available to trade")
-          const isBelow = inputRect.y >= availableRect.y - 100;
-          const isInSamePanel = Math.abs(inputRect.x - availableRect.x) < 200; // Within 200px horizontally
-          
-          if (isBelow && isInSamePanel) {
-            inputsAfterAvailable.push(input);
-          }
-        }
-        
-        // If no inputs found with same panel check, relax the panel constraint
-        if (inputsAfterAvailable.length < 2) {
-          inputsAfterAvailable.length = 0; // Clear and retry
-          for (const input of visibleInputs) {
-            const inputRect = input.getBoundingClientRect();
-            if (inputRect.y >= availableRect.y - 100) {
-              inputsAfterAvailable.push(input);
-            }
-          }
-        }
-        
-        // Sort by X position first (rightmost first), then by Y (top to bottom)
-        // This ensures we get inputs from the rightmost trading panel
-        inputsAfterAvailable.sort((a, b) => {
-          const rectA = a.getBoundingClientRect();
-          const rectB = b.getBoundingClientRect();
-          // First sort by X (rightmost first - descending)
-          if (Math.abs(rectA.x - rectB.x) > 50) {
-            return rectB.x - rectA.x; // Descending (rightmost first)
-          }
-          // Then by Y (top to bottom)
-          return rectA.y - rectB.y;
-        });
-        
-        // The first two inputs after "Available to trade" (rightmost, then top to bottom) are Price and Quantity
-        if (inputsAfterAvailable.length >= 2) {
-          return {
-            priceInput: inputsAfterAvailable[0], // First input = Price (rightmost, topmost)
-            sizeInput: inputsAfterAvailable[1],  // Second input = Quantity (rightmost, second from top)
-            found: true
-          };
-        } else if (inputsAfterAvailable.length === 1) {
-          return {
-            priceInput: null,
-            sizeInput: inputsAfterAvailable[0],
-            found: true
-          };
-        }
-        
-        return { priceInput: null, sizeInput: null, found: false };
-      }, rightSideThreshold);
-      
-      if (inputsFound.found) {
-        // Re-find inputs using the same logic but return them as handles (screen-size independent)
-        // This ensures we get the actual ElementHandles, not just references
-        const priceInputHandle = await page.evaluateHandle((rightThreshold, needPrice) => {
-          if (!needPrice) return null;
-          
-          // Find "Available to trade" text
-          const walker = document.createTreeWalker(
-            document.body,
-            NodeFilter.SHOW_TEXT,
-            null
-          );
-          
-          let availableToTradeNode = null;
-          let node;
-          while (node = walker.nextNode()) {
-            const text = node.textContent?.trim() || '';
-            if (text.includes('Available to trade') || text === 'Available to trade') {
-              const parent = node.parentElement;
-              if (parent) {
-                const rect = parent.getBoundingClientRect();
-                if (rect.x >= rightThreshold && parent.offsetParent !== null) {
-                  availableToTradeNode = node;
-                  break;
-                }
-              }
-            }
-          }
-          
-          if (!availableToTradeNode) return null;
-          
-          // Get container
-          let container = availableToTradeNode.parentElement || availableToTradeNode;
-          let commonContainer = container;
-          for (let i = 0; i < 5 && commonContainer; i++) {
-            const inputs = commonContainer.querySelectorAll('input[type="text"], input[type="number"], input:not([type="hidden"])');
-            if (inputs.length >= 2) {
-              break;
-            }
-            commonContainer = commonContainer.parentElement;
-          }
-          
-          // Get all visible inputs
-          const allInputs = Array.from(commonContainer.querySelectorAll('input[type="text"], input[type="number"], input:not([type="hidden"])'));
-          const visibleInputs = allInputs.filter(input => {
-            if (input.offsetParent === null || input.disabled || input.readOnly) return false;
-            const rect = input.getBoundingClientRect();
-            return rect.x >= rightThreshold && rect.width > 0 && rect.height > 0;
-          });
-          
-          const availableRect = (availableToTradeNode.parentElement || availableToTradeNode).getBoundingClientRect();
-          const inputsAfterAvailable = visibleInputs.filter(input => {
-            const inputRect = input.getBoundingClientRect();
-            // Must be below "Available to trade" AND in same rightmost panel
-            const isBelow = inputRect.y >= availableRect.y - 100;
-            const isInSamePanel = Math.abs(inputRect.x - availableRect.x) < 200;
-            return isBelow && isInSamePanel;
-          });
-          
-          // If no inputs with same panel, relax constraint
-          if (inputsAfterAvailable.length === 0) {
-            for (const input of visibleInputs) {
-              const inputRect = input.getBoundingClientRect();
-              if (inputRect.y >= availableRect.y - 100) {
-                inputsAfterAvailable.push(input);
-              }
-            }
-          }
-          
-          // Sort by X (rightmost first), then Y (top to bottom)
-          inputsAfterAvailable.sort((a, b) => {
-            const rectA = a.getBoundingClientRect();
-            const rectB = b.getBoundingClientRect();
-            if (Math.abs(rectA.x - rectB.x) > 50) {
-              return rectB.x - rectA.x; // Descending (rightmost first)
-            }
-            return rectA.y - rectB.y;
-          });
-          
-          // Return first input (Price) - rightmost, topmost
-          return inputsAfterAvailable.length > 0 ? inputsAfterAvailable[0] : null;
-        }, rightSideThreshold, orderType === "limit");
-        
-        const sizeInputHandle = await page.evaluateHandle((rightThreshold) => {
-          // Find "Available to trade" text
-          const walker = document.createTreeWalker(
-            document.body,
-            NodeFilter.SHOW_TEXT,
-            null
-          );
-          
-          let availableToTradeNode = null;
-          let node;
-          while (node = walker.nextNode()) {
-            const text = node.textContent?.trim() || '';
-            if (text.includes('Available to trade') || text === 'Available to trade') {
-              const parent = node.parentElement;
-              if (parent) {
-                const rect = parent.getBoundingClientRect();
-                if (rect.x >= rightThreshold && parent.offsetParent !== null) {
-                  availableToTradeNode = node;
-                  break;
-                }
-              }
-            }
-          }
-          
-          if (!availableToTradeNode) return null;
-          
-          // Get container
-          let container = availableToTradeNode.parentElement || availableToTradeNode;
-          let commonContainer = container;
-          for (let i = 0; i < 5 && commonContainer; i++) {
-            const inputs = commonContainer.querySelectorAll('input[type="text"], input[type="number"], input:not([type="hidden"])');
-            if (inputs.length >= 2) {
-              break;
-            }
-            commonContainer = commonContainer.parentElement;
-          }
-          
-          // Get all visible inputs in rightmost 30%
-          const allInputs = Array.from(commonContainer.querySelectorAll('input[type="text"], input[type="number"], input:not([type="hidden"])'));
-          const visibleInputs = allInputs.filter(input => {
-            if (input.offsetParent === null || input.disabled || input.readOnly) return false;
-            const rect = input.getBoundingClientRect();
-            return rect.x >= rightThreshold && rect.width > 0 && rect.height > 0;
-          });
-          
-          const availableRect = (availableToTradeNode.parentElement || availableToTradeNode).getBoundingClientRect();
-          const inputsAfterAvailable = visibleInputs.filter(input => {
-            const inputRect = input.getBoundingClientRect();
-            // Must be below "Available to trade" AND in same rightmost panel
-            const isBelow = inputRect.y >= availableRect.y - 100;
-            const isInSamePanel = Math.abs(inputRect.x - availableRect.x) < 200;
-            return isBelow && isInSamePanel;
-          });
-          
-          // If no inputs with same panel, relax constraint
-          if (inputsAfterAvailable.length === 0) {
-            for (const input of visibleInputs) {
-              const inputRect = input.getBoundingClientRect();
-              if (inputRect.y >= availableRect.y - 100) {
-                inputsAfterAvailable.push(input);
-              }
-            }
-          }
-          
-          // Sort by X (rightmost first), then Y (top to bottom)
-          inputsAfterAvailable.sort((a, b) => {
-            const rectA = a.getBoundingClientRect();
-            const rectB = b.getBoundingClientRect();
-            if (Math.abs(rectA.x - rectB.x) > 50) {
-              return rectB.x - rectA.x; // Descending (rightmost first)
-            }
-            return rectA.y - rectB.y;
-          });
-          
-          // Return second input (Quantity) - rightmost, second from top
-          if (inputsAfterAvailable.length > 1) {
-            return inputsAfterAvailable[1];
-          } else if (inputsAfterAvailable.length > 0) {
-            return inputsAfterAvailable[0];
-          }
-          return null;
-        }, rightSideThreshold);
-        
-        // Convert handles to elements
-        if (priceInputHandle && orderType === "limit") {
-          priceInput = priceInputHandle.asElement();
-          if (priceInput) {
-            const priceValue = await page.evaluate((el) => el.value || '', priceInput);
-            console.log(`[${exchange.name}] ✅ Found Price input via GRVT method (first input after "Available to trade"), current value: "${priceValue}"`);
-          }
-        }
-        
-        if (sizeInputHandle) {
-          sizeInput = sizeInputHandle.asElement();
-          if (sizeInput) {
-            const sizeValue = await page.evaluate((el) => el.value || '', sizeInput);
-            console.log(`[${exchange.name}] ✅ Found Quantity input via GRVT method (second input after "Available to trade"), current value: "${sizeValue}"`);
-          }
-        }
-      } else {
-        console.log(`[${exchange.name}] ⚠️  Could not find inputs using "Available to trade" method`);
-      }
-      }
-    }
-    
-    // If still not found, try the original method with stricter right-side filtering
-    if (!sizeInput) {
-      // Get screen width for threshold (use stricter threshold for rightmost panel)
-      const screenWidthStrict = await page.evaluate(() => window.innerWidth);
-      const strictRightThreshold = screenWidthStrict * 0.7; // Rightmost 30% only
-      
-      for (const input of allInputs) {
-        const rect = await input.boundingBox();
-        if (!rect || rect.x < strictRightThreshold) continue; // Only rightmost 30%
-        
-        const inputInfo = await page.evaluate((el) => {
-          // Find label
-          let labelText = '';
-          const labels = document.querySelectorAll('label');
-          for (const label of labels) {
-            if (label.control === el || label.getAttribute('for') === el.id || label.contains(el)) {
-              labelText = (label.textContent || '').trim().toLowerCase();
-              break;
-            }
-          }
-          
-          // Check parent text
-          let parent = el.parentElement;
-          let parentText = '';
-          for (let i = 0; i < 5 && parent; i++) {
-            if (parent.textContent) {
-              parentText = (parent.textContent || '').trim();
-              break;
-            }
-            parent = parent.parentElement;
-          }
-          
-          return { 
-            labelText: labelText.toLowerCase(), 
-            parentText: parentText.toLowerCase(),
-            value: el.value || ''
-          };
-        }, input);
-        
-        // Quantity input: has "BTC" in parent text
-        if (!sizeInput && (inputInfo.parentText.includes('btc') || 
-                           inputInfo.parentText.includes('quantity') ||
-                           inputInfo.labelText === 'quantity')) {
-          sizeInput = input;
-          console.log(`[${exchange.name}] ✅ Found Quantity input (parent: "${inputInfo.parentText.substring(0, 30)}")`);
-        }
-        
-        // Price input: has "price" or "Mid" in label/parent/value (GRVT uses "Mid" similar to "BTC" for quantity)
-        if (!priceInput && orderType === "limit") {
-          if (inputInfo.labelText === 'price' || 
-              inputInfo.parentText.includes('price') ||
-              inputInfo.value.toLowerCase().includes('mid') ||
-              inputInfo.parentText.includes('mid')) {
-            priceInput = input;
-            console.log(`[${exchange.name}] ✅ Found Price input via text match (parent: "${inputInfo.parentText.substring(0, 30)}", value: "${inputInfo.value.substring(0, 20)}")`);
-          } else if (sizeInput) {
-            // If we found Quantity, Price is likely the input immediately before or after it horizontally
-            const sizeRect = await sizeInput.boundingBox();
-            if (sizeRect) {
-              const inputRect = await input.boundingBox();
-              if (inputRect) {
-                // Check if this input is near the Quantity input (same approximate row, different column)
-                const isNearQuantity = Math.abs(inputRect.y - sizeRect.y) < 50 && 
-                                       Math.abs(inputRect.x - sizeRect.x) < 400 &&
-                                       input !== sizeInput;
-                if (isNearQuantity) {
-                  priceInput = input;
-                  console.log(`[${exchange.name}] ✅ Found Price input near Quantity input (parent: "${inputInfo.parentText.substring(0, 30)}")`);
-                }
-              }
-            }
-          }
-        }
-        
-        if (sizeInput && (orderType === "market" || priceInput)) {
-          break;
-        }
-      }
+  // Summary of input finding results
+  console.log(`[${exchange.name}] ===== INPUT FINDING SUMMARY =====`);
+  if (sizeInput) {
+    console.log(`[${exchange.name}] ✅ Quantity Input: FOUND via ${sizeInputMethod || 'UNKNOWN METHOD'}`);
+  } else {
+    console.log(`[${exchange.name}] ❌ Quantity Input: NOT FOUND after trying all methods`);
+  }
+  if (orderType === "limit") {
+    if (priceInput) {
+      console.log(`[${exchange.name}] ✅ Price Input: FOUND via ${priceInputMethod || 'UNKNOWN METHOD'}`);
+    } else {
+      console.log(`[${exchange.name}] ❌ Price Input: NOT FOUND after trying all methods`);
     }
   }
+  console.log(`[${exchange.name}] =========================================`);
   
   if (!sizeInput) {
     console.log(`[${exchange.name}] ❌ Quantity input not found`);
@@ -1868,36 +1480,23 @@ export async function executeTradeGrvt(
   
   // Step 5: Click Buy/Sell button - FOR GRVT, THIS IS THE FINAL CONFIRM BUTTON
   // GRVT: "Buy / Long" or "Sell / Short" button IS the confirm button (no separate confirm step)
+  console.log(`[${exchange.name}] ===== STARTING BUY/SELL BUTTON FINDING PROCESS =====`);
   console.log(`[${exchange.name}] Step 5: Clicking ${side.toUpperCase()} button (this IS the confirm button for GRVT)...`);
   console.log(`[${exchange.name}]    Looking for: "${side === 'buy' ? exchange.selectors.buyButton : exchange.selectors.sellButton}"`);
   
   // Find the Buy/Sell button element directly (for GRVT, this is the final confirm)
   const buttonText = side === "buy" ? exchange.selectors.buyButton : exchange.selectors.sellButton;
-  let buySellBtn = await findByExactText(page, buttonText, ["button", "div", "span"]);
   
-  // If exact match fails, try partial match
-  if (!buySellBtn) {
-    buySellBtn = await findByText(page, buttonText, ["button", "div", "span"]);
-  }
+  // METHOD 1: Try exact text match (this is the only method that works based on logs)
+  console.log(`[${exchange.name}] [BUY/SELL METHOD 1] Attempting exact text match: "${buttonText}"`);
+  const buySellBtn = await findByExactText(page, buttonText, ["button", "div", "span"]);
   
-  // Fallback: Try matching just "Buy"/"Long" or "Sell"/"Short"
-  if (!buySellBtn) {
-    if (side === "buy") {
-      buySellBtn = await findByText(page, "Buy", ["button", "div", "span"]);
-      if (!buySellBtn) {
-        buySellBtn = await findByText(page, "Long", ["button", "div", "span"]);
-      }
-    } else {
-      buySellBtn = await findByText(page, "Sell", ["button", "div", "span"]);
-      if (!buySellBtn) {
-        buySellBtn = await findByText(page, "Short", ["button", "div", "span"]);
-      }
-    }
-  }
-  
-  if (!buySellBtn) {
-    console.log(`[${exchange.name}] ❌ Could not find ${side.toUpperCase()} button`);
-    
+  // Summary of Buy/Sell button finding
+  console.log(`[${exchange.name}] ===== BUY/SELL BUTTON FINDING SUMMARY =====`);
+  if (buySellBtn) {
+    console.log(`[${exchange.name}] ✅ Buy/Sell Button: FOUND via METHOD 1: Exact text match (findByExactText)`);
+  } else {
+    console.log(`[${exchange.name}] ❌ Buy/Sell Button: NOT FOUND`);
     // Additional debugging: try to find what buttons are available
     const availableButtons = await page.evaluate(() => {
       const buttons = Array.from(document.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"]'));
@@ -1924,26 +1523,32 @@ export async function executeTradeGrvt(
     
     return { success: false, error: `${side.toUpperCase()} button not found. Looking for: "${buttonText}"` };
   }
+  console.log(`[${exchange.name}] =========================================`);
   
   // For GRVT, the Buy/Sell button click opens a modal - use clickConfirmButton for proper scrolling/visibility
-  console.log(`[${exchange.name}] ✅ Found ${side.toUpperCase()} button, clicking (this will open a confirmation modal for GRVT)...`);
+  console.log(`[${exchange.name}] ✅ Found ${side.toUpperCase()} button via METHOD 1: Exact text match (findByExactText), clicking (this will open a confirmation modal for GRVT)...`);
   await clickConfirmButton(page, buySellBtn, buttonText, exchange, side);
   
   // Step 6: Wait for modal to open and click Confirm button in the modal
+  console.log(`[${exchange.name}] ===== STARTING CONFIRM BUTTON FINDING PROCESS =====`);
   console.log(`[${exchange.name}] Waiting 500ms for confirmation modal to open...`);
   await delay(500);
   
   // Check if a modal opened and find the Confirm button
   console.log(`[${exchange.name}] Looking for Confirm button in the modal...`);
-  let confirmModalBtn = null;
   
-  // Try to find Confirm button in modal
-  confirmModalBtn = await findByExactText(page, "Confirm", ["button", "div", "span"]);
+  // METHOD 1: Try to find Confirm button in modal with exact match (this is the only method that works based on logs)
+  console.log(`[${exchange.name}] [CONFIRM METHOD 1] Attempting exact text match: "Confirm"`);
+  const confirmModalBtn = await findByExactText(page, "Confirm", ["button", "div", "span"]);
   
-  // If exact match fails, try partial match
-  if (!confirmModalBtn) {
-    confirmModalBtn = await findByText(page, "Confirm", ["button", "div", "span"]);
+  // Summary of Confirm button finding
+  console.log(`[${exchange.name}] ===== CONFIRM BUTTON FINDING SUMMARY =====`);
+  if (confirmModalBtn) {
+    console.log(`[${exchange.name}] ✅ Confirm Button: FOUND via METHOD 1: Exact text match (findByExactText)`);
+  } else {
+    console.log(`[${exchange.name}] ❌ Confirm Button: NOT FOUND`);
   }
+  console.log(`[${exchange.name}] =========================================`);
   
   if (confirmModalBtn) {
     // Verify the button is in a modal (check if it's visible and likely in a modal)
@@ -1964,10 +1569,10 @@ export async function executeTradeGrvt(
     }, confirmModalBtn);
     
     if (isInModal) {
-      console.log(`[${exchange.name}] ✅ Found Confirm button in modal, clicking...`);
+      console.log(`[${exchange.name}] ✅ Found Confirm button in modal (via METHOD 1: Exact text match (findByExactText)), clicking...`);
       try {
         await confirmModalBtn.click();
-        console.log(`[${exchange.name}] ✅ Clicked Confirm button in modal`);
+        console.log(`[${exchange.name}] ✅ Clicked Confirm button in modal (direct click)`);
         await delay(1000); // Wait for order to be processed
       } catch (error) {
         console.log(`[${exchange.name}] ⚠️  Direct click failed, trying JavaScript click: ${error.message}`);
@@ -1976,7 +1581,7 @@ export async function executeTradeGrvt(
         await delay(1000);
       }
     } else {
-      console.log(`[${exchange.name}] ⚠️  Found Confirm button but it's not in a modal, may have already been processed`);
+      console.log(`[${exchange.name}] ⚠️  Found Confirm button (via METHOD 1) but it's not in a modal, may have already been processed`);
       await delay(1000);
     }
   } else {
@@ -1984,6 +1589,6 @@ export async function executeTradeGrvt(
     await delay(1000);
   }
 
-  // Verify order placement
-  return await verifyOrderPlacement(page, exchange, side, qty);
+  // Verify order placement (use grvtSize instead of qty parameter)
+  return await verifyOrderPlacement(page, exchange, side, grvtSize);
 }

@@ -2038,4 +2038,234 @@ async function handleClosePositionsAndSetLeverage(page, email) {
   }
 
 
-  export { closeAllPositions, checkIfPositionsClosed, getCurrentUnrealizedPnL, handleClosePositionsAndSetLeverage };
+/**
+ * Check if there are any open positions on GRVT
+ * @param {Page} page - Puppeteer page object
+ * @returns {Promise<Object>} - { hasPositions: boolean, count: number, longCount: number, shortCount: number, positions: Array, success: boolean, message: string }
+ */
+async function checkGrvtOpenPositions(page) {
+  console.log(`[GRVT] Checking for open positions...`);
+  
+  try {
+    // Step 1: Navigate to Positions tab
+    console.log(`[GRVT] Step 1: Navigating to Positions tab...`);
+    let positionsTabClicked = false;
+    
+    // Strategy 1: Find by data-text attribute containing "Positions"
+    const positionsClickedByDataText = await page.evaluate(() => {
+      const allElements = Array.from(document.querySelectorAll('div, button, span, a'));
+      for (const el of allElements) {
+        const dataText = el.getAttribute('data-text');
+        if (dataText && dataText.toLowerCase().includes('positions') && el.offsetParent !== null) {
+          el.click();
+          return true;
+        }
+      }
+      return false;
+    });
+    
+    if (positionsClickedByDataText) {
+      positionsTabClicked = true;
+      console.log(`[GRVT] ✓ Clicked Positions tab (via data-text attribute)`);
+      await delay(500);
+    }
+    
+    // Strategy 2: Find by text starting with "Positions" (handles "Positions (1)" format)
+    if (!positionsTabClicked) {
+      const positionsClickedByText = await page.evaluate(() => {
+        const allElements = Array.from(document.querySelectorAll('div, button, span, a'));
+        for (const el of allElements) {
+          const text = (el.textContent || '').trim();
+          const isVisible = el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+          // Match "Positions" or "Positions (1)" or "Positions (2)" etc.
+          if (isVisible && text.toLowerCase().startsWith('positions')) {
+            el.click();
+            return true;
+          }
+        }
+        return false;
+      });
+      
+      if (positionsClickedByText) {
+        positionsTabClicked = true;
+        console.log(`[GRVT] ✓ Clicked Positions tab (via text content)`);
+        await delay(500);
+      }
+    }
+    
+    // Strategy 3: Find by exact text "Positions" using helper functions
+    if (!positionsTabClicked) {
+      const positionsTab = await findByExactText(page, "Positions", ["button", "div", "span", "a"]);
+      if (positionsTab) {
+        const isVisible = await page.evaluate((el) => {
+          return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+        }, positionsTab);
+        if (isVisible) {
+          await positionsTab.click();
+          console.log(`[GRVT] ✓ Clicked Positions tab (exact text helper)`);
+          positionsTabClicked = true;
+          await delay(500);
+        }
+      }
+    }
+    
+    // Strategy 4: Find by text containing "positions" (case insensitive) using helper functions
+    if (!positionsTabClicked) {
+      const positionsTab2 = await findByText(page, "positions", ["button", "div", "span", "a"]);
+      if (positionsTab2) {
+        const isVisible = await page.evaluate((el) => {
+          return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+        }, positionsTab2);
+        if (isVisible) {
+          await positionsTab2.click();
+          console.log(`[GRVT] ✓ Clicked Positions tab (text search helper)`);
+          positionsTabClicked = true;
+          await delay(500);
+        }
+      }
+    }
+    
+    if (!positionsTabClicked) {
+      console.log(`[GRVT] ⚠️  Could not find Positions tab, continuing anyway...`);
+      await delay(500); // Wait a bit for page to stabilize
+    }
+    
+    // Step 2: Wait for positions tab to load
+    await delay(300);
+    
+    // Step 3: Count all Close buttons in Actions column and detect long/short
+    console.log(`[GRVT] Step 2: Counting Close buttons in Actions column and detecting long/short...`);
+    const positionResult = await page.evaluate(() => {
+      // GRVT uses div-based table structure, not standard <table>
+      // Look for Close buttons in the Actions column
+      const allButtons = Array.from(document.querySelectorAll('button'));
+      const validPositions = [];
+      
+      for (const btn of allButtons) {
+        const text = (btn.textContent || '').trim().toLowerCase();
+        if (text === 'close' && btn.offsetParent !== null) {
+          // Verify it's in a positions table (check for nearby "Actions" text or table structure)
+          let parent = btn.parentElement;
+          let inActionsColumn = false;
+          let positionRow = null;
+          
+          // Find the row containing this Close button
+          for (let i = 0; i < 15 && parent; i++) {
+            const parentText = parent.textContent || '';
+            const parentClass = (parent.className || '').toLowerCase();
+            
+            // Check if it's in Actions column (has "Actions" text nearby or is in last column)
+            if (parentText.includes('Actions') || 
+                parentClass.includes('cell-ping-right') || // Last column class
+                parentClass.includes('tablerow') ||
+                parent.getAttribute('data-sentry-component') === 'TablePositions' ||
+                parent.querySelector('[data-sentry-component="TablePositions"]') ||
+                parent.querySelector('span')?.textContent?.trim() === 'Actions') {
+              inActionsColumn = true;
+              
+              // Try to find the row element (usually has tablerow class or is a table row)
+              if (parentClass.includes('tablerow') || parentClass.includes('row') || 
+                  parent.getAttribute('data-sentry-component') === 'TablePositions') {
+                positionRow = parent;
+              } else {
+                // Look for parent with row-like structure
+                let rowParent = parent.parentElement;
+                for (let j = 0; j < 5 && rowParent; j++) {
+                  const rowClass = (rowParent.className || '').toLowerCase();
+                  if (rowClass.includes('tablerow') || rowClass.includes('row') ||
+                      rowParent.getAttribute('data-sentry-component') === 'TablePositions') {
+                    positionRow = rowParent;
+                    break;
+                  }
+                  rowParent = rowParent.parentElement;
+                }
+              }
+              break;
+            }
+            parent = parent.parentElement;
+          }
+          
+          if (inActionsColumn) {
+            // Get the row text to check for long/short
+            let rowText = '';
+            if (positionRow) {
+              rowText = (positionRow.textContent || '').toLowerCase();
+            } else {
+              // Fallback: check parent elements for position text
+              let checkParent = btn.parentElement;
+              for (let i = 0; i < 10 && checkParent; i++) {
+                const checkText = (checkParent.textContent || '').toLowerCase();
+                if (checkText.includes('long') || checkText.includes('short') || 
+                    checkText.includes('btc') || checkText.includes('perp')) {
+                  rowText = checkText;
+                  break;
+                }
+                checkParent = checkParent.parentElement;
+              }
+            }
+            
+            const isLong = rowText.includes('long');
+            const isShort = rowText.includes('short');
+            
+            validPositions.push({
+              text: btn.textContent?.trim() || 'Close',
+              visible: btn.offsetParent !== null,
+              side: isLong ? 'long' : (isShort ? 'short' : 'unknown'),
+              isLong: isLong,
+              isShort: isShort
+            });
+          }
+        }
+      }
+      
+      // Count long and short positions
+      const longCount = validPositions.filter(pos => pos.isLong).length;
+      const shortCount = validPositions.filter(pos => pos.isShort).length;
+      
+      return {
+        hasPositions: validPositions.length > 0,
+        count: validPositions.length,
+        longCount: longCount,
+        shortCount: shortCount,
+        positions: validPositions
+      };
+    });
+    
+    if (positionResult.hasPositions) {
+      console.log(`[GRVT] ✅ Found ${positionResult.count} open position(s) - Long: ${positionResult.longCount}, Short: ${positionResult.shortCount}`);
+      return {
+        success: true,
+        hasPositions: true,
+        count: positionResult.count,
+        longCount: positionResult.longCount,
+        shortCount: positionResult.shortCount,
+        positions: positionResult.positions,
+        message: `Found ${positionResult.count} open position(s) - Long: ${positionResult.longCount}, Short: ${positionResult.shortCount}`
+      };
+    } else {
+      console.log(`[GRVT] ✅ No open positions found`);
+      return {
+        success: true,
+        hasPositions: false,
+        count: 0,
+        longCount: 0,
+        shortCount: 0,
+        positions: [],
+        message: "No open positions found"
+      };
+    }
+  } catch (error) {
+    console.log(`[GRVT] ❌ Error checking for open positions: ${error.message}`);
+    return {
+      success: false,
+      hasPositions: false,
+      count: 0,
+      longCount: 0,
+      shortCount: 0,
+      positions: [],
+      message: `Error: ${error.message}`
+    };
+  }
+}
+
+export { closeAllPositions, checkIfPositionsClosed, getCurrentUnrealizedPnL, handleClosePositionsAndSetLeverage, checkGrvtOpenPositions };
