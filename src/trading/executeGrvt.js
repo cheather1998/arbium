@@ -905,9 +905,18 @@ export async function executeTradeGrvt(
     }
   }
 
-  // GRVT: Fixed size to 0.002
-  const grvtSize = 0.002;
-  console.log(`[${exchange.name}] GRVT: Using fixed size ${grvtSize} BTC (overriding qty parameter: ${qty})`);
+  // GRVT: Use quantity from env if >= 0.002, otherwise default to 0.002
+  const envQty = side === 'buy' 
+    ? parseFloat(process.env.BUY_QTY) || 0
+    : parseFloat(process.env.SELL_QTY) || 0;
+  
+  const grvtSize = envQty >= 0.002 ? envQty : 0.002;
+  
+  if (envQty >= 0.002) {
+    console.log(`[${exchange.name}] GRVT: Using quantity from env (${side.toUpperCase()}_QTY=${envQty}): ${grvtSize} BTC`);
+  } else {
+    console.log(`[${exchange.name}] GRVT: Env quantity (${envQty}) < 0.002, using default: ${grvtSize} BTC`);
+  }
 
   console.log(
     `[${exchange.name}] Side: ${side}, Type: ${orderType}, Price: ${
@@ -1580,6 +1589,6 @@ export async function executeTradeGrvt(
     await delay(1000);
   }
 
-  // Verify order placement
-  return await verifyOrderPlacement(page, exchange, side, qty);
+  // Verify order placement (use grvtSize instead of qty parameter)
+  return await verifyOrderPlacement(page, exchange, side, grvtSize);
 }

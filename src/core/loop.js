@@ -1,8 +1,8 @@
 import dotenv from 'dotenv';
 import EXCHANGE_CONFIGS from '../config/exchanges.js';
 import { delay } from '../utils/helpers.js';
-import { closeAllPositions } from '../trading/positions.js';
-import { cancelAllOrders, cancelKrakenOrders } from '../trading/orders.js';
+import { closeAllPositions, checkGrvtOpenPositions } from '../trading/positions.js';
+import { cancelAllOrders, cancelKrakenOrders,checkKrakenOpenPositions } from '../trading/orders.js';
 import { setLeverage } from '../trading/leverage.js';
 import { setLeverageKraken } from '../trading/executeKraken.js';
 import { clickOrdersTab } from '../ui/tabs.js';
@@ -88,6 +88,138 @@ async function waitForPriceThreshold(exchangeAccounts, threshold, cycleCount) {
  * If threshold not met after 15 minutes, returns null to force close
  * Uses absolute price difference (highest - lowest)
  */
+/**
+ * Check open positions for both accounts and determine position sides (long/short)
+ * @param {Object} params - Parameters object
+ * @param {Page} params.page1 - Puppeteer page for account 1
+ * @param {Page} params.page2 - Puppeteer page for account 2
+ * @param {Object} params.exchange1 - Exchange config for account 1
+ * @param {Object} params.exchange2 - Exchange config for account 2
+ * @param {string} params.email1 - Email for account 1
+ * @param {string} params.email2 - Email for account 2
+ * @param {string} params.exchange1Name - Exchange name for account 1
+ * @param {string} params.exchange2Name - Exchange name for account 2
+ * @returns {Promise<Object>} - { account1OpenPositionSide: string|null, account2OpenPositionSide: string|null }
+ */
+async function checkOpenPositionsForAccounts({ page1, page2, exchange1, exchange2, email1, email2, exchange1Name, exchange2Name }) {
+  const account1IsKraken = exchange1.name === 'Kraken' || exchange1Name?.toLowerCase() === 'kraken';
+  const account2IsKraken = exchange2.name === 'Kraken' || exchange2Name?.toLowerCase() === 'kraken';
+  const account1IsGrvt = exchange1.name === 'Grvt' || exchange1Name?.toLowerCase() === 'grvt';
+  const account2IsGrvt = exchange2.name === 'Grvt' || exchange2Name?.toLowerCase() === 'grvt';
+
+  // Variables to track open position side for Kraken and GRVT accounts
+  let account1OpenPositionSide = null;
+  let account2OpenPositionSide = null;
+
+  // Check for open positions in parallel for both accounts
+  const positionCheckPromises = [];
+  
+  if (account1IsKraken) {
+    positionCheckPromises.push(
+      checkKrakenOpenPositions(page1).then(result => ({
+        account: 1,
+        exchange: exchange1.name,
+        email: email1,
+        type: 'kraken',
+        result
+      }))
+    );
+  } else if (account1IsGrvt) {
+    positionCheckPromises.push(
+      checkGrvtOpenPositions(page1).then(result => ({
+        account: 1,
+        exchange: exchange1.name,
+        email: email1,
+        type: 'grvt',
+        result
+      }))
+    );
+  }
+  
+  if (account2IsKraken) {
+    positionCheckPromises.push(
+      checkKrakenOpenPositions(page2).then(result => ({
+        account: 2,
+        exchange: exchange2.name,
+        email: email2,
+        type: 'kraken',
+        result
+      }))
+    );
+  } else if (account2IsGrvt) {
+    positionCheckPromises.push(
+      checkGrvtOpenPositions(page2).then(result => ({
+        account: 2,
+        exchange: exchange2.name,
+        email: email2,
+        type: 'grvt',
+        result
+      }))
+    );
+  }
+  
+  // Wait for all position checks to complete in parallel
+  if (positionCheckPromises.length > 0) {
+    const positionCheckResults = await Promise.all(positionCheckPromises);
+    
+    // Process position information and set openPositionSide for Kraken and GRVT
+    for (const { account, exchange, email, type, result } of positionCheckResults) {
+      if (result.success && result.hasPositions && result.count > 0) {
+        if (type === 'kraken') {
+          console.log(`[${exchange}] Account ${account} (${email}) has ${result.count} open position(s) - Long: ${result.longCount}, Short: ${result.shortCount}`);
+          
+          // Set openPositionSide based on position type
+          if (account === 1) {
+            if (result.longCount > 0) {
+              account1OpenPositionSide = 'long';
+            } else if (result.shortCount > 0) {
+              account1OpenPositionSide = 'short';
+            }
+          } else if (account === 2) {
+            if (result.longCount > 0) {
+              account2OpenPositionSide = 'long';
+            } else if (result.shortCount > 0) {
+              account2OpenPositionSide = 'short';
+            }
+          }
+        } else if (type === 'grvt') {
+          console.log(`[${exchange}] Account ${account} (${email}) has ${result.count} open position(s) - Long: ${result.longCount}, Short: ${result.shortCount}`);
+          
+          // Set openPositionSide based on position type for GRVT
+          if (account === 1) {
+            if (result.longCount > 0) {
+              account1OpenPositionSide = 'long';
+            } else if (result.shortCount > 0) {
+              account1OpenPositionSide = 'short';
+            }
+          } else if (account === 2) {
+            if (result.longCount > 0) {
+              account2OpenPositionSide = 'long';
+            } else if (result.shortCount > 0) {
+              account2OpenPositionSide = 'short';
+            }
+          }
+        }
+      } else if (result.success && !result.hasPositions) {
+        console.log(`[${exchange}] Account ${account} (${email}) has no open positions`);
+      }
+    }
+  }
+  
+  // Log position sides if set (for both Kraken and GRVT)
+  if (account1OpenPositionSide) {
+    console.log(`[${exchange1.name}] Account 1 open position side: ${account1OpenPositionSide}`);
+  }
+  if (account2OpenPositionSide) {
+    console.log(`[${exchange2.name}] Account 2 open position side: ${account2OpenPositionSide}`);
+  }
+  
+  return {
+    account1OpenPositionSide,
+    account2OpenPositionSide
+  };
+}
+
 async function waitForClosingThreshold(exchangeAccounts, threshold, cycleCount) {
   const startTime = Date.now();
   const maxWaitTime = 15 * 60 * 1000; // 15 minutes in milliseconds
@@ -1289,23 +1421,42 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
       // Create account objects for both exchanges
       const account1Obj = { page: page1, email: email1, exchange: exchange1 };
       const account2Obj = { page: page2, email: email2, exchange: exchange2 };
-      
-      // Step 1: Check closing threshold before closing positions
-      console.log(`\n[CYCLE ${cycleCount}] Step 1: Checking closing threshold before closing positions...`);
-      const closingPriceCheck = await waitForClosingThreshold(
-        exchangeAccounts,
-        TRADE_CONFIG.closingThreshold,
-        cycleCount
-      );
-      
-      // Close positions (skip for Extended Exchange - handled in clickOrdersTab)
-      // closingPriceCheck can be null (force close after 15 min) or a valid comparison (threshold met)
-      // Always close - either threshold is met or 15 minutes elapsed
-      if (closingPriceCheck === null) {
-        console.log(`\n[CYCLE ${cycleCount}] Force closing positions (15 minutes elapsed or threshold not met)...`);
-      } else {
-        console.log(`\n[CYCLE ${cycleCount}] Closing threshold met. Closing positions...`);
+
+            // Check for open positions and determine position sides
+      const { account1OpenPositionSide, account2OpenPositionSide } = await checkOpenPositionsForAccounts({
+        page1,
+        page2,
+        exchange1,
+        exchange2,
+        email1,
+        email2,
+        exchange1Name,
+        exchange2Name
+      });
+      console.log(`account1OpenPositionSide`,account1OpenPositionSide);
+      console.log(`account2OpenPositionSide`,account2OpenPositionSide);
+
+
+
+      if(account1OpenPositionSide && account2OpenPositionSide){
+        // Step 1: Check closing threshold before closing positions
+        console.log(`\n[CYCLE ${cycleCount}] Step 1: Checking closing threshold before closing positions...`);
+        const closingPriceCheck = await waitForClosingThreshold(
+          exchangeAccounts,
+          TRADE_CONFIG.closingThreshold,
+          cycleCount
+        );
+        
+        // Close positions (skip for Extended Exchange - handled in clickOrdersTab)
+        // closingPriceCheck can be null (force close after 15 min) or a valid comparison (threshold met)
+        // Always close - either threshold is met or 15 minutes elapsed
+        if (closingPriceCheck === null) {
+          console.log(`\n[CYCLE ${cycleCount}] Force closing positions (15 minutes elapsed or threshold not met)...`);
+        } else {
+          console.log(`\n[CYCLE ${cycleCount}] Closing threshold met. Closing positions...`);
+        }
       }
+
       
       // Step 2: Cancel orders and close positions for BOTH accounts (before determining buy/sell)
       console.log(`\n[CYCLE ${cycleCount}] Step 2: Canceling orders and closing positions for both accounts...`);
@@ -1313,53 +1464,138 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
       const account1IsKraken = exchange1.name === 'Kraken' || exchange1Name?.toLowerCase() === 'kraken';
       const account2IsKraken = exchange2.name === 'Kraken' || exchange2Name?.toLowerCase() === 'kraken';
       
-      const cancelPromises = [
-        account1IsKraken 
-          ? cancelKrakenOrders(page1)
-          : cancelAllOrders(page1),
-        account2IsKraken 
-          ? cancelKrakenOrders(page2)
-          : cancelAllOrders(page2)
+      // Run cancel orders + close positions in parallel for both accounts
+      // For each account: cancel orders → then close positions (sequential within account)
+      // Both accounts run in parallel
+      const account1Cleanup = (async () => {
+        try {
+          // Step 1: Cancel orders
+          const cancelResult = account1IsKraken 
+            ? await cancelKrakenOrders(page1)  // For Kraken, this also closes positions
+            : await cancelAllOrders(page1);
+          
+          if (cancelResult.success) {
+            console.log(`✓ [${email1}] Orders canceled`);
+          }
+          
+          // Step 2: Close positions (skip for Kraken - already handled by cancelKrakenOrders, skip for Extended Exchange - handled in clickOrdersTab)
+          if (exchange1.name !== 'Extended Exchange' && !account1IsKraken) {
+            await delay(500); // Small delay between cancel and close
+            const closeResult = await closeAllPositions(page1, 100, exchange1);
+            if (closeResult.success) {
+              console.log(`✓ [${email1}] Positions closed`);
+            }
+            return { email: email1, cancelResult, closeResult };
+          }
+          
+          return { email: email1, cancelResult, closeResult: null };
+        } catch (error) {
+          console.log(`❌ [${email1}] Error in cleanup: ${error.message}`);
+          return { email: email1, error: error.message };
+        }
+      })();
+      
+      const account2Cleanup = (async () => {
+        try {
+          // Step 1: Cancel orders
+          const cancelResult = account2IsKraken 
+            ? await cancelKrakenOrders(page2)  // For Kraken, this also closes positions
+            : await cancelAllOrders(page2);
+          
+          if (cancelResult.success) {
+            console.log(`✓ [${email2}] Orders canceled`);
+          }
+          
+          // Step 2: Close positions (skip for Kraken - already handled by cancelKrakenOrders, skip for Extended Exchange - handled in clickOrdersTab)
+          if (exchange2.name !== 'Extended Exchange' && !account2IsKraken) {
+            await delay(500); // Small delay between cancel and close
+            const closeResult = await closeAllPositions(page2, 100, exchange2);
+            if (closeResult.success) {
+              console.log(`✓ [${email2}] Positions closed`);
+            }
+            return { email: email2, cancelResult, closeResult };
+          }
+          
+          return { email: email2, cancelResult, closeResult: null };
+        } catch (error) {
+          console.log(`❌ [${email2}] Error in cleanup: ${error.message}`);
+          return { email: email2, error: error.message };
+        }
+      })();
+      // Wait for both accounts to complete cleanup (orders canceled + positions closed)
+      const cleanups = [];
+
+      if (account1OpenPositionSide) cleanups.push(account1Cleanup);
+      if (account2OpenPositionSide) cleanups.push(account2Cleanup);
+      
+      if (cleanups.length) {
+        await Promise.all(cleanups);
+      }
+
+      const params = {
+        page1,
+        page2,
+        exchange1,
+        exchange2,
+        email1,
+        email2,
+        exchange1Name,
+        exchange2Name
+      };
+      
+      let checkOPenPositions = await checkOpenPositionsForAccounts(params);
+      
+      if (checkOPenPositions.account1OpenPositionSide || checkOPenPositions.account2OpenPositionSide) {
+        await delay(60000);   // important
+        checkOPenPositions = await checkOpenPositionsForAccounts(params);
+      }
+
+      const limitOrderPromises = [];
+
+      const accounts = [
+        {
+          side: checkOPenPositions.account1OpenPositionSide,
+          exchange: exchange1.name
+        },
+        {
+          side: checkOPenPositions.account2OpenPositionSide,
+          exchange: exchange2.name
+        }
       ];
       
-      // YES - it waits for cancelKrakenOrders to complete all its work (cancels orders AND closes positions)
-      const cancelResults = await Promise.all(cancelPromises);
-      if (cancelResults[0].success) {
-        console.log(`✓ [${email1}] Orders canceled`);
-      }
-      if (cancelResults[1].success) {
-        console.log(`✓ [${email2}] Orders canceled`);
+      for (const { side, exchange } of accounts) {
+        if (!side) continue;
+      
+        const isLong = side === 'long';
+      
+        limitOrderPromises.push(
+          executeTradeWithTimeout(
+            isLong ? tradeBuyAccount.page : tradeSellAccount.page,
+            {
+              side: isLong ? 'buy' : 'sell',
+              orderType: 'limit',
+              qty: isLong ? TRADE_CONFIG.buyQty : TRADE_CONFIG.sellQty,
+            },
+            exchange,
+            30000
+          )
+        );
       }
       
-      await delay(500);
-      
-      // Close positions (skip for Kraken - already handled by cancelKrakenOrders, skip for Extended Exchange - handled in clickOrdersTab)
-      const closePromises = [];
-      if (exchange1.name !== 'Extended Exchange' && !account1IsKraken) {
-        closePromises.push((async () => {
-          const result = await closeAllPositions(page1, 100, exchange1);
-          return { email: email1, result };
-        })());
-      }
-      if (exchange2.name !== 'Extended Exchange' && !account2IsKraken) {
-        closePromises.push((async () => {
-          const result = await closeAllPositions(page2, 100, exchange2);
-          return { email: email2, result };
-        })());
+      if (limitOrderPromises.length) {
+        await Promise.all(limitOrderPromises);
       }
       
-      if (closePromises.length > 0) {
-        const closeResults = await Promise.all(closePromises);
-        for (const { email, result } of closeResults) {
-          if (result.success) {
-            console.log(`✓ [${email}] Positions closed`);
-          }
-        }
-        await delay(300);
-      } else if (account1IsKraken || account2IsKraken) {
+      // const cleanupResults = await Promise.all([account1Cleanup, account2Cleanup]);
+      
+      // Log summary
+      if (account1IsKraken || account2IsKraken) {
         console.log(`✓ Positions already closed by cancelKrakenOrders() for Kraken accounts`);
       }
       
+      await delay(300); // Small delay after cleanup
+
+
       // Step 3: Get price comparison to determine buy/sell accounts (AFTER closing positions)
       console.log(`\n[CYCLE ${cycleCount}] Step 3: Getting price comparison to determine buy/sell accounts...`);
       const priceComparison = await comparePricesFromExchanges(exchangeAccounts);
@@ -1390,21 +1626,21 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
       }
       
       // Pre-trade flow for Extended Exchange
-      const hasExtendedExchange = buyAccount.exchange.name === 'Extended Exchange' || sellAccount.exchange.name === 'Extended Exchange';
-      if (hasExtendedExchange) {
-        console.log(`\n[CYCLE ${cycleCount}] Running pre-trade flow for Extended Exchange...`);
-        const preTradePromises = [];
-        if (buyAccount.exchange.name === 'Extended Exchange') {
-          preTradePromises.push(clickOrdersTab(buyAccount.page, buyAccount.email, true));
-        }
-        if (sellAccount.exchange.name === 'Extended Exchange') {
-          preTradePromises.push(clickOrdersTab(sellAccount.page, sellAccount.email, true));
-        }
-        if (preTradePromises.length > 0) {
-          await Promise.all(preTradePromises);
-          await delay(2000);
-        }
-      }
+      // const hasExtendedExchange = buyAccount.exchange.name === 'Extended Exchange' || sellAccount.exchange.name === 'Extended Exchange';
+      // if (hasExtendedExchange) {
+      //   console.log(`\n[CYCLE ${cycleCount}] Running pre-trade flow for Extended Exchange...`);
+      //   const preTradePromises = [];
+      //   if (buyAccount.exchange.name === 'Extended Exchange') {
+      //     preTradePromises.push(clickOrdersTab(buyAccount.page, buyAccount.email, true));
+      //   }
+      //   if (sellAccount.exchange.name === 'Extended Exchange') {
+      //     preTradePromises.push(clickOrdersTab(sellAccount.page, sellAccount.email, true));
+      //   }
+      //   if (preTradePromises.length > 0) {
+      //     await Promise.all(preTradePromises);
+      //     await delay(2000);
+      //   }
+      // }
       
       // Step 4: Wait for opening threshold (AFTER determining buy/sell) before placing new trades
       console.log(`\n[CYCLE ${cycleCount}] Step 4: Checking opening threshold before placing new trades...`);
@@ -1499,6 +1735,12 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
       } else {
         console.log(`✗ [${tradeSellAccount.email}] SELL order failed: ${sellResult.error || 'unknown error'}`);
       }
+      delay(500);
+      // checkOPenPositions = await checkOpenPositionsForAccounts(params);
+      // if(!checkOPenPositions.account1OpenPositionSide || !checkOPenPositions.account2OpenPositionSide){
+      //   console.log(`\n[CYCLE ${cycleCount}] if one leg not filled or both legs not filled while open positions. Waiting for 1800000ms before next cycle...`);
+      //   await delay(1800000);
+      // }
       
       console.log(`\n[CYCLE ${cycleCount}] Trade execution completed (both trades processed)`);
       
