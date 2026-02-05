@@ -64,8 +64,8 @@ const EXCHANGE_CONFIGS = {
         sellButton: "Sell",
         marketButton: "Market",
         limitButton: "Limit",
-        confirmBuy: "Buy BTC Perp", // May need to change after UI inspection
-        confirmSell: "Sell BTC Perp", // May need to change after UI inspection
+        confirmBuy: "Long (buy) BTC", // May need to change after UI inspection
+        confirmSell: "Short (sell) BTC", // May need to change after UI inspection
         positionsTab: "Positions", // May need to change after UI inspection
       }
     }
