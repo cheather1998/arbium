@@ -479,8 +479,8 @@ async function verifyOrderPlaced(page, exchange, side, qty, maxWaitTime = 10000)
  * 4. Click "Cancel order" button
  * 5. Click "Yes, cancel order" in confirmation modal
  */
-async function cancelKrakenOrders(page) {
-  console.log(`\n=== Canceling Kraken Orders via Modal Flow (KRAKEN-SPECIFIC FUNCTION) ===`);
+async function cancelKrakenOrders(page, closeAtMarket = false) {
+  console.log(`\n=== Canceling Kraken Orders via Modal Flow (KRAKEN-SPECIFIC FUNCTION) ${closeAtMarket ? '(Market Close)' : '(Limit Close)'} ===`);
   
   // Smart wait for Kraken page to be ready (check for Open Orders tab instead of fixed delay)
   console.log(`[Kraken] Waiting for page to be ready...`);
@@ -1605,43 +1605,49 @@ async function cancelKrakenOrders(page) {
             await delay(200); // Fallback
           }
           
-          // Step 7e: Find and click "Limit" option
-          console.log(`[Kraken] Looking for "Limit" option in modal...`);
-          const limitOption = await page.evaluateHandle(() => {
-            // Find button with role="tab" and text "Limit"
-            const buttons = Array.from(document.querySelectorAll('button[role="tab"]'));
-            for (const btn of buttons) {
-              const text = (btn.textContent || '').trim();
-              if (text.toLowerCase() === 'limit') {
-                return btn;
+          // Step 7e: Find and click "Limit" option (skip if closeAtMarket is true - Market is selected by default)
+          if (!closeAtMarket) {
+            console.log(`[Kraken] Looking for "Limit" option in modal...`);
+            const limitOption = await page.evaluateHandle(() => {
+              // Find button with role="tab" and text "Limit"
+              const buttons = Array.from(document.querySelectorAll('button[role="tab"]'));
+              for (const btn of buttons) {
+                const text = (btn.textContent || '').trim();
+                if (text.toLowerCase() === 'limit') {
+                  return btn;
+                }
+              }
+              return null;
+            });
+            
+            if (limitOption && limitOption.asElement()) {
+              const limitElement = limitOption.asElement();
+              const isVisible = await page.evaluate((el) => {
+                return el && el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+              }, limitElement);
+              
+              if (isVisible) {
+                console.log(`[Kraken] ✅ Found "Limit" option, clicking...`);
+                await limitElement.click();
+                await delay(300); // Reduced from 500ms
+              } else {
+                console.log(`[Kraken] ⚠️  Limit option found but not visible`);
+              }
+            } else {
+              // Fallback: Try text search
+              const limitBtn = await findByText(page, "Limit", ["button"]);
+              if (limitBtn) {
+                console.log(`[Kraken] ✅ Found "Limit" option via text search, clicking...`);
+                await limitBtn.click();
+                await delay(300); // Reduced from 500ms
+              } else {
+                console.log(`[Kraken] ⚠️  Could not find "Limit" option`);
               }
             }
-            return null;
-          });
-          
-          if (limitOption && limitOption.asElement()) {
-            const limitElement = limitOption.asElement();
-            const isVisible = await page.evaluate((el) => {
-              return el && el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
-            }, limitElement);
-            
-            if (isVisible) {
-              console.log(`[Kraken] ✅ Found "Limit" option, clicking...`);
-              await limitElement.click();
-              await delay(300); // Reduced from 500ms
-            } else {
-              console.log(`[Kraken] ⚠️  Limit option found but not visible`);
-            }
           } else {
-            // Fallback: Try text search
-            const limitBtn = await findByText(page, "Limit", ["button"]);
-            if (limitBtn) {
-              console.log(`[Kraken] ✅ Found "Limit" option via text search, clicking...`);
-              await limitBtn.click();
-              await delay(300); // Reduced from 500ms
-            } else {
-              console.log(`[Kraken] ⚠️  Could not find "Limit" option`);
-            }
+            // Market close: Skip Limit selection (Market is selected by default)
+            console.log(`[Kraken] Skipping Limit selection - closing at Market (default selection)`);
+            await delay(200); // Small delay for modal to be ready
           }
           
           // Step 7f: Find and click "Close BTC Perp" button

@@ -3,9 +3,9 @@ import { delay } from '../utils/helpers.js';
 import { findByExactText, findByText } from '../utils/helpers.js';
 import { handleSetLeverage } from './leverage.js';
 
-async function closeAllPositions(page, percent = 100, exchangeConfig = null) {
+async function closeAllPositions(page, percent = 100, exchangeConfig = null, closeAtMarket = false) {
     const exchange = exchangeConfig || EXCHANGE_CONFIGS.paradex; // Default to Paradex
-    console.log(`\n=== Closing Position (${percent}%) on ${exchange.name} ===`);
+    console.log(`\n=== Closing Position (${percent}%) on ${exchange.name} ${closeAtMarket ? '(Market)' : '(Limit)'} ===`);
   
     // Wait a moment for any previous actions to complete
     await delay(700);
@@ -516,13 +516,15 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null) {
             await delay(500);
           }
           
-          // Find and click Limit option in modal - ALWAYS select Limit before Confirm
-          // Structure: <div class="style_toggleItem__ZIcFf">Limit</div> with data-active="false"
-          // After click, it should have data-active="true" and class "style_active__vVGd1"
-          console.log(`[${exchange.name}] Step 5: Looking for Limit option in modal using toggle structure...`);
-          
-          // Find Limit button using the specific toggle structure
-          const limitButtonHandle = await page.evaluateHandle(() => {
+          // Step 5: Select Limit option in modal (skip if closeAtMarket is true - Market is selected by default)
+          if (!closeAtMarket) {
+            // Find and click Limit option in modal - ALWAYS select Limit before Confirm
+            // Structure: <div class="style_toggleItem__ZIcFf">Limit</div> with data-active="false"
+            // After click, it should have data-active="true" and class "style_active__vVGd1"
+            console.log(`[${exchange.name}] Step 5: Looking for Limit option in modal using toggle structure...`);
+            
+            // Find Limit button using the specific toggle structure
+            const limitButtonHandle = await page.evaluateHandle(() => {
             const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"], [class*="Dialog"]'));
             for (const modal of modals) {
               const style = window.getComputedStyle(modal);
@@ -698,9 +700,14 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null) {
           // Small delay after Limit selection before clicking Confirm
           console.log(`[${exchange.name}] Waiting a moment after Limit selection before Confirm...`);
           await delay(500); // Increased wait time after Limit selection
+          } else {
+            // Market close: Skip Limit selection (Market is selected by default)
+            console.log(`[${exchange.name}] Step 5: Skipping Limit selection - closing at Market (default selection)`);
+            await delay(300); // Small delay for modal to be ready
+          }
           
-          // Step 6: Find and click Confirm button in modal (ONLY after Limit is selected)
-          console.log(`[${exchange.name}] Step 6: Looking for Confirm button in modal (Limit is selected)...`);
+          // Step 6: Find and click Confirm button in modal
+          console.log(`[${exchange.name}] Step 6: Looking for Confirm button in modal (${closeAtMarket ? 'Market' : 'Limit'} is selected)...`);
           await delay(300); // Additional wait before looking for Confirm
           
           let confirmBtn = await findByExactText(page, "Confirm", ["button", "div", "span"]);
