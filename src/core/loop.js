@@ -1469,6 +1469,7 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
       // Both accounts run in parallel
       const account1Cleanup = (async () => {
         try {
+          console.log(`[${exchange1.name}] 🔄 Starting cleanup for Account 1 (${email1})...`);
           // Step 1: Cancel orders
           const cancelResult = account1IsKraken 
             ? await cancelKrakenOrders(page1)  // For Kraken, this also closes positions
@@ -1480,10 +1481,13 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
           
           // Step 2: Close positions (skip for Kraken - already handled by cancelKrakenOrders, skip for Extended Exchange - handled in clickOrdersTab)
           if (exchange1.name !== 'Extended Exchange' && !account1IsKraken) {
+            console.log(`[${exchange1.name}] 🔄 Starting position close for Account 1...`);
             await delay(500); // Small delay between cancel and close
             const closeResult = await closeAllPositions(page1, 100, exchange1);
             if (closeResult.success) {
               console.log(`✓ [${email1}] Positions closed`);
+            } else {
+              console.log(`⚠️  [${email1}] Position close result: ${closeResult.message || 'Unknown error'}`);
             }
             return { email: email1, cancelResult, closeResult };
           }
@@ -1491,12 +1495,14 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
           return { email: email1, cancelResult, closeResult: null };
         } catch (error) {
           console.log(`❌ [${email1}] Error in cleanup: ${error.message}`);
+          console.log(`❌ [${email1}] Error stack: ${error.stack}`);
           return { email: email1, error: error.message };
         }
       })();
       
       const account2Cleanup = (async () => {
         try {
+          console.log(`[${exchange2.name}] 🔄 Starting cleanup for Account 2 (${email2})...`);
           // Step 1: Cancel orders
           const cancelResult = account2IsKraken 
             ? await cancelKrakenOrders(page2)  // For Kraken, this also closes positions
@@ -1508,10 +1514,13 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
           
           // Step 2: Close positions (skip for Kraken - already handled by cancelKrakenOrders, skip for Extended Exchange - handled in clickOrdersTab)
           if (exchange2.name !== 'Extended Exchange' && !account2IsKraken) {
+            console.log(`[${exchange2.name}] 🔄 Starting position close for Account 2...`);
             await delay(500); // Small delay between cancel and close
             const closeResult = await closeAllPositions(page2, 100, exchange2);
             if (closeResult.success) {
               console.log(`✓ [${email2}] Positions closed`);
+            } else {
+              console.log(`⚠️  [${email2}] Position close result: ${closeResult.message || 'Unknown error'}`);
             }
             return { email: email2, cancelResult, closeResult };
           }
@@ -1519,19 +1528,31 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
           return { email: email2, cancelResult, closeResult: null };
         } catch (error) {
           console.log(`❌ [${email2}] Error in cleanup: ${error.message}`);
+          console.log(`❌ [${email2}] Error stack: ${error.stack}`);
           return { email: email2, error: error.message };
         }
       })();
       // Wait for both accounts to complete cleanup (orders canceled + positions closed)
       const cleanups = [];
 
-      if (account1OpenPositionSide) cleanups.push(account1Cleanup);
-      if (account2OpenPositionSide) cleanups.push(account2Cleanup);
+      if (account1OpenPositionSide) {
+        console.log(`[${exchange1.name}] Account 1 has open position (${account1OpenPositionSide}), adding to cleanup...`);
+        cleanups.push(account1Cleanup);
+      }
+      if (account2OpenPositionSide) {
+        console.log(`[${exchange2.name}] Account 2 has open position (${account2OpenPositionSide}), adding to cleanup...`);
+        cleanups.push(account2Cleanup);
+      }
       
       if (cleanups.length) {
+        console.log(`[CYCLE ${cycleCount}] Starting cleanup for ${cleanups.length} account(s)...`);
         await Promise.all(cleanups);
+        console.log(`[CYCLE ${cycleCount}] Cleanup completed for all accounts`);
+      } else {
+        console.log(`[CYCLE ${cycleCount}] No cleanup needed - no open positions detected`);
       }
 
+      await delay(3000);
       const params = {
         page1,
         page2,
@@ -1550,6 +1571,19 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
         checkOPenPositions = await checkOpenPositionsForAccounts(params);
       }
 
+      const executeTradeWithTimeout = async (page, tradeParams, exchange, timeoutMs = 30000) => {
+        const tradePromise = executeTrade(page, tradeParams, exchange);
+        const timeoutPromise = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error(`Trade execution timeout after ${timeoutMs}ms`)), timeoutMs)
+        );
+        
+        try {
+          return await Promise.race([tradePromise, timeoutPromise]);
+        } catch (error) {
+          console.log(`⚠️  [${exchange.name}] Trade execution error or timeout: ${error.message}`);
+          return { success: false, error: error.message };
+        }
+      };      
       const limitOrderPromises = [];
 
       const accounts = [
@@ -1585,7 +1619,12 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
       if (limitOrderPromises.length) {
         await Promise.all(limitOrderPromises);
       }
-      
+
+      // let checkOPenPositionsAfterLimitOrderFallback = await checkOpenPositionsForAccounts(params);
+
+      // if (checkOPenPositionsAfterLimitOrderFallback.account1OpenPositionSide || checkOPenPositionsAfterLimitOrderFallback.account2OpenPositionSide) {
+
+      // }
       // const cleanupResults = await Promise.all([account1Cleanup, account2Cleanup]);
       
       // Log summary
@@ -1686,19 +1725,7 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
       console.log(`   SELL on ${tradeSellAccount.exchange.name} (${tradeSellAccount.email})`);
       
       // Helper function to wrap trade execution with timeout
-      const executeTradeWithTimeout = async (page, tradeParams, exchange, timeoutMs = 30000) => {
-        const tradePromise = executeTrade(page, tradeParams, exchange);
-        const timeoutPromise = new Promise((_, reject) => 
-          setTimeout(() => reject(new Error(`Trade execution timeout after ${timeoutMs}ms`)), timeoutMs)
-        );
-        
-        try {
-          return await Promise.race([tradePromise, timeoutPromise]);
-        } catch (error) {
-          console.log(`⚠️  [${exchange.name}] Trade execution error or timeout: ${error.message}`);
-          return { success: false, error: error.message };
-        }
-      };
+
       
       const tradePromises = [
         executeTradeWithTimeout(tradeBuyAccount.page, {
