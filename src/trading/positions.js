@@ -1,6 +1,5 @@
 import EXCHANGE_CONFIGS from '../config/exchanges.js';
-import { delay } from '../utils/helpers.js';
-import { findByExactText, findByText } from '../utils/helpers.js';
+import { delay, findByExactText, findByText, closeNotifyBarWrapperNotifications } from '../utils/helpers.js';
 import { handleSetLeverage } from './leverage.js';
 
 async function closeAllPositions(page, percent = 100, exchangeConfig = null, closeAtMarket = false) {
@@ -9,6 +8,9 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null, clo
   
     // Wait a moment for any previous actions to complete
     await delay(700);
+  
+    // Close any NotifyBarWrapper notifications before closing positions
+    await closeNotifyBarWrapperNotifications(page, exchange, 'before closing positions');
   
     // ============================================================================
     // GRVT-SPECIFIC CLOSE POSITION FLOW
@@ -372,6 +374,25 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null, clo
       console.log(`[${exchange.name}] ✓ Positions found (Close buttons detected) - proceeding to close via modal...`);
       await delay(300); // Wait for UI to fully render
       
+      // Scroll page to ensure positions table is in viewport
+      console.log(`[${exchange.name}] Scrolling page to ensure positions table is in viewport...`);
+      await page.evaluate(() => {
+        // Scroll to bottom first to ensure positions table is loaded
+        window.scrollTo(0, document.body.scrollHeight);
+      });
+      await delay(500);
+      
+      // Scroll positions table/container into view
+      await page.evaluate(() => {
+        const positionsTable = document.querySelector('[data-sentry-component="TablePositions"]') ||
+                               document.querySelector('[class*="table"]') ||
+                               document.querySelector('[class*="Table"]');
+        if (positionsTable) {
+          positionsTable.scrollIntoView({ behavior: 'smooth', block: 'end' });
+        }
+      });
+      await delay(500);
+      
       // Step 3: Find Close button in Actions column (last column of table)
       console.log(`[${exchange.name}] Step 3: Looking for Close button in Actions column (last column)...`);
       
@@ -446,6 +467,31 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null, clo
         });
         
         if (closeBtnElement && closeBtnElement.asElement()) {
+          // Ensure Close button is in viewport before proceeding
+          try {
+            await closeBtnElement.asElement().scrollIntoView({ behavior: 'smooth', block: 'center' });
+            await delay(300);
+            
+            // Verify element is still connected and visible
+            const isVisible = await closeBtnElement.asElement().evaluate((btn) => {
+              const rect = btn.getBoundingClientRect();
+              const style = window.getComputedStyle(btn);
+              return btn.isConnected && 
+                     style.display !== 'none' && 
+                     style.visibility !== 'hidden' && 
+                     style.opacity !== '0' &&
+                     rect.width > 0 && 
+                     rect.height > 0;
+            });
+            
+            if (!isVisible) {
+              throw new Error('Close button is not visible after scrolling');
+            }
+          } catch (error) {
+            console.log(`[${exchange.name}] ⚠️  Error scrolling Close button into view: ${error.message}`);
+            // Continue anyway, will try to re-find if click fails
+          }
+          
           // Step 1.5: Close any other modals that might be open
           console.log(`[${exchange.name}] Step 1.5: Checking for and closing any other open modals...`);
           const closedOtherModals = await page.evaluate(() => {
@@ -482,7 +528,61 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null, clo
           }
           
           console.log(`[${exchange.name}] Clicking Close button to open modal...`);
-          await closeBtnElement.asElement().click();
+          
+          // Try to click the Close button with error handling for detached nodes
+          try {
+            // Ensure element is in viewport before clicking
+            await closeBtnElement.asElement().scrollIntoView({ behavior: 'smooth', block: 'center' });
+            await delay(300);
+            await closeBtnElement.asElement().click();
+          } catch (error) {
+            if (error.message && error.message.includes('detached')) {
+              console.log(`[${exchange.name}] ⚠️  Close button became detached, re-finding and clicking...`);
+              
+              // Re-find the Close button
+              const closeBtnElementRetry = await page.evaluateHandle(() => {
+                const allButtons = Array.from(document.querySelectorAll('button'));
+                
+                for (const btn of allButtons) {
+                  const text = (btn.textContent || '').trim().toLowerCase();
+                  if (text === 'close' && btn.offsetParent !== null) {
+                    // Verify it's in Actions column
+                    let parent = btn.parentElement;
+                    let inActionsColumn = false;
+                    for (let i = 0; i < 10 && parent; i++) {
+                      const parentText = parent.textContent || '';
+                      const parentClass = (parent.className || '').toLowerCase();
+                      if (parentText.includes('Actions') || 
+                          parentClass.includes('cell-ping-right') ||
+                          parent.querySelector('span')?.textContent?.trim() === 'Actions') {
+                        inActionsColumn = true;
+                        break;
+                      }
+                      parent = parent.parentElement;
+                    }
+                    
+                    if (inActionsColumn) {
+                      return btn;
+                    }
+                  }
+                }
+                return null;
+              });
+              
+              if (closeBtnElementRetry && closeBtnElementRetry.asElement()) {
+                // Use JavaScript click as fallback
+                await closeBtnElementRetry.asElement().evaluate((btn) => {
+                  btn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                  btn.click();
+                });
+                console.log(`[${exchange.name}] ✅ Successfully clicked Close button using JavaScript fallback`);
+              } else {
+                throw new Error('Could not re-find Close button after detachment');
+              }
+            } else {
+              throw error;
+            }
+          }
           
           // Step 4: Wait for modal to fully render after Close button click
           console.log(`[${exchange.name}] Step 4: Waiting for modal to fully render...`);

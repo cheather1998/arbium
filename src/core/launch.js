@@ -2,7 +2,7 @@ import puppeteer from 'puppeteer-extra';
 import fs from 'fs';
 import path from 'path';
 import EXCHANGE_CONFIGS from '../config/exchanges.js';
-import { delay } from '../utils/helpers.js';
+import { delay, closeNotifyBarWrapperNotifications } from '../utils/helpers.js';
 import { loadCookies, hasExtendedExchangeCookies } from '../utils/cookies.js';
 import { isLoggedIn, login } from '../auth/login.js';
 import { clickOrdersTab } from '../ui/tabs.js';
@@ -123,6 +123,10 @@ async function launchAccount(accountConfig, exchangeConfig) {
         await delay(5000);
       }
   
+      // For GRVT: Close any NotifyBarWrapper notifications immediately after page load
+      await delay(2000); // Wait for notifications to appear
+      await closeNotifyBarWrapperNotifications(page, exchange, 'on initial page load');
+  
       // Check if logged in - retry multiple times if cookies exist
       let loggedIn = false;
       const maxLoginChecks = hasExistingCookies ? 5 : 1; // More retries if cookies exist
@@ -235,11 +239,19 @@ async function launchAccount(accountConfig, exchangeConfig) {
                 await clickOrdersTab(page, email);
               }
             }
+            
+            // For GRVT: Close any NotifyBarWrapper notifications after navigation
+            await delay(2000);
+            await closeNotifyBarWrapperNotifications(page, exchange, 'after navigation');
           } catch (error) {
             console.log(`[${email}] Navigation error, continuing...`);
           }
         }
-  
+
+        // For GRVT: Close any NotifyBarWrapper notifications on page load
+        await delay(2000); // Wait for notifications to appear
+        await closeNotifyBarWrapperNotifications(page, exchange, 'on page load');
+
         // Start the API server for this account
         startApiServer(page, apiPort, email);
   
