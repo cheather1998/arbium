@@ -1731,7 +1731,7 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
       checkOPenPositions = await checkOpenPositionsForAccounts(params);
       if((checkOPenPositions.account1OpenPositionSide && !checkOPenPositions.account2OpenPositionSide) || (!checkOPenPositions.account1OpenPositionSide && checkOPenPositions.account2OpenPositionSide)){
         console.log(`\n[CYCLE ${cycleCount}] if one leg not filled or both legs not filled while open positions. Waiting for 1800000ms before next cycle...`);
-        await delay(180000);
+        await delay(15000);
       }
       
       console.log(`\n[CYCLE ${cycleCount}] Trade execution completed (both trades processed)`);
