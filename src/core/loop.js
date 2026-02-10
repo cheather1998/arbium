@@ -1,6 +1,6 @@
 import dotenv from 'dotenv';
 import EXCHANGE_CONFIGS from '../config/exchanges.js';
-import { delay } from '../utils/helpers.js';
+import { delay, closeNotifyBarWrapperNotifications } from '../utils/helpers.js';
 import { closeAllPositions, checkGrvtOpenPositions } from '../trading/positions.js';
 import { cancelAllOrders, cancelKrakenOrders,checkKrakenOpenPositions } from '../trading/orders.js';
 import { setLeverage } from '../trading/leverage.js';
@@ -1418,9 +1418,6 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
         return null;
       };
       
-      // Create account objects for both exchanges
-      const account1Obj = { page: page1, email: email1, exchange: exchange1 };
-      const account2Obj = { page: page2, email: email2, exchange: exchange2 };
 
             // Check for open positions and determine position sides
       const { account1OpenPositionSide, account2OpenPositionSide } = await checkOpenPositionsForAccounts({
@@ -1464,85 +1461,64 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
       const account1IsKraken = exchange1.name === 'Kraken' || exchange1Name?.toLowerCase() === 'kraken';
       const account2IsKraken = exchange2.name === 'Kraken' || exchange2Name?.toLowerCase() === 'kraken';
       
-      // Run cancel orders + close positions in parallel for both accounts
-      // For each account: cancel orders → then close positions (sequential within account)
-      // Both accounts run in parallel
-      const account1Cleanup = (async () => {
+      // Reusable cleanup function
+      const performCleanup = async (page, exchange, email, accountId, isKraken, isCloseAtMarket) => {
         try {
-          console.log(`[${exchange1.name}] 🔄 Starting cleanup for Account 1 (${email1})...`);
+          // Check if isCloseAtMarket parameter was provided
+          const wasCloseAtMarketProvided = isCloseAtMarket !== undefined;
+          
+          console.log(`[${exchange.name}] 🔄 Starting cleanup for ${accountId} (${email})...`);
+          
+          // For GRVT: Close any NotifyBarWrapper notifications before cleanup
+          await closeNotifyBarWrapperNotifications(page, exchange, 'before cleanup');
+          
           // Step 1: Cancel orders
-          const cancelResult = account1IsKraken 
-            ? await cancelKrakenOrders(page1)  // For Kraken, this also closes positions
-            : await cancelAllOrders(page1);
+          const cancelResult = isKraken 
+            ? (wasCloseAtMarketProvided 
+                ? await cancelKrakenOrders(page, true)  // Pass true if parameter was provided
+                : await cancelKrakenOrders(page))  // Don't pass parameter if not provided
+            : await cancelAllOrders(page);
           
           if (cancelResult.success) {
-            console.log(`✓ [${email1}] Orders canceled`);
+            console.log(`✓ [${email}] Orders canceled`);
           }
           
           // Step 2: Close positions (skip for Kraken - already handled by cancelKrakenOrders, skip for Extended Exchange - handled in clickOrdersTab)
-          if (exchange1.name !== 'Extended Exchange' && !account1IsKraken) {
-            console.log(`[${exchange1.name}] 🔄 Starting position close for Account 1...`);
+          if (exchange.name !== 'Extended Exchange' && !isKraken) {
+            console.log(`[${exchange.name}] 🔄 Starting position close for ${accountId}...`);
             await delay(500); // Small delay between cancel and close
-            const closeResult = await closeAllPositions(page1, 100, exchange1);
+            const closeResult = wasCloseAtMarketProvided
+              ? await closeAllPositions(page, 100, exchange, true)  // Pass true if parameter was provided
+              : await closeAllPositions(page, 100, exchange);  // Don't pass parameter if not provided
             if (closeResult.success) {
-              console.log(`✓ [${email1}] Positions closed`);
+              console.log(`✓ [${email}] Positions closed`);
             } else {
-              console.log(`⚠️  [${email1}] Position close result: ${closeResult.message || 'Unknown error'}`);
+              console.log(`⚠️  [${email}] Position close result: ${closeResult.message || 'Unknown error'}`);
             }
-            return { email: email1, cancelResult, closeResult };
+            return { email, cancelResult, closeResult };
           }
           
-          return { email: email1, cancelResult, closeResult: null };
+          return { email, cancelResult, closeResult: null };
         } catch (error) {
-          console.log(`❌ [${email1}] Error in cleanup: ${error.message}`);
-          console.log(`❌ [${email1}] Error stack: ${error.stack}`);
-          return { email: email1, error: error.message };
+          console.log(`❌ [${email}] Error in cleanup: ${error.message}`);
+          console.log(`❌ [${email}] Error stack: ${error.stack}`);
+          return { email, error: error.message };
         }
-      })();
+      };
       
-      const account2Cleanup = (async () => {
-        try {
-          console.log(`[${exchange2.name}] 🔄 Starting cleanup for Account 2 (${email2})...`);
-          // Step 1: Cancel orders
-          const cancelResult = account2IsKraken 
-            ? await cancelKrakenOrders(page2)  // For Kraken, this also closes positions
-            : await cancelAllOrders(page2);
-          
-          if (cancelResult.success) {
-            console.log(`✓ [${email2}] Orders canceled`);
-          }
-          
-          // Step 2: Close positions (skip for Kraken - already handled by cancelKrakenOrders, skip for Extended Exchange - handled in clickOrdersTab)
-          if (exchange2.name !== 'Extended Exchange' && !account2IsKraken) {
-            console.log(`[${exchange2.name}] 🔄 Starting position close for Account 2...`);
-            await delay(500); // Small delay between cancel and close
-            const closeResult = await closeAllPositions(page2, 100, exchange2);
-            if (closeResult.success) {
-              console.log(`✓ [${email2}] Positions closed`);
-            } else {
-              console.log(`⚠️  [${email2}] Position close result: ${closeResult.message || 'Unknown error'}`);
-            }
-            return { email: email2, cancelResult, closeResult };
-          }
-          
-          return { email: email2, cancelResult, closeResult: null };
-        } catch (error) {
-          console.log(`❌ [${email2}] Error in cleanup: ${error.message}`);
-          console.log(`❌ [${email2}] Error stack: ${error.stack}`);
-          return { email: email2, error: error.message };
-        }
-      })();
-      // Wait for both accounts to complete cleanup (orders canceled + positions closed)
+      // First cleanup attempt based on initial position check
       const cleanups = [];
+      // if (account1OpenPositionSide) {
+      //   console.log(`[${exchange1.name}] Account 1 has open position (${account1OpenPositionSide}), adding to cleanup...`);
+      //   cleanups.push(performCleanup(page1, exchange1, email1, 'Account 1', account1IsKraken));
+      // }
+      // if (account2OpenPositionSide) {
+      //   console.log(`[${exchange2.name}] Account 2 has open position (${account2OpenPositionSide}), adding to cleanup...`);
+      //   cleanups.push(performCleanup(page2, exchange2, email2, 'Account 2', account2IsKraken));
+      // }
 
-      if (account1OpenPositionSide) {
-        console.log(`[${exchange1.name}] Account 1 has open position (${account1OpenPositionSide}), adding to cleanup...`);
-        cleanups.push(account1Cleanup);
-      }
-      if (account2OpenPositionSide) {
-        console.log(`[${exchange2.name}] Account 2 has open position (${account2OpenPositionSide}), adding to cleanup...`);
-        cleanups.push(account2Cleanup);
-      }
+      cleanups.push(performCleanup(page1, exchange1, email1, 'Account 1', account1IsKraken));
+      cleanups.push(performCleanup(page2, exchange2, email2, 'Account 2', account2IsKraken));
       
       if (cleanups.length) {
         console.log(`[CYCLE ${cycleCount}] Starting cleanup for ${cleanups.length} account(s)...`);
@@ -1552,7 +1528,7 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
         console.log(`[CYCLE ${cycleCount}] No cleanup needed - no open positions detected`);
       }
 
-      await delay(3000);
+      // Re-check positions after cleanup
       const params = {
         page1,
         page2,
@@ -1566,10 +1542,41 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
       
       let checkOPenPositions = await checkOpenPositionsForAccounts(params);
       
+      // If positions still open, wait and retry cleanup
       if (checkOPenPositions.account1OpenPositionSide || checkOPenPositions.account2OpenPositionSide) {
-        await delay(60000);   // important
+        console.log(`[CYCLE ${cycleCount}] Positions still open after cleanup, waiting 10 seconds before retry...`);
+        await delay(10000);
         checkOPenPositions = await checkOpenPositionsForAccounts(params);
+        console.log(`checking position close after initial cleanup account 1 : ${checkOPenPositions.account1OpenPositionSide}`);
+        console.log(`checking position close after initial cleanup account 2 : ${checkOPenPositions.account2OpenPositionSide}`);
+        const cleanUpRetry = [];
+        if (checkOPenPositions.account1OpenPositionSide) {
+          console.log(`[${exchange1.name}] Account 1 still has open position (${checkOPenPositions.account1OpenPositionSide}), retrying cleanup...`);
+          cleanUpRetry.push(performCleanup(page1, exchange1, email1, 'Account 1', account1IsKraken));
+        }
+        if (checkOPenPositions.account2OpenPositionSide) {
+          console.log(`[${exchange2.name}] Account 2 still has open position (${checkOPenPositions.account2OpenPositionSide}), retrying cleanup...`);
+          cleanUpRetry.push(performCleanup(page2, exchange2, email2, 'Account 2', account2IsKraken));
+        }
+        
+        if (cleanUpRetry.length) {
+          console.log(`[CYCLE ${cycleCount}] Starting cleanup retry for ${cleanUpRetry.length} account(s)...`);
+          await Promise.all(cleanUpRetry);
+          console.log(`[CYCLE ${cycleCount}] Cleanup retry completed for all accounts`);
+        }
       }
+      else {
+        console.log("clean up successfull in first attempt");
+      }
+
+      let checkOPenPositionsAfterLimitOrderFallback = await checkOpenPositionsForAccounts(params);
+
+      if (checkOPenPositionsAfterLimitOrderFallback.account1OpenPositionSide || checkOPenPositionsAfterLimitOrderFallback.account2OpenPositionSide) {
+        await Promise.all([performCleanup(page1, exchange1, email1, 'Account 1', account1IsKraken, true), performCleanup(page2, exchange2, email2, 'Account 2', account2IsKraken, true)]);
+      }
+
+
+
 
       const executeTradeWithTimeout = async (page, tradeParams, exchange, timeoutMs = 30000) => {
         const tradePromise = executeTrade(page, tradeParams, exchange);
@@ -1584,48 +1591,6 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
           return { success: false, error: error.message };
         }
       };      
-      const limitOrderPromises = [];
-
-      const accounts = [
-        {
-          side: checkOPenPositions.account1OpenPositionSide,
-          exchange: exchange1.name
-        },
-        {
-          side: checkOPenPositions.account2OpenPositionSide,
-          exchange: exchange2.name
-        }
-      ];
-      
-      for (const { side, exchange } of accounts) {
-        if (!side) continue;
-      
-        const isLong = side === 'long';
-      
-        limitOrderPromises.push(
-          executeTradeWithTimeout(
-            isLong ? tradeBuyAccount.page : tradeSellAccount.page,
-            {
-              side: isLong ? 'buy' : 'sell',
-              orderType: 'limit',
-              qty: isLong ? TRADE_CONFIG.buyQty : TRADE_CONFIG.sellQty,
-            },
-            exchange,
-            30000
-          )
-        );
-      }
-      
-      if (limitOrderPromises.length) {
-        await Promise.all(limitOrderPromises);
-      }
-
-      // let checkOPenPositionsAfterLimitOrderFallback = await checkOpenPositionsForAccounts(params);
-
-      // if (checkOPenPositionsAfterLimitOrderFallback.account1OpenPositionSide || checkOPenPositionsAfterLimitOrderFallback.account2OpenPositionSide) {
-
-      // }
-      // const cleanupResults = await Promise.all([account1Cleanup, account2Cleanup]);
       
       // Log summary
       if (account1IsKraken || account2IsKraken) {

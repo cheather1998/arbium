@@ -168,4 +168,46 @@ async function chooseTradingMode() {
     }
   }
 
-export { delay, prompt, findByText, findByExactText, chooseTradingMode };
+/**
+ * Close NotifyBarWrapper notifications on GRVT exchange
+ * @param {Page} page - Puppeteer page object
+ * @param {Object} exchange - Exchange configuration object
+ * @param {string} context - Context description for logging (e.g., "before cleanup", "on page load")
+ * @returns {Promise<number>} - Number of notifications closed
+ */
+async function closeNotifyBarWrapperNotifications(page, exchange, context = '') {
+  // Only for GRVT exchange
+  if (exchange.name !== 'GRVT' && exchange.name?.toLowerCase() !== 'grvt') {
+    return 0;
+  }
+
+  try {
+    const closedCount = await page.evaluate(() => {
+      const notifyBars = Array.from(document.querySelectorAll('[data-sentry-component="NotifyBarWrapper"]'));
+      let closed = 0;
+      for (const notifyBar of notifyBars) {
+        const style = window.getComputedStyle(notifyBar);
+        if (style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') {
+          const closeButton = notifyBar.querySelector('span[data-sentry-component="_IconWrapper"]');
+          if (closeButton && closeButton.offsetParent !== null) {
+            closeButton.click();
+            closed++;
+          }
+        }
+      }
+      return closed;
+    });
+
+    if (closedCount > 0) {
+      const contextMsg = context ? ` ${context}` : '';
+      console.log(`[${exchange.name}] ✅ Closed ${closedCount} NotifyBarWrapper notification(s)${contextMsg}`);
+      await delay(300);
+    }
+    return closedCount;
+  } catch (error) {
+    console.log(`[${exchange.name}] ⚠️  Error closing NotifyBarWrapper notifications: ${error.message}`);
+    return 0;
+  }
+}
+
+export { delay, prompt, findByText, findByExactText, chooseTradingMode, closeNotifyBarWrapperNotifications };

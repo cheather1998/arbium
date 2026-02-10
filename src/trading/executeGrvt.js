@@ -1,5 +1,4 @@
-import { delay } from '../utils/helpers.js';
-import { findByText, findByExactText } from '../utils/helpers.js';
+import { delay, findByText, findByExactText, closeNotifyBarWrapperNotifications } from '../utils/helpers.js';
 import {
   getCurrentMarketPrice,
   selectBuyOrSell,
@@ -1300,6 +1299,10 @@ export async function executeTradeGrvt(
   exchange
 ) {
   console.log(`\n=== Executing Trade on ${exchange.name} ===`);
+
+  // Close any NotifyBarWrapper notifications before setting leverage
+  await delay(1000); // Wait for notifications to appear
+  await closeNotifyBarWrapperNotifications(page, exchange, 'before setting leverage');
 
   // Set leverage first if requested
   if (setLeverageFirst && leverage) {
