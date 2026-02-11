@@ -1652,10 +1652,10 @@ async function cancelKrakenOrders(page, closeAtMarket = false) {
           
           // Step 7f: Find and click "Close BTC Perp" button
           console.log(`[Kraken] Looking for "Close BTC Perp" button in modal...`);
-          let closeBtcBtn = await findByExactText(page, "Close BTC Perp", ["button", "div", "span"]);
+          let closeBtcBtn = await findByExactText(page, "Close BTC", ["button", "div", "span"]);
           
           if (!closeBtcBtn) {
-            closeBtcBtn = await findByText(page, "Close BTC Perp", ["button", "div", "span"]);
+            closeBtcBtn = await findByText(page, "Close BTC", ["button", "div", "span"]);
           }
           
           if (!closeBtcBtn) {
