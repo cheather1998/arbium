@@ -2002,5 +2002,5 @@ export async function executeTradeGrvt(
   }
 
   // Verify order placement (use grvtSize instead of qty parameter)
-  // return await verifyOrderPlacement(page, exchange, side, grvtSize);
+   return await verifyOrderPlacement(page, exchange, side, grvtSize);
 }
