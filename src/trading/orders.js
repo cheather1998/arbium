@@ -540,34 +540,35 @@ async function cancelKrakenOrders(page, closeAtMarket = false) {
     await delay(2000); // Fallback: wait 2 seconds
   }
   
-  // Step 1: Go to Open Orders tab
-  console.log(`[Kraken] Step 1: Going to Open Orders tab...`);
-  let openOrdersTab = await findByExactText(page, "Open orders", ["button", "div", "span", "a"]);
+  // Step 1: Go to Open orders tab
+  console.log(`[Kraken] Step 1: Going to Open orders tab...`);
+  console.log(`[Kraken] Finding Open orders tab using data-layout-path="/c1/ts1/tb2"...`);
   
-  if (!openOrdersTab) {
-    openOrdersTab = await findByExactText(page, "Open Orders", ["button", "div", "span", "a"]);
-  }
+  let openOrdersTab = await page.evaluateHandle(() => {
+    // Find Open orders tab using the provided HTML structure
+    const tabs = Array.from(document.querySelectorAll('div[data-layout-path="/c1/ts1/tb2"]'));
+    for (const tab of tabs) {
+      const tabContent = tab.querySelector('.flexlayout__tab_button_content');
+      if (tabContent) {
+        const text = tabContent.textContent || '';
+        if (text.toLowerCase().includes('open orders')) {
+          return tab;
+        }
+      }
+    }
+    return null;
+  });
   
-  if (!openOrdersTab) {
-    openOrdersTab = await findByText(page, "Open orders", ["button", "div", "span", "a"]);
-  }
-  
-  if (!openOrdersTab) {
-    openOrdersTab = await findByExactText(page, "Order History", ["button", "div", "span", "a"]);
-  }
-  
-  if (!openOrdersTab) {
-    openOrdersTab = await findByExactText(page, "Orders", ["button", "div", "span", "a"]);
-  }
-  
-  if (openOrdersTab) {
+  if (openOrdersTab && openOrdersTab.asElement()) {
+    const openOrdersTabElement = openOrdersTab.asElement();
     const isVisible = await page.evaluate((el) => {
-      return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
-    }, openOrdersTab);
+      return el && el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+    }, openOrdersTabElement);
     
     if (isVisible) {
-      await openOrdersTab.click();
-      console.log(`[Kraken] ✅ Clicked Open Orders tab`);
+      console.log(`[Kraken] ✅ Found Open orders tab, clicking...`);
+      await openOrdersTabElement.click();
+      console.log(`[Kraken] ✅ Clicked Open orders tab`);
       
       // Smart wait for orders table to load (check for table elements instead of fixed delay)
       let tableReady = false;
@@ -591,12 +592,12 @@ async function cancelKrakenOrders(page, closeAtMarket = false) {
         await delay(500); // Fallback delay
       }
     } else {
-      console.log(`[Kraken] ⚠️  Open Orders tab found but not visible`);
-      return { success: false, message: "Open Orders tab not visible" };
+      console.log(`[Kraken] ⚠️  Open orders tab found but not visible`);
+      return { success: false, message: "Open orders tab not visible" };
     }
   } else {
-    console.log(`[Kraken] ⚠️  Could not find Open Orders tab`);
-    return { success: false, message: "Open Orders tab not found" };
+    console.log(`[Kraken] ⚠️  Could not find Open orders tab using data-layout-path="/c1/ts1/tb2"`);
+    return { success: false, message: "Open orders tab not found" };
   }
   
   // Step 2: Check if there are any orders
@@ -1652,10 +1653,10 @@ async function cancelKrakenOrders(page, closeAtMarket = false) {
           
           // Step 7f: Find and click "Close BTC Perp" button
           console.log(`[Kraken] Looking for "Close BTC Perp" button in modal...`);
-          let closeBtcBtn = await findByExactText(page, "Close BTC Perp", ["button", "div", "span"]);
+          let closeBtcBtn = await findByExactText(page, "Close BTC", ["button", "div", "span"]);
           
           if (!closeBtcBtn) {
-            closeBtcBtn = await findByText(page, "Close BTC Perp", ["button", "div", "span"]);
+            closeBtcBtn = await findByText(page, "Close BTC", ["button", "div", "span"]);
           }
           
           if (!closeBtcBtn) {

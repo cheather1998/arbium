@@ -1692,21 +1692,43 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
       // Helper function to wrap trade execution with timeout
 
       
-      const tradePromises = [
-        executeTradeWithTimeout(tradeBuyAccount.page, {
-          side: "buy",
-          orderType: "limit",
-          qty: TRADE_CONFIG.buyQty,
-        }, tradeBuyAccount.exchange, 30000),
-        executeTradeWithTimeout(tradeSellAccount.page, {
-          side: "sell",
-          orderType: "limit",
-          qty: TRADE_CONFIG.sellQty,
-        }, tradeSellAccount.exchange, 30000),
-      ];
+      // Execute both trades in parallel and wait for BOTH to complete
+      console.log(`[CYCLE ${cycleCount}] Starting parallel trade execution - waiting for both to complete...`);
       
-      // Use allSettled so one trade doesn't block the other
-      const tradeResults = await Promise.allSettled(tradePromises);
+      // Create promises - they start executing immediately when created
+      const buyTradePromise = executeTradeWithTimeout(tradeBuyAccount.page, {
+        side: "buy",
+        orderType: "limit",
+        qty: TRADE_CONFIG.buyQty,
+      }, tradeBuyAccount.exchange, 30000);
+      
+      const sellTradePromise = executeTradeWithTimeout(tradeSellAccount.page, {
+        side: "sell",
+        orderType: "limit",
+        qty: TRADE_CONFIG.sellQty,
+      }, tradeSellAccount.exchange, 30000);
+      
+      // Use allSettled to wait for BOTH promises to complete (fulfilled or rejected)
+      // This ensures we wait for both trades before continuing
+      console.log(`[CYCLE ${cycleCount}] ⏳ Waiting for both trades to complete (this may take up to 30 seconds)...`);
+      const startTime = Date.now();
+      
+      // CRITICAL: await Promise.allSettled() will block here until BOTH promises settle
+      // This means the code will NOT continue until both buyTradePromise and sellTradePromise complete
+      const tradeResults = await Promise.allSettled([buyTradePromise, sellTradePromise]);
+      
+      const elapsedTime = Date.now() - startTime;
+      console.log(`[CYCLE ${cycleCount}] ✅ Both trades completed after ${(elapsedTime / 1000).toFixed(2)}s. Processing results...`);
+      
+      // Verify both promises have settled
+      const buySettled = tradeResults[0].status === 'fulfilled' || tradeResults[0].status === 'rejected';
+      const sellSettled = tradeResults[1].status === 'fulfilled' || tradeResults[1].status === 'rejected';
+      
+      if (!buySettled || !sellSettled) {
+        console.log(`⚠️  [CYCLE ${cycleCount}] Warning: Not all trades settled properly. Buy: ${buySettled}, Sell: ${sellSettled}`);
+      } else {
+        console.log(`[CYCLE ${cycleCount}] ✓ Both trades have settled. Continuing to next step...`);
+      }
       
       // Process buy result
       const buyResult = tradeResults[0].status === 'fulfilled' ? tradeResults[0].value : { success: false, error: tradeResults[0].reason?.message || 'Promise rejected' };
@@ -1727,11 +1749,74 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
       } else {
         console.log(`✗ [${tradeSellAccount.email}] SELL order failed: ${sellResult.error || 'unknown error'}`);
       }
-      delay(500);
-      checkOPenPositions = await checkOpenPositionsForAccounts(params);
-      if((checkOPenPositions.account1OpenPositionSide && !checkOPenPositions.account2OpenPositionSide) || (!checkOPenPositions.account1OpenPositionSide && checkOPenPositions.account2OpenPositionSide)){
-        console.log(`\n[CYCLE ${cycleCount}] if one leg not filled or both legs not filled while open positions. Waiting for 1800000ms before next cycle...`);
-        await delay(15000);
+      await delay(500);
+      
+      // Check for partial fill scenario (one account has position, other doesn't)
+      const checkPartialFill = async () => {
+        const positions = await checkOpenPositionsForAccounts(params);
+        const hasAccount1Position = !!positions.account1OpenPositionSide;
+        const hasAccount2Position = !!positions.account2OpenPositionSide;
+        
+        // Only proceed if exactly one account has a position
+        if (hasAccount1Position === hasAccount2Position) {
+          return null; // Both have positions or both don't - not a partial fill
+        }
+        
+        return {
+          accountWithPosition: hasAccount1Position ? 1 : 2,
+          positionSide: hasAccount1Position ? positions.account1OpenPositionSide : positions.account2OpenPositionSide,
+          accountWithoutPosition: hasAccount1Position ? 2 : 1
+        };
+      };
+      
+      let partialFill = await checkPartialFill();
+      
+      if (partialFill) {
+        console.log(`\n[CYCLE ${cycleCount}] ⚠️  Partial fill detected - Account ${partialFill.accountWithPosition} has position, Account ${partialFill.accountWithoutPosition} does not. Waiting 15s before retry...`);
+        await delay(30000);
+        
+        // Re-check after delay
+        partialFill = await checkPartialFill();
+        
+        if (partialFill) {
+          const { accountWithPosition, positionSide, accountWithoutPosition } = partialFill;
+          
+          // Determine which account needs cleanup and which needs trade
+          const accountToCleanup = accountWithoutPosition === 1 
+            ? { page: page1, exchange: exchange1, email: email1, accountId: 'Account 1', isKraken: account1IsKraken }
+            : { page: page2, exchange: exchange2, email: email2, accountId: 'Account 2', isKraken: account2IsKraken };
+          
+          console.log(`\n[CYCLE ${cycleCount}] Account ${accountWithPosition} has ${positionSide} position, Account ${accountWithoutPosition} does not. Cleaning up Account ${accountWithoutPosition} and placing matching trade...`);
+          
+          // Cleanup the account without position
+          await performCleanup(
+            accountToCleanup.page,
+            accountToCleanup.exchange,
+            accountToCleanup.email,
+            accountToCleanup.accountId,
+            accountToCleanup.isKraken
+          );
+          
+          // Determine trade side and account based on position side
+          // If account has 'long' position, we need to SELL to close it (use tradeSellAccount)
+          // If account has 'short' position, we need to BUY to close it (use tradeBuyAccount)
+          const tradeConfig = positionSide === 'long'
+            ? { account: tradeSellAccount, side: 'sell', qty: TRADE_CONFIG.sellQty }
+            : { account: tradeBuyAccount, side: 'buy', qty: TRADE_CONFIG.buyQty };
+          
+          console.log(`[CYCLE ${cycleCount}] Placing ${tradeConfig.side.toUpperCase()} order on ${tradeConfig.account.exchange.name} to match ${positionSide} position...`);
+          
+          await executeTradeWithTimeout(
+            tradeConfig.account.page,
+            {
+              side: tradeConfig.side,
+              orderType: "limit",
+              qty: tradeConfig.qty,
+            },
+            tradeConfig.account.exchange,
+            30000
+          );
+        }
       }
       
       console.log(`\n[CYCLE ${cycleCount}] Trade execution completed (both trades processed)`);
