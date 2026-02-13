@@ -1560,6 +1560,40 @@ export async function executeTradeKraken(
 
   await delay(500);
 
+  // Step 5.5: Update price input value to (current value - 10) before clicking confirm button
+  if (orderType === "limit" && priceInput) {
+    console.log(`[${exchange.name}] Step 5.5: Updating price input value to (current value - 10) before clicking confirm button...`);
+    
+    // Get current price input value
+    const currentPriceValue = await page.evaluate((el) => el.value || '', priceInput);
+    const currentPriceNum = parseFloat(currentPriceValue.replace(/,/g, '').replace(/ /g, ''));
+    
+    if (currentPriceValue && !isNaN(currentPriceNum)) {
+      const newPrice = currentPriceNum - 10;
+      console.log(`[${exchange.name}] Current price: ${currentPriceNum}, New price (current - 10): ${newPrice}`);
+      
+      // Update the price input with the new value using enterPrice function
+      await enterPrice(page, priceInput, newPrice, orderType);
+      
+      // Verify the updated price persists
+      await delay(500);
+      const updatedPriceCheck = await page.evaluate((el) => el.value || '', priceInput);
+      const updatedPriceNum = parseFloat(updatedPriceCheck.replace(/,/g, ''));
+      const priceTolerance = 0.1;
+      
+      if (updatedPriceCheck && Math.abs(updatedPriceNum - newPrice) < priceTolerance) {
+        console.log(`[${exchange.name}] ✅ Price updated successfully: "${updatedPriceCheck}" (expected: ${newPrice}, got: ${updatedPriceNum})`);
+      } else {
+        console.log(`[${exchange.name}] ⚠️  Price update verification failed. Expected: ${newPrice}, Got: "${updatedPriceCheck}" (${updatedPriceNum})`);
+      }
+      await delay(300);
+    } else {
+      console.log(`[${exchange.name}] ⚠️  Could not read current price value: "${currentPriceValue}", skipping price update`);
+    }
+  } else {
+    console.log(`[${exchange.name}] Skipping price update - only applies to limit orders with price input`);
+  }
+
   // Step 6: Find and click Confirm button
   const { confirmBtn, confirmText } = await findConfirmButtonKraken(page, side, exchange);
 
