@@ -2390,16 +2390,84 @@ export async function executeTradeGrvt(
   // So we select the tab first, then fill inputs
 
   // 1. Select Limit or Market tab (tabs are at the top)
+  // GRVT-specific: Scope search to CreateOrderPanel to avoid clicking deposit buttons
   console.log(`[${exchange.name}] Step 0: Selecting ${orderType.toUpperCase()} tab...`);
   try {
-    const orderTypePromise = selectOrderType(page, orderType, exchange);
-    const orderTypeTimeout = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error('selectOrderType timeout after 5 seconds')), 5000)
-    );
-
-    const orderTypeResult = await Promise.race([orderTypePromise, orderTypeTimeout]);
+    // First, try to find CreateOrderPanel and search within it
+    const createOrderPanel = await page.$('[data-sentry-element="CreateOrderPanel"]');
+    let orderTypeResult = false;
+    
+    if (createOrderPanel) {
+      console.log(`[${exchange.name}] ✅ Found CreateOrderPanel, searching for ${orderType.toUpperCase()} button within it...`);
+      const buttonText = orderType === "limit" ? exchange.selectors.limitButton : exchange.selectors.marketButton;
+      
+      // Search for button within CreateOrderPanel
+      const orderTypeBtn = await createOrderPanel.evaluateHandle((panel, searchText) => {
+        const buttons = Array.from(panel.querySelectorAll('button, div[role="button"], span[role="button"]'));
+        for (const btn of buttons) {
+          const btnText = (btn.textContent || '').trim();
+          if (btnText === searchText && btn.offsetParent !== null) {
+            return btn;
+          }
+        }
+        return null;
+      }, buttonText);
+      
+      const orderTypeElement = orderTypeBtn.asElement();
+      if (orderTypeElement) {
+        // Verify it's the correct button before clicking
+        const buttonInfo = await page.evaluate((el) => {
+          const text = (el.textContent || '').trim();
+          const href = el.getAttribute('href') || '';
+          const isLink = el.tagName === 'A' || href !== '';
+          return {
+            text: text,
+            isLink: isLink,
+            href: href,
+            tagName: el.tagName
+          };
+        }, orderTypeElement);
+        
+        // Make sure it's not a link (which would navigate away) and text matches
+        if (buttonInfo.isLink) {
+          console.log(`[${exchange.name}] ⚠️  Found ${orderType.toUpperCase()} button but it's a link (href: ${buttonInfo.href}), skipping to avoid navigation...`);
+        } else if (buttonInfo.text.toLowerCase().includes('deposit')) {
+          console.log(`[${exchange.name}] ⚠️  Found button but text contains "deposit" (${buttonInfo.text}), skipping to avoid navigation...`);
+        } else {
+          console.log(`[${exchange.name}] ✅ Found ${orderType.toUpperCase()} button in CreateOrderPanel (text: "${buttonInfo.text}"), clicking...`);
+          await orderTypeElement.click();
+          console.log(`[${exchange.name}] Selected ${orderType.toUpperCase()} order`);
+          orderTypeResult = true;
+          await delay(300);
+          
+          // Verify we're still on the trading page (not navigated away)
+          const currentUrl = page.url();
+          if (currentUrl.includes('/deposit') || currentUrl.includes('/withdraw')) {
+            console.log(`[${exchange.name}] ⚠️  Navigation detected to ${currentUrl}, going back...`);
+            await page.goBack();
+            await delay(1000);
+            orderTypeResult = false; // Retry
+          }
+        }
+      } else {
+        console.log(`[${exchange.name}] ⚠️  ${orderType.toUpperCase()} button not found in CreateOrderPanel, trying page-wide search...`);
+      }
+    }
+    
+    // Fallback: If not found in CreateOrderPanel, use standard selectOrderType
     if (!orderTypeResult) {
-      console.log(`[${exchange.name}] ⚠️  Failed to select order type tab, but continuing...`);
+      console.log(`[${exchange.name}] Falling back to page-wide search for ${orderType.toUpperCase()} button...`);
+      const orderTypePromise = selectOrderType(page, orderType, exchange);
+      const orderTypeTimeout = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('selectOrderType timeout after 5 seconds')), 5000)
+      );
+
+      const result = await Promise.race([orderTypePromise, orderTypeTimeout]);
+      if (result) {
+        orderTypeResult = true;
+      } else {
+        console.log(`[${exchange.name}] ⚠️  Failed to select order type tab, but continuing...`);
+      }
     }
   } catch (error) {
     console.log(`[${exchange.name}] ⚠️  Error selecting order type tab: ${error.message}, continuing...`);
