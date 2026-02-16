@@ -2007,6 +2007,187 @@ export async function handleTpSlGrvt(page, exchange, price = null, side = 'buy')
       console.log(`[${exchange.name}] ⚠️  Error filling TP limit price: ${error.message}`);
     }
     
+    // Phase 4b: Fill SL limit price input with Trigger price value from Stop Loss section
+    console.log(`[${exchange.name}] 🔧 [PHASE 4b] Filling SL limit price input with Trigger price value...`);
+    try {
+      const slLimitPriceInfo = await page.evaluate(() => {
+        // Find TP/SL modal
+        const allElements = Array.from(document.querySelectorAll('*'));
+        let tpslModal = null;
+        
+        for (const el of allElements) {
+          const text = (el.textContent || '').trim();
+          if (text === 'TP/SL' && el.offsetParent !== null) {
+            let parent = el.parentElement;
+            for (let i = 0; i < 10 && parent; i++) {
+              const style = window.getComputedStyle(parent);
+              if (style.display !== 'none' && style.visibility !== 'hidden' &&
+                parent.offsetWidth > 0 && parent.offsetHeight > 0) {
+                const parentText = (parent.textContent || '').toLowerCase();
+                if (parentText.includes('take profit') && parentText.includes('stop loss')) {
+                  tpslModal = parent;
+                  break;
+                }
+              }
+              parent = parent.parentElement;
+            }
+            if (tpslModal) break;
+          }
+        }
+        
+        if (!tpslModal) return { success: false, message: 'TP/SL modal not found' };
+        
+        // Find Stop loss section
+        let stopLossSection = null;
+        const modalElements = Array.from(tpslModal.querySelectorAll('*'));
+        for (const el of modalElements) {
+          const text = (el.textContent || '').trim();
+          if (text.toLowerCase() === 'stop loss' && el.offsetParent !== null) {
+            stopLossSection = el;
+            break;
+          }
+        }
+        
+        if (!stopLossSection) return { success: false, message: 'Stop loss section not found' };
+        
+        // Find section parent
+        let sectionParent = stopLossSection.parentElement;
+        for (let i = 0; i < 10 && sectionParent; i++) {
+          const allDescendants = Array.from(sectionParent.querySelectorAll('*'));
+          let hasTakeProfit = false;
+          for (const el of allDescendants) {
+            const text = (el.textContent || '').trim();
+            if (text.toLowerCase() === 'take profit' && el.offsetParent !== null) {
+              hasTakeProfit = true;
+              break;
+            }
+          }
+          if (!hasTakeProfit) break;
+          sectionParent = sectionParent.parentElement;
+          if (!sectionParent) break;
+        }
+        
+        if (!sectionParent) sectionParent = stopLossSection.parentElement;
+        
+        // Find Trigger price input in Stop loss section
+        const allInputsInSection = Array.from(sectionParent.querySelectorAll('input'));
+        let triggerPriceInput = null;
+        let triggerPriceValue = '';
+        
+        for (const input of allInputsInSection) {
+          if (input.tagName !== 'INPUT') continue;
+          const placeholder = (input.getAttribute('placeholder') || '').trim().toLowerCase();
+          if (placeholder.includes('trigger price')) {
+            triggerPriceInput = input;
+            triggerPriceValue = input.value || '';
+            break;
+          }
+        }
+        
+        if (!triggerPriceInput || !triggerPriceValue) {
+          return { success: false, message: 'Could not find Trigger price input or value in Stop loss section' };
+        }
+        
+        // Find SL limit price input (or Stop loss Limit price)
+        let limitPriceInput = null;
+        let limitPriceInputId = '';
+        
+        for (const input of allInputsInSection) {
+          if (input.tagName !== 'INPUT') continue;
+          const placeholder = (input.getAttribute('placeholder') || '').trim().toLowerCase();
+          if (placeholder.includes('sl limit price') || placeholder.includes('stop loss limit price') || 
+              placeholder.includes('limit price')) {
+            // Make sure it's not the trigger price input
+            if (!placeholder.includes('trigger')) {
+              limitPriceInput = input;
+              limitPriceInputId = input.id || '';
+              break;
+            }
+          }
+        }
+        
+        if (!limitPriceInput) {
+          return { success: false, message: 'Could not find SL limit price input' };
+        }
+        
+        return {
+          success: true,
+          triggerPriceValue: triggerPriceValue,
+          limitPriceInputId: limitPriceInputId
+        };
+      });
+      
+      if (!slLimitPriceInfo || !slLimitPriceInfo.success) {
+        console.log(`[${exchange.name}] ⚠️  Could not find SL limit price input: ${slLimitPriceInfo?.message || 'unknown error'}`);
+      } else {
+        console.log(`[${exchange.name}] ✅ Found Trigger price value in Stop Loss section: ${slLimitPriceInfo.triggerPriceValue}`);
+        console.log(`[${exchange.name}] ⌨️  Typing Trigger price into SL limit price input...`);
+        
+        // Get the limit price input element
+        let slLimitPriceElement = null;
+        if (slLimitPriceInfo.limitPriceInputId) {
+          slLimitPriceElement = await page.evaluateHandle((id) => {
+            return document.getElementById(id);
+          }, slLimitPriceInfo.limitPriceInputId);
+          
+          const isValid = await page.evaluate(el => el !== null && el !== undefined, slLimitPriceElement);
+          if (!isValid) {
+            slLimitPriceElement = null;
+          }
+        }
+        
+        // Fallback: find by placeholder
+        if (!slLimitPriceElement) {
+          const allInputs = await page.$$('input');
+          for (const input of allInputs) {
+            const placeholder = await page.evaluate(el => (el.getAttribute('placeholder') || '').trim().toLowerCase(), input);
+            if ((placeholder.includes('sl limit price') || placeholder.includes('stop loss limit price') || 
+                 placeholder.includes('limit price')) && !placeholder.includes('trigger') && !placeholder.includes('tp')) {
+              const isVisible = await page.evaluate(el => {
+                const style = window.getComputedStyle(el);
+                return el.offsetParent !== null && 
+                       style.display !== 'none' && 
+                       style.visibility !== 'hidden' &&
+                       !el.disabled && 
+                       !el.readOnly;
+              }, input);
+              
+              if (isVisible) {
+                slLimitPriceElement = input;
+                break;
+              }
+            }
+          }
+        }
+        
+        if (slLimitPriceElement) {
+          // Focus the input
+          await slLimitPriceElement.focus();
+          await delay(200);
+          
+          // Select all existing text
+          await page.keyboard.down('Control');
+          await page.keyboard.press('KeyA');
+          await page.keyboard.up('Control');
+          await delay(100);
+          
+          // Clear existing value
+          await page.keyboard.press('Backspace');
+          await delay(100);
+          
+          // Type the trigger price value character by character
+          await slLimitPriceElement.type(slLimitPriceInfo.triggerPriceValue, { delay: 50 });
+          await delay(200);
+          
+          console.log(`[${exchange.name}] ✅ Typed Trigger price (${slLimitPriceInfo.triggerPriceValue}) into SL limit price input`);
+        } else {
+          console.log(`[${exchange.name}] ⚠️  Could not find SL limit price input element to type into`);
+        }
+      }
+    } catch (error) {
+      console.log(`[${exchange.name}] ⚠️  Error filling SL limit price: ${error.message}`);
+    }
+    
     // Wait for UI to update after filling all inputs
     console.log(`[${exchange.name}] ⏳ Waiting for UI to update after filling all inputs...`);
     await delay(500);
