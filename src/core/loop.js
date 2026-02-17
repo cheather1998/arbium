@@ -1749,7 +1749,12 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
       } else {
         console.log(`✗ [${tradeSellAccount.email}] SELL order failed: ${sellResult.error || 'unknown error'}`);
       }
-      await delay(500);
+      
+      // CRITICAL: Wait for both orders to be fully placed and processed before checking for partial fills
+      // executeTrade returns when order is placed, but we need to wait for orders to potentially fill
+      console.log(`[CYCLE ${cycleCount}] ⏳ Waiting for orders to be fully processed before checking for partial fills...`);
+      await delay(3000); // Wait 3 seconds for orders to potentially fill
+      console.log(`[CYCLE ${cycleCount}] ✅ Waited for order processing, now checking for partial fills...`);
       
       // Check for partial fill scenario (one account has position, other doesn't)
       const checkPartialFill = async () => {

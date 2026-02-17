@@ -619,598 +619,1176 @@ export async function handleTpSlGrvt(page, exchange, price = null, side = 'buy')
 
     console.log(`[${exchange.name}] Configuring TP/SL modal with TAKE_PROFIT=${takeProfitPercent}, STOP_LOSS=${stopLossPercent}...`);
 
-    // Helper function to find and fill ROI% input for a section
+    // Helper function to find and click ROI% element for a section
+    // Phase 1: Only find and click ROI% - no dropdown selection or input filling yet
     const fillRoiInput = async (sectionName, value) => {
-      console.log(`[${exchange.name}] Finding and filling ROI% input for ${sectionName}...`);
+      console.log(`[${exchange.name}] [PHASE 1] Finding and clicking ROI% element for ${sectionName}...`);
 
-      const inputInfo = await page.evaluate((sectionName) => {
-        console.log(`[DEBUG] Starting to find input for section: ${sectionName}`);
-
-        // Find the section by header text
+      // Step 1: Find ROI% element's parent to click (following the specified approach)
+      console.log(`[${exchange.name}] [ROI% FINDING] Starting evaluation to find ROI% parent element...`);
+      let roiParentInfo;
+      try {
+        roiParentInfo = await page.evaluate((sectionName) => {
+        // Step 1: Find the TP/SL modal by text "TP/SL" in header
         const allElements = Array.from(document.querySelectorAll('*'));
-        let sectionHeader = null;
-
+        let tpslModal = null;
+        
+        // Find element with "TP/SL" text (this is the modal header)
         for (const el of allElements) {
-          const text = (el.textContent || '').trim().toLowerCase();
-          if (text === sectionName.toLowerCase() && el.offsetParent !== null) {
-            sectionHeader = el;
-            console.log(`[DEBUG] Found section header for ${sectionName}`);
-            break;
-          }
-        }
-
-        if (!sectionHeader) {
-          console.log(`[DEBUG] Could not find section header for ${sectionName}`);
-          return null;
-        }
-
-        // Find the section container
-        let sectionContainer = sectionHeader.parentElement;
-        let containerLevel = 0;
-        for (let i = 0; i < 10 && sectionContainer; i++) {
-          containerLevel = i;
-          const hasRoi = Array.from(sectionContainer.querySelectorAll('*')).some(el => {
-            const text = (el.textContent || '').trim();
-            return text === 'ROI%' && el.offsetParent !== null;
-          });
-          if (hasRoi) {
-            console.log(`[DEBUG] Found section container with ROI% at level ${i}`);
-            break;
-          }
-          sectionContainer = sectionContainer.parentElement;
-        }
-
-        if (!sectionContainer) {
-          console.log(`[DEBUG] Could not find section container for ${sectionName}`);
-          return null;
-        }
-
-        // Find the container that has both input and ROI% dropdown
-        const containers = Array.from(sectionContainer.querySelectorAll('div[class*="textFieldContainer"]'));
-        console.log(`[DEBUG] Found ${containers.length} textFieldContainer(s) in section`);
-
-        for (let idx = 0; idx < containers.length; idx++) {
-          const container = containers[idx];
-          const input = container.querySelector('input[type="text"], input[type="number"], input:not([type="hidden"])');
-          const hasRoiDropdown = Array.from(container.querySelectorAll('*')).some(el => {
-            const text = (el.textContent || '').trim();
-            return text === 'ROI%' && el.offsetParent !== null;
-          });
-
-          console.log(`[DEBUG] Container ${idx}: hasInput=${!!input}, hasRoiDropdown=${hasRoiDropdown}`);
-
-          if (input && hasRoiDropdown && !input.disabled && !input.readOnly) {
-            const placeholder = (input.placeholder || '').toLowerCase();
-            console.log(`[DEBUG] Container ${idx}: placeholder="${input.placeholder}", inputId="${input.id}"`);
-
-            if (!placeholder.includes('trigger price')) {
-              const containerRect = container.getBoundingClientRect();
-              const result = {
-                containerId: container.id || null,
-                inputId: input.id || null,
-                containerX: containerRect.x,
-                containerY: containerRect.y,
-                containerWidth: containerRect.width,
-                containerHeight: containerRect.height
-              };
-              console.log(`[DEBUG] ✅ Selected container ${idx} for ${sectionName}: containerId="${result.containerId}", inputId="${result.inputId}"`);
-              return result;
-            } else {
-              console.log(`[DEBUG] Container ${idx} skipped: placeholder contains "trigger price"`);
-            }
-          }
-        }
-
-        console.log(`[DEBUG] ❌ No suitable container found for ${sectionName}`);
-        return null;
-      }, sectionName);
-
-      if (!inputInfo || !inputInfo.inputId) {
-        console.log(`[${exchange.name}] ⚠️  Could not find ROI% input container for ${sectionName}`);
-        return false;
-      }
-
-      console.log(`[${exchange.name}] 🔍 [INPUT FINDING] Found input for ${sectionName}: containerId="${inputInfo.containerId}", inputId="${inputInfo.inputId}"`);
-
-      // Click on the left side of the container and type the value
-      try {
-        console.log(`[${exchange.name}] 🔧 [INPUT FILLING] Attempting to fill input for ${sectionName} with value: ${value}`);
-
-        // adding new code
-        const dropdownInfo = await page.evaluate((inputId) => {
-          console.log(`[DEBUG] Starting dropdown search for inputId: ${inputId}`);
-          const input = document.getElementById(inputId);
-          if (!input) {
-            console.log(`[DEBUG] ❌ Input not found by inputId`);
-            return null;
-          }
-
-          console.log(`[DEBUG] ✅ Input found, searching for parentSpan...`);
-          // Find the parent span with class containing "inputAffixWrapper"
-          let parentSpan = input.parentElement;
-          let spanLevel = 0;
-          while (parentSpan && (!parentSpan.className || !parentSpan.className.includes('inputAffixWrapper'))) {
-            parentSpan = parentSpan.parentElement;
-            spanLevel++;
-            if (spanLevel > 10) break;
-          }
-
-          if (!parentSpan) {
-            console.log(`[DEBUG] ❌ ParentSpan with inputAffixWrapper not found`);
-            return null;
-          }
-
-          console.log(`[DEBUG] ✅ ParentSpan found at level ${spanLevel}`);
-
-          // Try to find the combobox input inside the suffix span
-          const combobox = parentSpan.querySelector('input[role="combobox"]');
-          if (combobox && combobox.id) {
-            console.log(`[DEBUG] ✅ Found combobox with id: ${combobox.id}`);
-            return { type: 'combobox', id: combobox.id };
-          } else {
-            console.log(`[DEBUG] ⚠️  Combobox not found`);
-          }
-
-          // Try to find the selectControl div
-          const selectControl = parentSpan.querySelector('div[class*="selectControl"]');
-          if (selectControl) {
-            console.log(`[DEBUG] ✅ Found selectControl with id: ${selectControl.id || 'no-id'}`);
-            return { type: 'selectControl', id: selectControl.id || null };
-          } else {
-            console.log(`[DEBUG] ⚠️  SelectControl not found`);
-          }
-
-          // Try to find the suffix span
-          const suffixSpan = parentSpan.querySelector('span[class*="suffix"]');
-          if (suffixSpan) {
-            console.log(`[DEBUG] ✅ Found suffix span with id: ${suffixSpan.id || 'no-id'}`);
-            return { type: 'suffix', id: suffixSpan.id || null };
-          } else {
-            console.log(`[DEBUG] ⚠️  Suffix span not found`);
-          }
-
-          console.log(`[DEBUG] ❌ No dropdown element found`);
-          return null;
-        }, inputInfo.inputId);
-
-        if (dropdownInfo) {
-          console.log(`[${exchange.name}] 🔍 [DROPDOWN FINDING] Found dropdown element: type="${dropdownInfo.type}", id="${dropdownInfo.id}"`);
-
-          // Use suffix span method (the only working method based on logs)
-          console.log(`[${exchange.name}] 🔧 [DROPDOWN CLICK] Attempting to click suffix span...`);
-          let clicked = false;
-          let clickMethod = 'suffix';
-
-          try {
-            const suffixHandle = await page.evaluateHandle((inputId) => {
-              const input = document.getElementById(inputId);
-              if (!input) return null;
-              let parentSpan = input.parentElement;
-              while (parentSpan && (!parentSpan.className || !parentSpan.className.includes('inputAffixWrapper'))) {
-                parentSpan = parentSpan.parentElement;
-              }
-              if (!parentSpan) return null;
-              return parentSpan.querySelector('span[class*="suffix"]');
-            }, inputInfo.inputId);
-
-            const suffixEl = suffixHandle.asElement();
-            if (suffixEl) {
-              await suffixEl.evaluate(el => el.scrollIntoView({ behavior: 'smooth', block: 'center' }));
-              await delay(100);
-              await suffixEl.click();
-              clicked = true;
-              console.log(`[${exchange.name}] ✅ [DROPDOWN CLICK] Clicked ROI% suffix span for ${sectionName} (METHOD: suffix)`);
-            } else {
-              console.log(`[${exchange.name}] ⚠️  [DROPDOWN CLICK] Suffix element not found`);
-            }
-          } catch (error) {
-            console.log(`[${exchange.name}] ⚠️  [DROPDOWN CLICK] Error clicking suffix span: ${error.message}`);
-          }
-
-          if (!clicked) {
-            console.log(`[${exchange.name}] ❌ [DROPDOWN CLICK] Suffix click method failed for ${sectionName}`);
-          }
-
-          if (clicked) {
-            // Wait for dropdown to expand and show options
-            console.log(`[${exchange.name}] ⏳ [DROPDOWN EXPAND] Waiting for ROI% dropdown to expand for ${sectionName} (clicked via: ${clickMethod})...`);
-            let dropdownExpanded = false;
-            let expandAttempts = 0;
-            for (let i = 0; i < 15; i++) {
-              expandAttempts = i + 1;
-              dropdownExpanded = await page.evaluate(() => {
-                const allElements = Array.from(document.querySelectorAll('*'));
-                for (const el of allElements) {
-                  const text = (el.textContent || '').trim();
-                  if (text === 'P&L' || text === 'P/L' || text === 'ROI%' || text === 'Offset%') {
-                    const style = window.getComputedStyle(el);
-                    if (style.display !== 'none' && style.visibility !== 'hidden' && el.offsetParent !== null) {
-                      // Check if it's in a visible dropdown menu
-                      let parent = el.parentElement;
-                      for (let j = 0; j < 5 && parent; j++) {
-                        const parentStyle = window.getComputedStyle(parent);
-                        if (parentStyle.display !== 'none' && parentStyle.visibility !== 'hidden') {
-                          return true;
-                        }
-                        parent = parent.parentElement;
-                      }
-                    }
-                  }
-                }
-                return false;
-              });
-
-              if (dropdownExpanded) {
-                console.log(`[${exchange.name}] ✅ [DROPDOWN EXPAND] ROI% dropdown expanded for ${sectionName} after ${expandAttempts} attempt(s)`);
-                break;
-              }
-              await delay(200);
-            }
-
-            if (!dropdownExpanded) {
-              console.log(`[${exchange.name}] ⚠️  [DROPDOWN EXPAND] Dropdown did not expand after ${expandAttempts} attempts`);
-            }
-
-            await delay(200);
-
-            // Use keyboard navigation to select P&L: press ArrowDown twice, then Enter
-            console.log(`[${exchange.name}] ⌨️  [P&L SELECTION] Using keyboard navigation to select P&L in ROI% dropdown for ${sectionName}...`);
-            await page.keyboard.press('ArrowDown');
-            await delay(100);
-            await page.keyboard.press('ArrowDown');
-            await delay(100);
-            await page.keyboard.press('Enter');
-            await delay(200);
-            console.log(`[${exchange.name}] ✅ [P&L SELECTION] Selected "P&L" in ROI% dropdown for ${sectionName} using keyboard navigation (ArrowDown x2, Enter)`);
-          } else {
-            console.log(`[${exchange.name}] ❌ [DROPDOWN CLICK] Could not click ROI% dropdown for ${sectionName} - all methods failed`);
-          }
-        } else {
-          console.log(`[${exchange.name}] ❌ [DROPDOWN FINDING] Could not find ROI% dropdown element for ${sectionName}`);
-        }
-        // ending new code
-
-        // const filled = await page.evaluate((inputId, val) => {
-        //   console.log(`[DEBUG] Starting input fill: inputId="${inputId}", value="${val}"`);
-
-        //   // Find the input and container by traversing up from input
-        //   const input = document.getElementById(inputId);
-        //   if (!input) {
-        //     console.log(`[DEBUG] ❌ Input not found by inputId`);
-        //     return false;
-        //   }
-
-        //   console.log(`[DEBUG] Found input by inputId, searching for container...`);
-        //   // Go up to find the textFieldContainer
-        //   let container = null;
-        //   let parent = input.parentElement;
-        //   for (let i = 0; i < 5 && parent; i++) {
-        //     if (parent.className && parent.className.includes && parent.className.includes('textFieldContainer')) {
-        //       container = parent;
-        //       console.log(`[DEBUG] ✅ Found container by input parent at level ${i}`);
-        //       break;
-        //     }
-        //     parent = parent.parentElement;
-        //   }
-
-        //   if (!container) {
-        //     console.log(`[DEBUG] ❌ Could not find container`);
-        //     return false;
-        //   }
-
-        //   console.log(`[DEBUG] ✅ Container found using method: byInputParent`);
-        //   container.scrollIntoView({ behavior: 'smooth', block: 'center' });
-
-        //   // Click on the left side of the container (where the input is)
-        //   const containerRect = container.getBoundingClientRect();
-        //   const clickX = containerRect.left + (containerRect.width / 4); // Click on left quarter
-        //   const clickY = containerRect.top + (containerRect.height / 2);
-
-        //   console.log(`[DEBUG] Clicking container at position: x=${clickX}, y=${clickY}`);
-
-        //   // Create and dispatch click event on the container at left side
-        //   const clickEvent = new MouseEvent('click', {
-        //     view: window,
-        //     bubbles: true,
-        //     cancelable: true,
-        //     clientX: clickX,
-        //     clientY: clickY
-        //   });
-
-        //   container.dispatchEvent(clickEvent);
-        //   console.log(`[DEBUG] ✅ Click event dispatched on container`);
-
-        //   // Focus the input
-        //   input.focus();
-        //   input.select();
-        //   console.log(`[DEBUG] ✅ Input focused and selected`);
-
-        //   // Type the value
-        //   input.value = val;
-        //   console.log(`[DEBUG] ✅ Input value set to: ${val}`);
-
-        //   // Trigger input events
-        //   input.dispatchEvent(new Event('input', { bubbles: true }));
-        //   input.dispatchEvent(new Event('change', { bubbles: true }));
-        //   input.dispatchEvent(new Event('blur', { bubbles: true }));
-        //   console.log(`[DEBUG] ✅ Input events triggered`);
-
-        //   return { success: true, method: 'byInputParent' };
-        // }, inputInfo.inputId, value);
-
-        // 🔥 Let UI settle after dropdown selection
-        await delay(200);
-
-        console.log(`[${exchange.name}] ✍️ [INPUT FILL] Activating Puppeteer-based fill`);
-
-        // Click inside the input area (using container coordinates you already have)
-        const clickX = inputInfo.containerX + inputInfo.containerWidth * 0.25;
-        const clickY = inputInfo.containerY + inputInfo.containerHeight / 2;
-
-        await page.mouse.click(clickX, clickY, { delay: 50 });
-        await delay(100);
-
-        // Clear existing value
-        await page.keyboard.down('Control');
-        await page.keyboard.press('A');
-        await page.keyboard.up('Control');
-        await page.keyboard.press('Backspace');
-
-        // Type value (this updates React state)
-        await page.keyboard.type(value.toString(), { delay: 50 });
-
-        console.log(`[${exchange.name}] ✅ [INPUT FILL] Value filled successfully`);
-        await delay(200);
-        return true;
-      } catch (error) {
-        console.log(`[${exchange.name}] ⚠️  Error filling ${sectionName} ROI% input: ${error.message}`);
-        return false;
-      }
-    };
-
-    // Helper function to select "Limit" in Market dropdown for a section
-    const selectLimitInMarketDropdown = async (sectionName) => {
-      console.log(`[${exchange.name}] Selecting Limit in Market dropdown for ${sectionName}...`);
-      
-      try {
-        // Find the Market dropdown for the section
-        const marketDropdownInfo = await page.evaluate((sectionName) => {
-          console.log(`[DEBUG] Starting to find Market dropdown for section: ${sectionName}`);
-          
-          // Find the section by header text
-          const allElements = Array.from(document.querySelectorAll('*'));
-          let sectionHeader = null;
-          
-          for (const el of allElements) {
-            const text = (el.textContent || '').trim().toLowerCase();
-            if (text === sectionName.toLowerCase() && el.offsetParent !== null) {
-              sectionHeader = el;
-              console.log(`[DEBUG] Found section header for ${sectionName}`);
-              break;
-            }
-          }
-          
-          if (!sectionHeader) {
-            console.log(`[DEBUG] Could not find section header for ${sectionName}`);
-            return null;
-          }
-          
-          // Find the section container
-          let sectionContainer = sectionHeader.parentElement;
-          for (let i = 0; i < 10 && sectionContainer; i++) {
-            const hasMarket = Array.from(sectionContainer.querySelectorAll('*')).some(el => {
-              const text = (el.textContent || '').trim();
-              return text === 'Market' && el.offsetParent !== null;
-            });
-            if (hasMarket) {
-              console.log(`[DEBUG] Found section container with Market at level ${i}`);
-              break;
-            }
-            sectionContainer = sectionContainer.parentElement;
-          }
-          
-          if (!sectionContainer) {
-            console.log(`[DEBUG] Could not find section container for ${sectionName}`);
-            return null;
-          }
-          
-          // Find the Market dropdown - look for selectControl that contains "Market" in singleValue div
-          // Structure: div[class*="selectControl"] > div[class*="selectValueContainer"] > div[class*="singleValue"] with text "Market"
-          const allSelectControls = Array.from(sectionContainer.querySelectorAll('div[class*="selectControl"]'));
-          console.log(`[DEBUG] Found ${allSelectControls.length} selectControl(s) in section`);
-          
-          for (let idx = 0; idx < allSelectControls.length; idx++) {
-            const selectControl = allSelectControls[idx];
-            
-            // Check if this selectControl contains "Market" text in a singleValue div
-            const singleValue = selectControl.querySelector('div[class*="singleValue"]');
-            if (singleValue) {
-              const text = (singleValue.textContent || '').trim();
-              if (text === 'Market' && singleValue.offsetParent !== null) {
-                // Found the Market dropdown - return index and structure info
-                const hasDropdownIndicator = !!selectControl.querySelector('div[class*="dropdownIndicator"]');
-                console.log(`[DEBUG] ✅ Found Market dropdown for ${sectionName} at index ${idx}, hasDropdownIndicator=${hasDropdownIndicator}`);
-                return { found: true, index: idx, hasDropdownIndicator: hasDropdownIndicator };
-              }
-            }
-          }
-          
-          console.log(`[DEBUG] ❌ No Market dropdown found for ${sectionName}`);
-          return null;
-        }, sectionName);
-        
-        if (!marketDropdownInfo || !marketDropdownInfo.found) {
-          console.log(`[${exchange.name}] ⚠️  Could not find Market dropdown for ${sectionName}`);
-          return false;
-        }
-        
-        console.log(`[${exchange.name}] 🔍 [MARKET DROPDOWN FINDING] Found Market dropdown for ${sectionName} at index ${marketDropdownInfo.index}`);
-        
-        // Click on the Market dropdown - find and click using class selectors (no IDs)
-        console.log(`[${exchange.name}] 🔧 [MARKET DROPDOWN CLICK] Attempting to click Market dropdown for ${sectionName}...`);
-        let clicked = false;
-        
-        try {
-          // Find and click the selectControl by section name and Market text (using class selectors)
-          const selectControlHandle = await page.evaluateHandle((sectionName) => {
-            // Find section header
-            const allElements = Array.from(document.querySelectorAll('*'));
-            let sectionHeader = null;
-            for (const el of allElements) {
-              const text = (el.textContent || '').trim().toLowerCase();
-              if (text === sectionName.toLowerCase() && el.offsetParent !== null) {
-                sectionHeader = el;
-                break;
-              }
-            }
-            if (!sectionHeader) return null;
-            
-            // Find section container
-            let sectionContainer = sectionHeader.parentElement;
-            for (let i = 0; i < 10 && sectionContainer; i++) {
-              const hasMarket = Array.from(sectionContainer.querySelectorAll('*')).some(el => {
-                const text = (el.textContent || '').trim();
-                return text === 'Market' && el.offsetParent !== null;
-              });
-              if (hasMarket) break;
-              sectionContainer = sectionContainer.parentElement;
-            }
-            if (!sectionContainer) return null;
-            
-            // Find selectControl that contains "Market" in singleValue div
-            const selectControls = Array.from(sectionContainer.querySelectorAll('div[class*="selectControl"]'));
-            for (const selectControl of selectControls) {
-              const singleValue = selectControl.querySelector('div[class*="singleValue"]');
-              if (singleValue) {
-                const text = (singleValue.textContent || '').trim();
-                if (text === 'Market' && singleValue.offsetParent !== null) {
-                  return selectControl;
-                }
-              }
-            }
-            return null;
-          }, sectionName);
-          
-          const selectControlEl = selectControlHandle.asElement();
-          if (selectControlEl) {
-            await selectControlEl.evaluate(el => el.scrollIntoView({ behavior: 'smooth', block: 'center' }));
-            await delay(100);
-            await selectControlEl.click();
-            clicked = true;
-            console.log(`[${exchange.name}] ✅ [MARKET DROPDOWN CLICK] Clicked Market selectControl for ${sectionName} (using class selectors)`);
-          } else {
-            console.log(`[${exchange.name}] ⚠️  [MARKET DROPDOWN CLICK] SelectControl element not found`);
-          }
-          
-          // Fallback: try clicking the dropdownIndicator if selectControl click didn't work
-          if (!clicked) {
-            const dropdownIndicatorHandle = await page.evaluateHandle((sectionName) => {
-              // Find section header
-              const allElements = Array.from(document.querySelectorAll('*'));
-              let sectionHeader = null;
-              for (const el of allElements) {
-                const text = (el.textContent || '').trim().toLowerCase();
-                if (text === sectionName.toLowerCase() && el.offsetParent !== null) {
-                  sectionHeader = el;
+          const text = (el.textContent || '').trim();
+          if (text === 'TP/SL' && el.offsetParent !== null) {
+            // Walk up to find the modal container
+            let parent = el.parentElement;
+            for (let i = 0; i < 10 && parent; i++) {
+              const style = window.getComputedStyle(parent);
+              if (style.display !== 'none' && style.visibility !== 'hidden' &&
+                parent.offsetWidth > 0 && parent.offsetHeight > 0) {
+                // Check if this parent contains both "Take profit" and "Stop loss"
+                const parentText = (parent.textContent || '').toLowerCase();
+                if (parentText.includes('take profit') && parentText.includes('stop loss')) {
+                  tpslModal = parent;
                   break;
                 }
               }
-              if (!sectionHeader) return null;
-              
-              // Find section container
-              let sectionContainer = sectionHeader.parentElement;
-              for (let i = 0; i < 10 && sectionContainer; i++) {
-                const hasMarket = Array.from(sectionContainer.querySelectorAll('*')).some(el => {
-                  const text = (el.textContent || '').trim();
-                  return text === 'Market' && el.offsetParent !== null;
-                });
-                if (hasMarket) break;
-                sectionContainer = sectionContainer.parentElement;
-              }
-              if (!sectionContainer) return null;
-              
-              // Find selectControl with Market, then find its dropdownIndicator
-              const selectControls = Array.from(sectionContainer.querySelectorAll('div[class*="selectControl"]'));
-              for (const selectControl of selectControls) {
-                const singleValue = selectControl.querySelector('div[class*="singleValue"]');
-                if (singleValue) {
-                  const text = (singleValue.textContent || '').trim();
-                  if (text === 'Market' && singleValue.offsetParent !== null) {
-                    const dropdownIndicator = selectControl.querySelector('div[class*="dropdownIndicator"]');
-                    if (dropdownIndicator) return dropdownIndicator;
-                  }
-                }
-              }
-              return null;
-            }, sectionName);
-            
-            const dropdownIndicatorEl = dropdownIndicatorHandle.asElement();
-            if (dropdownIndicatorEl) {
-              await dropdownIndicatorEl.evaluate(el => el.scrollIntoView({ behavior: 'smooth', block: 'center' }));
-              await delay(100);
-              await dropdownIndicatorEl.click();
-              clicked = true;
-              console.log(`[${exchange.name}] ✅ [MARKET DROPDOWN CLICK] Clicked Market dropdownIndicator for ${sectionName} (fallback)`);
+              parent = parent.parentElement;
             }
+            if (tpslModal) break;
           }
-        } catch (error) {
-          console.log(`[${exchange.name}] ⚠️  [MARKET DROPDOWN CLICK] Error clicking Market dropdown: ${error.message}`);
+        }
+
+        if (!tpslModal) {
+          return { success: false, step: 1, message: 'TP/SL modal not found' };
+        }
+
+        // Step 2: Find element with text matching sectionName ("Take profit" or "Stop loss")
+        const sectionNameLower = sectionName.toLowerCase();
+        let sectionElement = null;
+        
+        // Search all elements in modal for section header
+        const modalElements = Array.from(tpslModal.querySelectorAll('*'));
+        for (const el of modalElements) {
+          const text = (el.textContent || '').trim();
+          // Match exact text (case-insensitive) - "Take profit" or "Stop loss"
+          if (text.toLowerCase() === sectionNameLower && el.offsetParent !== null) {
+            sectionElement = el;
+            break;
+          }
+        }
+
+        if (!sectionElement) {
+          return { 
+            success: false, 
+            step: 2, 
+            message: `Could not find element with text "${sectionName}"`
+          };
+        }
+
+        // Step 3: Find sectionElement's parent (the section container)
+        const sectionParent = sectionElement.parentElement;
+        if (!sectionParent) {
+          return { success: false, step: 3, message: `Could not find parent of "${sectionName}" element` };
+        }
+
+        // Step 4: Inside sectionParent, find element with text "ROI%" and click on it directly
+        const allDescendants = Array.from(sectionParent.querySelectorAll('*'));
+        let roiElement = null;
+        
+        for (const el of allDescendants) {
+          const text = (el.textContent || '').trim();
+          // Match exact "ROI%" text
+          if (text === 'ROI%' && el.offsetParent !== null) {
+            roiElement = el;
+            break;
+          }
+        }
+
+        if (!roiElement) {
+          return { 
+            success: false, 
+            step: 4, 
+            message: `Could not find "ROI%" element inside "${sectionName}" parent`
+          };
+        }
+
+        // Get the ROI% element's bounding rect for clicking
+        const rect = roiElement.getBoundingClientRect();
+        
+        // DEBUG: Find all inputs (not labels) with empty or whitespace placeholder and className containing "text"
+        const allInputsInModal = Array.from(tpslModal.querySelectorAll('input'));
+        const emptyPlaceholderInputs = [];
+        for (const input of allInputsInModal) {
+          // Only process input elements (not labels)
+          if (input.tagName !== 'INPUT') continue;
+          
+          const placeholder = input.getAttribute('placeholder') || '';
+          const className = input.className || '';
+          
+          // Check if placeholder is empty or only whitespace AND className contains "text"
+          if ((placeholder.trim() === '' || placeholder === ' ') && className.toLowerCase().includes('text')) {
+            emptyPlaceholderInputs.push({
+              className: className
+            });
+          }
         }
         
-        if (!clicked) {
-          console.log(`[${exchange.name}] ❌ [MARKET DROPDOWN CLICK] Could not click Market dropdown for ${sectionName}`);
-          return false;
+        return {
+          success: true,
+          clickX: rect.x + rect.width / 2,
+          clickY: rect.y + rect.height / 2,
+          debugInfo: {
+            emptyPlaceholderInputsCount: emptyPlaceholderInputs.length,
+            emptyPlaceholderInputs: emptyPlaceholderInputs
+          }
+        };
+      }, sectionName);
+      } catch (error) {
+        console.log(`[${exchange.name}] ❌ [ROI% FINDING] Error during page.evaluate: ${error.message}`);
+        return false;
+      }
+
+      if (!roiParentInfo) {
+        console.log(`[${exchange.name}] [ROI% FINDING] Evaluation returned null/undefined`);
+        return false;
+      }
+
+      if (!roiParentInfo.success) {
+        console.log(`[${exchange.name}] [ROI% FINDING] ❌ Step ${roiParentInfo.step} failed: ${roiParentInfo.message}`);
+        if (roiParentInfo.sampleTexts) {
+          console.log(`[${exchange.name}] [ROI% FINDING] Sample texts found in modal: ${roiParentInfo.sampleTexts.join(', ')}`);
         }
+        if (roiParentInfo.roiTexts) {
+          console.log(`[${exchange.name}] [ROI% FINDING] ROI-related texts found: ${roiParentInfo.roiTexts.join(', ')}`);
+        }
+        return false;
+      }
+
+      console.log(`[${exchange.name}] [ROI% FINDING] ✅ Successfully found ROI% element`);
+      console.log(`[${exchange.name}] 🔍 [ROI% ELEMENT] Found ROI% element for ${sectionName} at coordinates (${roiParentInfo.clickX}, ${roiParentInfo.clickY})`);
+      
+      // Log debug info about inputs with empty placeholders (from browser context)
+      if (roiParentInfo.debugInfo) {
+        console.log(`[${exchange.name}] [DEBUG] Found ${roiParentInfo.debugInfo.emptyPlaceholderInputsCount} input(s) with empty or whitespace placeholder in TP/SL modal`);
+        roiParentInfo.debugInfo.emptyPlaceholderInputs.forEach((input, idx) => {
+          console.log(`[${exchange.name}] [DEBUG] Input ${idx + 1} class: "${input.className}"`);
+        });
+      }
+
+      try {
+        // Phase 1: Click on ROI% element, then press ArrowDown twice and Enter
+        console.log(`[${exchange.name}] 🔧 [PHASE 1] Clicking on ROI% element for ${sectionName}...`);
+        await page.mouse.click(roiParentInfo.clickX, roiParentInfo.clickY);
+        await delay(300);
+        console.log(`[${exchange.name}] ✅ Clicked ROI% element for ${sectionName}`);
         
-        // Wait for dropdown to expand and show options
-        console.log(`[${exchange.name}] ⏳ [MARKET DROPDOWN EXPAND] Waiting for Market dropdown to expand for ${sectionName}...`);
-        let dropdownExpanded = false;
-        let expandAttempts = 0;
-        for (let i = 0; i < 15; i++) {
-          expandAttempts = i + 1;
-          dropdownExpanded = await page.evaluate(() => {
-            const allElements = Array.from(document.querySelectorAll('*'));
-            for (const el of allElements) {
-              const text = (el.textContent || '').trim();
-              if (text === 'Market' || text === 'Limit') {
-                const style = window.getComputedStyle(el);
-                if (style.display !== 'none' && style.visibility !== 'hidden' && el.offsetParent !== null) {
-                  // Check if it's in a visible dropdown menu
-                  let parent = el.parentElement;
-                  for (let j = 0; j < 5 && parent; j++) {
-                    const parentStyle = window.getComputedStyle(parent);
-                    if (parentStyle.display !== 'none' && parentStyle.visibility !== 'hidden') {
-                      return true;
-                    }
-                    parent = parent.parentElement;
-                  }
+        // Press ArrowDown twice, then press Enter to select P&L
+        console.log(`[${exchange.name}] ⌨️  Pressing ArrowDown x2 for ${sectionName} ROI%...`);
+        await page.keyboard.press('ArrowDown');
+        await delay(300);
+        await page.keyboard.press('ArrowDown');
+        await delay(300);
+        
+        // Wait for dropdown to be ready
+        console.log(`[${exchange.name}] ⏳ Waiting for ROI% dropdown to be ready...`);
+        let dropdownReady = false;
+        for (let i = 0; i < 10; i++) {
+          const checkResult = await page.evaluate(() => {
+            const listboxes = Array.from(document.querySelectorAll('[role="listbox"]'));
+            const menus = Array.from(document.querySelectorAll('[role="menu"]'));
+            const allDropdowns = [...listboxes, ...menus];
+            
+            for (const menu of allDropdowns) {
+              const style = window.getComputedStyle(menu);
+              if (style.display !== 'none' && style.visibility !== 'hidden') {
+                const rect = menu.getBoundingClientRect();
+                if (rect.width > 0 && rect.height > 0) {
+                  return { ready: true };
                 }
               }
             }
-            return false;
+            return { ready: false };
           });
           
-          if (dropdownExpanded) {
-            console.log(`[${exchange.name}] ✅ [MARKET DROPDOWN EXPAND] Market dropdown expanded for ${sectionName} after ${expandAttempts} attempt(s)`);
+          if (checkResult.ready) {
+            dropdownReady = true;
             break;
           }
           await delay(200);
         }
         
-        if (!dropdownExpanded) {
-          console.log(`[${exchange.name}] ⚠️  [MARKET DROPDOWN EXPAND] Dropdown did not expand after ${expandAttempts} attempts`);
+        if (!dropdownReady) {
+          console.log(`[${exchange.name}] ⚠️  ROI% dropdown not ready, proceeding anyway...`);
         }
         
         await delay(200);
         
-        // Use keyboard navigation to select Limit: press ArrowDown once, then Enter
-        console.log(`[${exchange.name}] ⌨️  [LIMIT SELECTION] Using keyboard navigation to select Limit in Market dropdown for ${sectionName}...`);
-        await page.keyboard.press('ArrowDown');
-        await delay(100);
+        // Press Enter to select P&L option
+        console.log(`[${exchange.name}] ⌨️  Pressing Enter to select P&L option...`);
         await page.keyboard.press('Enter');
-        await delay(200);
-        console.log(`[${exchange.name}] ✅ [LIMIT SELECTION] Selected "Limit" in Market dropdown for ${sectionName} using keyboard navigation (ArrowDown x1, Enter)`);
+        await delay(500);
         
+        // Wait for ROI% dropdown to close and P&L to be selected
+        console.log(`[${exchange.name}] ⏳ Waiting for ROI% dropdown to close and P&L to be selected...`);
+        let roiDropdownClosed = false;
+        for (let i = 0; i < 10; i++) {
+          const checkResult = await page.evaluate(() => {
+            // Check if any dropdown is still open
+            const listboxes = Array.from(document.querySelectorAll('[role="listbox"]'));
+            const menus = Array.from(document.querySelectorAll('[role="menu"]'));
+            const allDropdowns = [...listboxes, ...menus];
+            
+            for (const menu of allDropdowns) {
+              const style = window.getComputedStyle(menu);
+              if (style.display !== 'none' && style.visibility !== 'hidden') {
+                const rect = menu.getBoundingClientRect();
+                if (rect.width > 0 && rect.height > 0) {
+                  return { open: true };
+                }
+              }
+            }
+            return { open: false };
+          });
+          
+          if (!checkResult.open) {
+            roiDropdownClosed = true;
+            break;
+          }
+          await delay(200);
+        }
+        
+        if (!roiDropdownClosed) {
+          console.log(`[${exchange.name}] ⚠️  ROI% dropdown did not close within timeout`);
+        }
+        
+        await delay(300); // Additional delay to ensure UI is stable
+        
+        // Check if modal is still open after selection
+        const modalStillOpenAfter = await page.evaluate(() => {
+          const allElements = Array.from(document.querySelectorAll('*'));
+          for (const el of allElements) {
+            const text = (el.textContent || '').trim();
+            if (text === 'TP/SL' && el.offsetParent !== null) {
+              let parent = el.parentElement;
+              for (let i = 0; i < 10 && parent; i++) {
+                const style = window.getComputedStyle(parent);
+                if (style.display !== 'none' && style.visibility !== 'hidden' &&
+                  parent.offsetWidth > 0 && parent.offsetHeight > 0) {
+                  const parentText = (parent.textContent || '').toLowerCase();
+                  if (parentText.includes('take profit') && parentText.includes('stop loss')) {
+                    return true; // Modal is still open
+                  }
+                }
+                parent = parent.parentElement;
+              }
+            }
+          }
+          return false; // Modal not found or closed
+        });
+        
+        if (!modalStillOpenAfter) {
+          console.log(`[${exchange.name}] ⚠️  Modal closed after ROI% dropdown selection`);
+          return false;
+        }
+        
+        console.log(`[${exchange.name}] ✅ [PHASE 1] Completed ROI% dropdown selection for ${sectionName} (modal still open)`);
+        
+        await delay(500); // Wait before moving to Phase 2
+        
+        // Phase 2: Find Market dropdown within the specific section and click it
+        console.log(`[${exchange.name}] 🔧 [PHASE 2] Finding Market dropdown Select element for ${sectionName}...`);
+        const selectElementInfo = await page.evaluate((sectionName) => {
+          // Find the TP/SL modal
+          const allElements = Array.from(document.querySelectorAll('*'));
+          let tpslModal = null;
+          
+          for (const el of allElements) {
+            const text = (el.textContent || '').trim();
+            if (text === 'TP/SL' && el.offsetParent !== null) {
+              let parent = el.parentElement;
+              for (let i = 0; i < 10 && parent; i++) {
+                const style = window.getComputedStyle(parent);
+                if (style.display !== 'none' && style.visibility !== 'hidden' &&
+                  parent.offsetWidth > 0 && parent.offsetHeight > 0) {
+                  const parentText = (parent.textContent || '').toLowerCase();
+                  if (parentText.includes('take profit') && parentText.includes('stop loss')) {
+                    tpslModal = parent;
+                    break;
+                  }
+                }
+                parent = parent.parentElement;
+              }
+              if (tpslModal) break;
+            }
+          }
+          
+          if (!tpslModal) return { success: false, message: 'TP/SL modal not found' };
+          
+          // Step 1: Find the section element (Take profit or Stop loss)
+          const sectionNameLower = sectionName.toLowerCase();
+          let sectionElement = null;
+          
+          const modalElements = Array.from(tpslModal.querySelectorAll('*'));
+          for (const el of modalElements) {
+            const text = (el.textContent || '').trim();
+            if (text.toLowerCase() === sectionNameLower && el.offsetParent !== null) {
+              sectionElement = el;
+              break;
+            }
+          }
+          
+          if (!sectionElement) {
+            return { success: false, message: `Could not find "${sectionName}" section` };
+          }
+          
+          // Step 2: Find the section parent container that contains this section's Market dropdown
+          // Walk up to find a container that has Market dropdown but doesn't have the other section
+          let sectionParent = sectionElement.parentElement;
+          const otherSectionName = sectionNameLower.includes('profit') ? 'stop loss' : 'take profit';
+          
+          for (let i = 0; i < 10 && sectionParent; i++) {
+            const allDescendants = Array.from(sectionParent.querySelectorAll('*'));
+            let hasMarketSelect = false;
+            let hasOtherSection = false;
+            
+            for (const el of allDescendants) {
+              // Check for Market text in a singleValue element (the actual Market dropdown value)
+              const text = (el.textContent || '').trim();
+              if (text === 'Market' && el.offsetParent !== null) {
+                // Check if this is inside a Select element with data-sentry-component="Select"
+                let parent = el.parentElement;
+                for (let j = 0; j < 5 && parent; j++) {
+                  if (parent.getAttribute && parent.getAttribute('data-sentry-component') === 'Select') {
+                    hasMarketSelect = true;
+                    break;
+                  }
+                  parent = parent.parentElement;
+                }
+              }
+              // Check if this container has the OTHER section (we don't want that)
+              if (text.toLowerCase() === otherSectionName && el.offsetParent !== null) {
+                hasOtherSection = true;
+                break;
+              }
+            }
+            
+            // If this container has Market Select and doesn't have the other section, it's the right container
+            if (hasMarketSelect && !hasOtherSection) {
+              break;
+            }
+            
+            sectionParent = sectionParent.parentElement;
+            if (!sectionParent) break;
+          }
+          
+          if (!sectionParent) {
+            sectionParent = sectionElement.parentElement;
+          }
+          
+          // Step 3: Find the Market dropdown Select element within this section
+          // Look for element with data-sentry-component="Select" that has "Market" in style_singleValue__arIDb
+          const allSelectElements = Array.from(sectionParent.querySelectorAll('[data-sentry-component="Select"]'));
+          
+          for (const selectEl of allSelectElements) {
+            if (selectEl.offsetParent === null) continue;
+            const style = window.getComputedStyle(selectEl);
+            if (style.display === 'none' || style.visibility === 'hidden') continue;
+            if (selectEl.offsetWidth === 0 || selectEl.offsetHeight === 0) continue;
+            
+            // Check if this Select element contains "Market" text in a singleValue element
+            // Look for div with class containing "singleValue" that has "Market" text
+            const singleValueElements = Array.from(selectEl.querySelectorAll('[class*="singleValue"]'));
+            for (const svEl of singleValueElements) {
+              const svText = (svEl.textContent || '').trim();
+              if (svText === 'Market') {
+                // Found the Market dropdown! Get the clickable area (the Select wrapper or control)
+                // Click on the control element (the clickable part of the dropdown)
+                const controlEl = selectEl.querySelector('.style_control__NtOg3') || selectEl;
+                const rect = controlEl.getBoundingClientRect();
+                return {
+                  success: true,
+                  clickX: rect.x + rect.width / 2,
+                  clickY: rect.y + rect.height / 2,
+                  sectionName: sectionName
+                };
+              }
+            }
+          }
+          
+          return {
+            success: false,
+            message: `Could not find Market Select element in "${sectionName}" section`
+          };
+        }, sectionName);
+        
+        if (!selectElementInfo || !selectElementInfo.success) {
+          console.log(`[${exchange.name}] ⚠️  Could not find Select element: ${selectElementInfo?.message || 'unknown error'}`);
+          return false;
+        }
+        
+        console.log(`[${exchange.name}] ✅ Found Market Select element for ${selectElementInfo.sectionName || sectionName}`);
+        
+        // Check if modal is still open before clicking
+        const modalStillOpenBeforeSelect = await page.evaluate(() => {
+          const allElements = Array.from(document.querySelectorAll('*'));
+          for (const el of allElements) {
+            const text = (el.textContent || '').trim();
+            if (text === 'TP/SL' && el.offsetParent !== null) {
+              let parent = el.parentElement;
+              for (let i = 0; i < 10 && parent; i++) {
+                const style = window.getComputedStyle(parent);
+                if (style.display !== 'none' && style.visibility !== 'hidden' &&
+                  parent.offsetWidth > 0 && parent.offsetHeight > 0) {
+                  const parentText = (parent.textContent || '').toLowerCase();
+                  if (parentText.includes('take profit') && parentText.includes('stop loss')) {
+                    return true;
+                  }
+                }
+                parent = parent.parentElement;
+              }
+            }
+          }
+          return false;
+        });
+        
+        if (!modalStillOpenBeforeSelect) {
+          console.log(`[${exchange.name}] ⚠️  Modal closed before clicking Select element`);
+          return false;
+        }
+        
+        // Click the Select element
+        console.log(`[${exchange.name}] 🔧 Clicking Market Select element for ${sectionName} at coordinates (${selectElementInfo.clickX}, ${selectElementInfo.clickY})...`);
+        await page.mouse.click(selectElementInfo.clickX, selectElementInfo.clickY);
+        await delay(500);
+        console.log(`[${exchange.name}] ✅ Clicked Market Select element for ${sectionName}`);
+        
+        // Wait for Select dropdown to open
+        console.log(`[${exchange.name}] ⏳ Waiting for Select dropdown to open...`);
+        let dropdownOpened = false;
+        for (let i = 0; i < 10; i++) {
+          const checkResult = await page.evaluate(() => {
+            // Check if dropdown is open
+            const listboxes = Array.from(document.querySelectorAll('[role="listbox"]'));
+            const menus = Array.from(document.querySelectorAll('[role="menu"]'));
+            const allDropdowns = [...listboxes, ...menus];
+            
+            // Also check for aria-expanded="true"
+            const expandedElements = Array.from(document.querySelectorAll('[aria-expanded="true"]'));
+            for (const el of expandedElements) {
+              const style = window.getComputedStyle(el);
+              if (style.display !== 'none' && style.visibility !== 'hidden' &&
+                el.offsetWidth > 0 && el.offsetHeight > 0) {
+                allDropdowns.push(el);
+              }
+            }
+            
+            for (const menu of allDropdowns) {
+              const style = window.getComputedStyle(menu);
+              if (style.display !== 'none' && style.visibility !== 'hidden') {
+                const rect = menu.getBoundingClientRect();
+                if (rect.width > 0 && rect.height > 0) {
+                  return { open: true };
+                }
+              }
+            }
+            return { open: false };
+          });
+          
+          if (checkResult.open) {
+            dropdownOpened = true;
+            break;
+          }
+          await delay(200);
+        }
+        
+        if (!dropdownOpened) {
+          console.log(`[${exchange.name}] ⚠️  Select dropdown did not open within timeout, proceeding anyway...`);
+        } else {
+          console.log(`[${exchange.name}] ✅ Select dropdown opened`);
+        }
+        
+        await delay(300); // Additional delay to ensure dropdown is fully open
+        
+        // Press ArrowDown once, then press Enter to select the option
+        console.log(`[${exchange.name}] ⌨️  Pressing ArrowDown x1, then Enter to select option...`);
+        await page.keyboard.press('ArrowDown');
+        await delay(300);
+        await page.keyboard.press('Enter');
+        await delay(300);
+        console.log(`[${exchange.name}] ✅ Pressed Enter to select option in Select dropdown`);
+        
+        // Check if modal is still open after selection
+        const modalStillOpenAfterSelect = await page.evaluate(() => {
+          const allElements = Array.from(document.querySelectorAll('*'));
+          for (const el of allElements) {
+            const text = (el.textContent || '').trim();
+            if (text === 'TP/SL' && el.offsetParent !== null) {
+              let parent = el.parentElement;
+              for (let i = 0; i < 10 && parent; i++) {
+                const style = window.getComputedStyle(parent);
+                if (style.display !== 'none' && style.visibility !== 'hidden' &&
+                  parent.offsetWidth > 0 && parent.offsetHeight > 0) {
+                  const parentText = (parent.textContent || '').toLowerCase();
+                  if (parentText.includes('take profit') && parentText.includes('stop loss')) {
+                    return true;
+                  }
+                }
+                parent = parent.parentElement;
+              }
+            }
+          }
+          return false;
+        });
+        
+        if (!modalStillOpenAfterSelect) {
+          console.log(`[${exchange.name}] ⚠️  Modal closed after Select dropdown selection`);
+          return false;
+        }
+        
+        console.log(`[${exchange.name}] ✅ [PHASE 2] Completed Market dropdown selection for ${sectionName} (modal still open)`);
+        
+        await delay(500); // Wait before moving to Phase 3
+        
+        // Phase 3: Fill input values - first input gets TAKE_PROFIT/10, second gets STOP_LOSS/10
+        console.log(`[${exchange.name}] 🔧 [PHASE 3] Filling input values for ${sectionName}...`);
+        
+        // Find input elements and get their selectors/identifiers
+        const inputInfo = await page.evaluate((sectionName) => {
+          // Find the TP/SL modal
+          const allElements = Array.from(document.querySelectorAll('*'));
+          let tpslModal = null;
+          
+          for (const el of allElements) {
+            const text = (el.textContent || '').trim();
+            if (text === 'TP/SL' && el.offsetParent !== null) {
+              let parent = el.parentElement;
+              for (let i = 0; i < 10 && parent; i++) {
+                const style = window.getComputedStyle(parent);
+                if (style.display !== 'none' && style.visibility !== 'hidden' &&
+                  parent.offsetWidth > 0 && parent.offsetHeight > 0) {
+                  const parentText = (parent.textContent || '').toLowerCase();
+                  if (parentText.includes('take profit') && parentText.includes('stop loss')) {
+                    tpslModal = parent;
+                    break;
+                  }
+                }
+                parent = parent.parentElement;
+              }
+              if (tpslModal) break;
+            }
+          }
+          
+          if (!tpslModal) return { success: false, message: 'TP/SL modal not found' };
+          
+          // Find all inputs with empty/whitespace placeholder and className containing "text"
+          const allInputsInModal = Array.from(tpslModal.querySelectorAll('input'));
+          const emptyPlaceholderInputs = [];
+          for (const input of allInputsInModal) {
+            if (input.tagName !== 'INPUT') continue;
+            const placeholder = input.getAttribute('placeholder') || '';
+            const className = input.className || '';
+            if ((placeholder.trim() === '' || placeholder === ' ') && className.toLowerCase().includes('text')) {
+              if (input.offsetParent !== null && !input.disabled && !input.readOnly) {
+                // Get unique identifier for the input (prefer ID, fallback to generating a selector)
+                let identifier = input.id || '';
+                if (!identifier) {
+                  // Generate a selector based on position and parent
+                  const parent = input.closest('[data-sentry-component]') || input.parentElement;
+                  const index = Array.from(parent.querySelectorAll('input')).indexOf(input);
+                  identifier = `input-${index}`;
+                }
+                emptyPlaceholderInputs.push({
+                  id: input.id || '',
+                  identifier: identifier,
+                  className: className,
+                  placeholder: placeholder
+                });
+              }
+            }
+          }
+          
+          return {
+            success: true,
+            inputsFound: emptyPlaceholderInputs.length,
+            inputs: emptyPlaceholderInputs
+          };
+        }, sectionName);
+        
+        if (!inputInfo || !inputInfo.success) {
+          console.log(`[${exchange.name}] ⚠️  Could not find inputs: ${inputInfo?.message || 'unknown error'}`);
+          return false;
+        }
+        
+        const takeProfitValue = (parseFloat(takeProfitPercent) / 10).toString();
+        const stopLossValue = (parseFloat(stopLossPercent) / 10).toString();
+        
+        // Type into first input (TAKE_PROFIT/10)
+        if (inputInfo.inputs.length >= 1) {
+          const firstInputInfo = inputInfo.inputs[0];
+          console.log(`[${exchange.name}] ⌨️  Typing into first input: ${takeProfitValue}...`);
+          
+          try {
+            // Find the input element using evaluateHandle (works with any ID, including colons)
+            let inputElement = null;
+            if (firstInputInfo.id) {
+              // Use evaluateHandle to get element by ID directly (handles special characters)
+              inputElement = await page.evaluateHandle((id) => {
+                return document.getElementById(id);
+              }, firstInputInfo.id);
+              
+              // Check if element was found
+              const isValid = await page.evaluate(el => el !== null && el !== undefined, inputElement);
+              if (!isValid) {
+                inputElement = null;
+              }
+            }
+            
+            // Fallback: find by className and position
+            if (!inputElement) {
+              const allInputs = await page.$$('input');
+              console.log(`[${exchange.name}] [DEBUG] Found ${allInputs.length} total input elements, searching for first matching input...`);
+              for (let i = 0; i < allInputs.length; i++) {
+                const input = allInputs[i];
+                const className = await page.evaluate(el => el.className || '', input);
+                const placeholder = await page.evaluate(el => el.getAttribute('placeholder') || '', input);
+                const id = await page.evaluate(el => el.id || '', input);
+                const isVisible = await page.evaluate(el => {
+                  const style = window.getComputedStyle(el);
+                  return el.offsetParent !== null && 
+                         style.display !== 'none' && 
+                         style.visibility !== 'hidden' &&
+                         !el.disabled && 
+                         !el.readOnly;
+                }, input);
+                
+                console.log(`[${exchange.name}] [DEBUG] Input ${i}: id="${id}", className="${className}", placeholder="${placeholder}", visible=${isVisible}`);
+                
+                if (className.toLowerCase().includes('text') && (placeholder.trim() === '' || placeholder === ' ') && isVisible) {
+                  inputElement = input;
+                  console.log(`[${exchange.name}] [DEBUG] Found first matching input at index ${i}`);
+                  break;
+                }
+              }
+            }
+            
+            if (inputElement) {
+              // Focus the input
+              await inputElement.focus();
+              await delay(200);
+              
+              // Select all existing text
+              await page.keyboard.down('Control');
+              await page.keyboard.press('KeyA');
+              await page.keyboard.up('Control');
+              await delay(100);
+              
+              // Clear existing value
+              await page.keyboard.press('Backspace');
+              await delay(100);
+              
+              // Type the value character by character using inputElement.type()
+              await inputElement.type(takeProfitValue, { delay: 50 }); // 50ms delay between characters
+              await delay(200);
+              
+              console.log(`[${exchange.name}] ✅ Typed into first input: ${takeProfitValue}`);
+            } else {
+              console.log(`[${exchange.name}] ⚠️  Could not find first input element to type into`);
+            }
+          } catch (error) {
+            console.log(`[${exchange.name}] ⚠️  Error typing into first input: ${error.message}`);
+          }
+        }
+        
+        // Type into second input (STOP_LOSS/10)
+        if (inputInfo.inputs.length >= 2) {
+          const secondInputInfo = inputInfo.inputs[1];
+          console.log(`[${exchange.name}] ⌨️  Typing into second input: ${stopLossValue}...`);
+          
+          try {
+            // Find the input element using evaluateHandle (works with any ID, including colons)
+            let inputElement = null;
+            if (secondInputInfo.id) {
+              // Use evaluateHandle to get element by ID directly (handles special characters)
+              inputElement = await page.evaluateHandle((id) => {
+                return document.getElementById(id);
+              }, secondInputInfo.id);
+              
+              // Check if element was found
+              const isValid = await page.evaluate(el => el !== null && el !== undefined, inputElement);
+              if (!isValid) {
+                inputElement = null;
+              }
+            }
+            
+            // Fallback: find by className and position (second one)
+            if (!inputElement) {
+              const allInputs = await page.$$('input');
+              let foundFirst = false;
+              for (const input of allInputs) {
+                const className = await page.evaluate(el => el.className || '', input);
+                const placeholder = await page.evaluate(el => el.getAttribute('placeholder') || '', input);
+                if (className.toLowerCase().includes('text') && (placeholder.trim() === '' || placeholder === ' ')) {
+                  const isVisible = await page.evaluate(el => {
+                    const style = window.getComputedStyle(el);
+                    return el.offsetParent !== null && 
+                           style.display !== 'none' && 
+                           style.visibility !== 'hidden' &&
+                           !el.disabled && 
+                           !el.readOnly;
+                  }, input);
+                  
+                  if (isVisible) {
+                    if (foundFirst) {
+                      inputElement = input;
+                      break;
+                    } else {
+                      foundFirst = true;
+                    }
+                  }
+                }
+              }
+            }
+            
+            if (inputElement) {
+              // Focus the input
+              await inputElement.focus();
+              await delay(200);
+              
+              // Select all existing text
+              await page.keyboard.down('Control');
+              await page.keyboard.press('KeyA');
+              await page.keyboard.up('Control');
+              await delay(100);
+              
+              // Clear existing value
+              await page.keyboard.press('Backspace');
+              await delay(100);
+              
+              // Type the value character by character using inputElement.type()
+              await inputElement.type(stopLossValue, { delay: 50 }); // 50ms delay between characters
+              await delay(200);
+              
+              console.log(`[${exchange.name}] ✅ Typed into second input: ${stopLossValue}`);
+            } else {
+              console.log(`[${exchange.name}] ⚠️  Could not find second input element to type into`);
+            }
+          } catch (error) {
+            console.log(`[${exchange.name}] ⚠️  Error typing into second input: ${error.message}`);
+          }
+        }
+        
+        const inputFillResult = {
+          success: true,
+          inputsFound: inputInfo.inputsFound,
+          results: [
+            { index: 1, value: takeProfitValue, filled: inputInfo.inputs.length >= 1 },
+            { index: 2, value: stopLossValue, filled: inputInfo.inputs.length >= 2 }
+          ]
+        };
+        
+        if (inputFillResult && inputFillResult.success) {
+          console.log(`[${exchange.name}] ✅ Filled ${inputFillResult.results.length} input(s) with values`);
+          inputFillResult.results.forEach((result) => {
+            console.log(`[${exchange.name}]    Input ${result.index}: ${result.value}`);
+          });
+          
+          // Wait for inputs to be filled and UI to update
+          console.log(`[${exchange.name}] ⏳ Waiting for inputs to be filled and UI to update...`);
+          await delay(500);
+          
+          // Verify inputs are actually filled
+          const verifyInputs = await page.evaluate((sectionName, takeProfitValue, stopLossValue) => {
+            const allElements = Array.from(document.querySelectorAll('*'));
+            let tpslModal = null;
+            
+            for (const el of allElements) {
+              const text = (el.textContent || '').trim();
+              if (text === 'TP/SL' && el.offsetParent !== null) {
+                let parent = el.parentElement;
+                for (let i = 0; i < 10 && parent; i++) {
+                  const style = window.getComputedStyle(parent);
+                  if (style.display !== 'none' && style.visibility !== 'hidden' &&
+                    parent.offsetWidth > 0 && parent.offsetHeight > 0) {
+                    const parentText = (parent.textContent || '').toLowerCase();
+                    if (parentText.includes('take profit') && parentText.includes('stop loss')) {
+                      tpslModal = parent;
+                      break;
+                    }
+                  }
+                  parent = parent.parentElement;
+                }
+                if (tpslModal) break;
+              }
+            }
+            
+            if (!tpslModal) return { verified: false, message: 'Modal not found' };
+            
+            const allInputsInModal = Array.from(tpslModal.querySelectorAll('input'));
+            const filledInputs = [];
+            for (const input of allInputsInModal) {
+              if (input.tagName !== 'INPUT') continue;
+              const placeholder = input.getAttribute('placeholder') || '';
+              const className = input.className || '';
+              if ((placeholder.trim() === '' || placeholder === ' ') && className.toLowerCase().includes('text')) {
+                if (input.offsetParent !== null && !input.disabled && !input.readOnly) {
+                  const value = input.value || '';
+                  if (value.trim() !== '') {
+                    filledInputs.push({ value: value });
+                  }
+                }
+              }
+            }
+            
+            return { verified: filledInputs.length > 0, filledCount: filledInputs.length };
+          }, sectionName, (parseFloat(takeProfitPercent) / 10).toString(), (parseFloat(stopLossPercent) / 10).toString());
+          
+          if (!verifyInputs.verified) {
+            console.log(`[${exchange.name}] ⚠️  Inputs verification failed, waiting longer...`);
+            await delay(500);
+          } else {
+            console.log(`[${exchange.name}] ✅ Verified ${verifyInputs.filledCount} input(s) are filled`);
+          }
+        } else {
+          console.log(`[${exchange.name}] ⚠️  Could not fill inputs: ${inputFillResult?.message || 'unknown error'}`);
+          return false;
+        }
+        
+        console.log(`[${exchange.name}] ✅ [PHASE 3] Completed input filling for ${sectionName}`);
+        return true;
+      } catch (error) {
+        console.log(`[${exchange.name}] ⚠️  Error clicking ROI% element for ${sectionName}: ${error.message}`);
+        return false;
+      }
+    };
+
+    // OLD Helper function to select "Limit" in Market dropdown for a section - REMOVED
+    // Market dropdown logic is now integrated into fillRoiInput function
+    const selectLimitInMarketDropdown_OLD = async (sectionName) => {
+      console.log(`[${exchange.name}] Finding and clicking Market element for ${sectionName}...`);
+      
+      let marketInfo;
+      try {
+        // Find the Market element for the section using text-based approach
+        marketInfo = await page.evaluate((sectionName) => {
+          // Step 1: Find the TP/SL modal by text "TP/SL" in header
+          const allElements = Array.from(document.querySelectorAll('*'));
+          let tpslModal = null;
+          
+          // Find element with "TP/SL" text (this is the modal header)
+          for (const el of allElements) {
+            const text = (el.textContent || '').trim();
+            if (text === 'TP/SL' && el.offsetParent !== null) {
+              // Walk up to find the modal container
+              let parent = el.parentElement;
+              for (let i = 0; i < 10 && parent; i++) {
+                const style = window.getComputedStyle(parent);
+                if (style.display !== 'none' && style.visibility !== 'hidden' &&
+                  parent.offsetWidth > 0 && parent.offsetHeight > 0) {
+                  // Check if this parent contains both "Take profit" and "Stop loss"
+                  const parentText = (parent.textContent || '').toLowerCase();
+                  if (parentText.includes('take profit') && parentText.includes('stop loss')) {
+                    tpslModal = parent;
+                    break;
+                  }
+                }
+                parent = parent.parentElement;
+              }
+              if (tpslModal) break;
+            }
+          }
+
+          if (!tpslModal) {
+            return { success: false, step: 1, message: 'TP/SL modal not found' };
+          }
+
+          // Step 2: Find element with text matching sectionName ("Take profit" or "Stop loss")
+          const sectionNameLower = sectionName.toLowerCase();
+          let sectionElement = null;
+          
+          // Search all elements in modal for section header
+          const modalElements = Array.from(tpslModal.querySelectorAll('*'));
+          for (const el of modalElements) {
+            const text = (el.textContent || '').trim();
+            // Match exact text (case-insensitive) - "Take profit" or "Stop loss"
+            if (text.toLowerCase() === sectionNameLower && el.offsetParent !== null) {
+              sectionElement = el;
+              break;
+            }
+          }
+
+          if (!sectionElement) {
+            return { 
+              success: false, 
+              step: 2, 
+              message: `Could not find element with text "${sectionName}"`
+            };
+          }
+
+          // Step 3: Find sectionElement's parent (the section container)
+          // We need to find a container that has this section's Market but NOT the other section
+          let sectionParent = sectionElement.parentElement;
+          const otherSectionName = sectionNameLower.includes('profit') ? 'stop loss' : 'take profit';
+          
+          // Walk up to find a container that has Market but doesn't have the other section
+          for (let i = 0; i < 10 && sectionParent; i++) {
+            const allDescendants = Array.from(sectionParent.querySelectorAll('*'));
+            let hasMarket = false;
+            let hasOtherSection = false;
+            
+            for (const el of allDescendants) {
+              const text = (el.textContent || '').trim();
+              if (text === 'Market' && el.offsetParent !== null) {
+                hasMarket = true;
+              }
+              // Check if this container has the OTHER section (we don't want that)
+              if (text.toLowerCase() === otherSectionName && el.offsetParent !== null) {
+                hasOtherSection = true;
+                break;
+              }
+            }
+            
+            // If this container has Market and doesn't have the other section, it's the right container
+            if (hasMarket && !hasOtherSection) {
+              break;
+            }
+            
+            sectionParent = sectionParent.parentElement;
+          }
+          
+          if (!sectionParent) {
+            // Fallback: use immediate parent
+            sectionParent = sectionElement.parentElement;
+            if (!sectionParent) {
+              return { success: false, step: 3, message: `Could not find parent of "${sectionName}" element` };
+            }
+          }
+
+          // Step 4: Inside sectionParent, find element with text "Market"
+          const allDescendants = Array.from(sectionParent.querySelectorAll('*'));
+          let marketElement = null;
+          
+          for (const el of allDescendants) {
+            if (el.offsetParent === null) continue;
+            
+            // Get text content - try both direct text and full textContent
+            const directText = Array.from(el.childNodes)
+              .filter(node => node.nodeType === Node.TEXT_NODE)
+              .map(node => node.textContent)
+              .join('')
+              .trim();
+            const fullText = (el.textContent || '').trim();
+            
+            // Match exact "Market" text (check both direct text and full text)
+            if ((directText === 'Market' || fullText === 'Market')) {
+              marketElement = el;
+              console.log(`[DEBUG] Found Market element for ${sectionName}: directText="${directText}", fullText="${fullText}", tagName="${el.tagName}", className="${el.className || ''}"`);
+              break;
+            }
+          }
+
+          if (!marketElement) {
+            return { 
+              success: false, 
+              step: 4, 
+              message: `Could not find "Market" element inside "${sectionName}" parent`
+            };
+          }
+
+          // Log Market element details for debugging
+          const marketElementInfo = {
+            tagName: marketElement.tagName,
+            className: marketElement.className || '',
+            id: marketElement.id || '',
+            role: marketElement.getAttribute('role') || '',
+            textContent: marketElement.textContent || '',
+            offsetWidth: marketElement.offsetWidth,
+            offsetHeight: marketElement.offsetHeight
+          };
+
+          // Step 5: Find clickable parent of Market element
+          // Walk up to find a clickable container (similar to ROI%)
+          let clickableElement = marketElement.parentElement;
+          let levelsUp = 0;
+          const parentInfo = [];
+          
+          while (clickableElement && levelsUp < 5) {
+            const style = window.getComputedStyle(clickableElement);
+            const parentInfoItem = {
+              level: levelsUp,
+              tagName: clickableElement.tagName,
+              className: clickableElement.className || '',
+              id: clickableElement.id || '',
+              display: style.display,
+              visibility: style.visibility,
+              offsetWidth: clickableElement.offsetWidth,
+              offsetHeight: clickableElement.offsetHeight,
+              hasMarketText: (clickableElement.textContent || '').includes('Market')
+            };
+            parentInfo.push(parentInfoItem);
+            
+            if (style.display !== 'none' && style.visibility !== 'hidden' &&
+              clickableElement.offsetWidth > 0 && clickableElement.offsetHeight > 0) {
+              // Check if this element contains "Market" text (to ensure we're in the right container)
+              const parentText = (clickableElement.textContent || '').trim();
+              if (parentText.includes('Market')) {
+                // This is likely the clickable control
+                break;
+              }
+            }
+            clickableElement = clickableElement.parentElement;
+            levelsUp++;
+          }
+          
+          // If we didn't find a clickable parent, use the Market element itself
+          if (!clickableElement) {
+            clickableElement = marketElement;
+          }
+
+          // Get the clickable element's bounding rect for clicking
+          const rect = clickableElement.getBoundingClientRect();
+          const clickableElementInfo = {
+            tagName: clickableElement.tagName,
+            className: clickableElement.className || '',
+            id: clickableElement.id || '',
+            offsetWidth: clickableElement.offsetWidth,
+            offsetHeight: clickableElement.offsetHeight
+          };
+          
+          return {
+            success: true,
+            clickX: rect.x + rect.width / 2,
+            clickY: rect.y + rect.height / 2,
+            marketElementInfo: marketElementInfo,
+            clickableElementInfo: clickableElementInfo,
+            parentInfo: parentInfo
+          };
+        }, sectionName);
+      } catch (error) {
+        console.log(`[${exchange.name}] ❌ [MARKET FINDING] Error during page.evaluate: ${error.message}`);
+        return false;
+      }
+
+      if (!marketInfo) {
+        console.log(`[${exchange.name}] [MARKET FINDING] Evaluation returned null/undefined`);
+        return false;
+      }
+
+      if (!marketInfo.success) {
+        console.log(`[${exchange.name}] [MARKET FINDING] ❌ Step ${marketInfo.step} failed: ${marketInfo.message}`);
+        return false;
+      }
+
+      console.log(`[${exchange.name}] [MARKET FINDING] ✅ Successfully found Market element`);
+      console.log(`[${exchange.name}] 🔍 [MARKET ELEMENT] Found Market element for ${sectionName}:`);
+      console.log(`[${exchange.name}]    - Tag: ${marketInfo.marketElementInfo.tagName}`);
+      console.log(`[${exchange.name}]    - Class: "${marketInfo.marketElementInfo.className}"`);
+      console.log(`[${exchange.name}]    - ID: "${marketInfo.marketElementInfo.id}"`);
+      console.log(`[${exchange.name}]    - Role: "${marketInfo.marketElementInfo.role}"`);
+      console.log(`[${exchange.name}]    - Size: ${marketInfo.marketElementInfo.offsetWidth}x${marketInfo.marketElementInfo.offsetHeight}`);
+      console.log(`[${exchange.name}] 🔍 [CLICKABLE ELEMENT] Will click on:`);
+      console.log(`[${exchange.name}]    - Tag: ${marketInfo.clickableElementInfo.tagName}`);
+      console.log(`[${exchange.name}]    - Class: "${marketInfo.clickableElementInfo.className}"`);
+      console.log(`[${exchange.name}]    - ID: "${marketInfo.clickableElementInfo.id}"`);
+      console.log(`[${exchange.name}]    - Size: ${marketInfo.clickableElementInfo.offsetWidth}x${marketInfo.clickableElementInfo.offsetHeight}`);
+      console.log(`[${exchange.name}]    - Coordinates: (${marketInfo.clickX}, ${marketInfo.clickY})`);
+      if (marketInfo.parentInfo && marketInfo.parentInfo.length > 0) {
+        console.log(`[${exchange.name}] 🔍 [PARENT CHAIN] Parent elements:`);
+        marketInfo.parentInfo.forEach((parent, idx) => {
+          console.log(`[${exchange.name}]    Level ${parent.level}: ${parent.tagName}, class="${parent.className}", hasMarket=${parent.hasMarketText}, visible=${parent.display !== 'none' && parent.visibility !== 'hidden'}`);
+        });
+      }
+
+      try {
+        // Click on Market element, then press ArrowDown once and Enter
+        console.log(`[${exchange.name}] 🔧 Clicking on Market element for ${sectionName}...`);
+        await page.mouse.click(marketInfo.clickX, marketInfo.clickY);
+        await delay(300);
+        console.log(`[${exchange.name}] ✅ Clicked Market element for ${sectionName}`);
+        
+        // Press ArrowDown once, then click the "Limit" option directly
+        console.log(`[${exchange.name}] ⌨️  Pressing ArrowDown x1 for ${sectionName} Market...`);
+        await page.keyboard.press('ArrowDown');
+        await delay(200);
+        
+        // Find and click the "Limit" option in the opened dropdown
+        const optionInfo = await page.evaluate(() => {
+          // Find all open listboxes and menus
+          const listboxes = Array.from(document.querySelectorAll('[role="listbox"]'));
+          const menus = Array.from(document.querySelectorAll('[role="menu"]'));
+          const allDropdowns = [...listboxes, ...menus];
+          
+          // Also look for elements with aria-expanded="true" that might be dropdowns
+          const expandedElements = Array.from(document.querySelectorAll('[aria-expanded="true"]'));
+          for (const el of expandedElements) {
+            const style = window.getComputedStyle(el);
+            if (style.display !== 'none' && style.visibility !== 'hidden' &&
+              el.offsetWidth > 0 && el.offsetHeight > 0) {
+              allDropdowns.push(el);
+            }
+          }
+          
+          for (const menu of allDropdowns) {
+            const style = window.getComputedStyle(menu);
+            if (style.display === 'none' || style.visibility === 'hidden') continue;
+            const rect = menu.getBoundingClientRect();
+            if (rect.width === 0 || rect.height === 0) continue;
+            
+            // Look for "Limit" option
+            const allInMenu = Array.from(menu.querySelectorAll('*'));
+            for (const el of allInMenu) {
+              if (el.offsetParent === null) continue;
+              const elText = (el.textContent || '').trim();
+              if (elText === 'Limit' || elText.toLowerCase() === 'limit') {
+                const rect = el.getBoundingClientRect();
+                return {
+                  found: true,
+                  x: rect.x + rect.width / 2,
+                  y: rect.y + rect.height / 2,
+                  text: elText
+                };
+              }
+            }
+          }
+          return { found: false };
+        });
+        
+        if (!optionInfo.found) {
+          console.log(`[${exchange.name}] ⚠️  Could not find "Limit" option to click in Market dropdown`);
+          return false;
+        }
+        
+        // Click the option using Puppeteer's mouse click
+        console.log(`[${exchange.name}] 🖱️  Clicking "Limit" option at coordinates (${optionInfo.x}, ${optionInfo.y})...`);
+        await page.mouse.click(optionInfo.x, optionInfo.y);
+        await delay(300);
+        
+        // Check if modal is still open after selection
+        const modalStillOpenAfter = await page.evaluate(() => {
+          const allElements = Array.from(document.querySelectorAll('*'));
+          for (const el of allElements) {
+            const text = (el.textContent || '').trim();
+            if (text === 'TP/SL' && el.offsetParent !== null) {
+              let parent = el.parentElement;
+              for (let i = 0; i < 10 && parent; i++) {
+                const style = window.getComputedStyle(parent);
+                if (style.display !== 'none' && style.visibility !== 'hidden' &&
+                  parent.offsetWidth > 0 && parent.offsetHeight > 0) {
+                  const parentText = (parent.textContent || '').toLowerCase();
+                  if (parentText.includes('take profit') && parentText.includes('stop loss')) {
+                    return true; // Modal is still open
+                  }
+                }
+                parent = parent.parentElement;
+              }
+            }
+          }
+          return false; // Modal not found or closed
+        });
+        
+        if (!modalStillOpenAfter) {
+          console.log(`[${exchange.name}] ⚠️  Modal closed after Market dropdown selection`);
+          return false;
+        }
+        
+        console.log(`[${exchange.name}] ✅ Completed Market dropdown selection for ${sectionName} (modal still open)`);
         return true;
       } catch (error) {
         console.log(`[${exchange.name}] ⚠️  Error selecting Limit in Market dropdown for ${sectionName}: ${error.message}`);
@@ -1226,8 +1804,8 @@ export async function handleTpSlGrvt(page, exchange, price = null, side = 'buy')
       await fillRoiInput(sectionName, value);
       await delay(100);
       
-      // Step 2: Select Limit in Market dropdown
-      await selectLimitInMarketDropdown(sectionName);
+      // Step 2: Select Limit in Market dropdown - NOW HANDLED INSIDE fillRoiInput
+      // await selectLimitInMarketDropdown(sectionName); // REMOVED - logic is now in fillRoiInput
       await delay(100);
       
       console.log(`[${exchange.name}] ✅ [SECTION CONFIG] Completed configuration for ${sectionName}`);
@@ -1245,38 +1823,510 @@ export async function handleTpSlGrvt(page, exchange, price = null, side = 'buy')
     }
     console.log(`[${exchange.name}] ✅ [TP/SL CONFIG] Completed configuration for both sections`);
     
-    // Wait 200ms before clicking Confirm button
-    await delay(200);
+    // Fill Take profit Limit price with Trigger price value
+    console.log(`[${exchange.name}] 🔧 [LIMIT PRICE] Filling Take profit Limit price with Trigger price value...`);
+    await delay(500); // Wait for auto-fill to complete
     
-    // Find and click the Confirm button
-    console.log(`[${exchange.name}] 🔍 [CONFIRM BUTTON] Looking for Confirm button...`);
     try {
-      const confirmButtonHandle = await page.evaluateHandle(() => {
-        // Find all buttons
-        const allButtons = Array.from(document.querySelectorAll('button'));
-        for (const button of allButtons) {
-          const text = (button.textContent || '').trim();
-          if (text === 'Confirm' && button.offsetParent !== null) {
-            // Check if button is not disabled
-            if (!button.disabled) {
-              return button;
+      // Find Trigger price value and TP limit price input
+      const limitPriceInfo = await page.evaluate(() => {
+        // Find the TP/SL modal
+        const allElements = Array.from(document.querySelectorAll('*'));
+        let tpslModal = null;
+        
+        for (const el of allElements) {
+          const text = (el.textContent || '').trim();
+          if (text === 'TP/SL' && el.offsetParent !== null) {
+            let parent = el.parentElement;
+            for (let i = 0; i < 10 && parent; i++) {
+              const style = window.getComputedStyle(parent);
+              if (style.display !== 'none' && style.visibility !== 'hidden' &&
+                parent.offsetWidth > 0 && parent.offsetHeight > 0) {
+                const parentText = (parent.textContent || '').toLowerCase();
+                if (parentText.includes('take profit') && parentText.includes('stop loss')) {
+                  tpslModal = parent;
+                  break;
+                }
+              }
+              parent = parent.parentElement;
+            }
+            if (tpslModal) break;
+          }
+        }
+        
+        if (!tpslModal) return { success: false, message: 'TP/SL modal not found' };
+        
+        // Find Take profit section
+        let takeProfitSection = null;
+        const modalElements = Array.from(tpslModal.querySelectorAll('*'));
+        for (const el of modalElements) {
+          const text = (el.textContent || '').trim();
+          if (text.toLowerCase() === 'take profit' && el.offsetParent !== null) {
+            takeProfitSection = el;
+            break;
+          }
+        }
+        
+        if (!takeProfitSection) return { success: false, message: 'Take profit section not found' };
+        
+        // Find section parent
+        let sectionParent = takeProfitSection.parentElement;
+        for (let i = 0; i < 10 && sectionParent; i++) {
+          const allDescendants = Array.from(sectionParent.querySelectorAll('*'));
+          let hasStopLoss = false;
+          for (const el of allDescendants) {
+            const text = (el.textContent || '').trim();
+            if (text.toLowerCase() === 'stop loss' && el.offsetParent !== null) {
+              hasStopLoss = true;
+              break;
+            }
+          }
+          if (!hasStopLoss) break;
+          sectionParent = sectionParent.parentElement;
+          if (!sectionParent) break;
+        }
+        
+        if (!sectionParent) sectionParent = takeProfitSection.parentElement;
+        
+        // Find Trigger price input in Take profit section
+        const allInputsInSection = Array.from(sectionParent.querySelectorAll('input'));
+        let triggerPriceInput = null;
+        let triggerPriceValue = '';
+        
+        for (const input of allInputsInSection) {
+          if (input.tagName !== 'INPUT') continue;
+          const placeholder = (input.getAttribute('placeholder') || '').trim().toLowerCase();
+          if (placeholder.includes('trigger price')) {
+            triggerPriceInput = input;
+            triggerPriceValue = input.value || '';
+            break;
+          }
+        }
+        
+        if (!triggerPriceInput || !triggerPriceValue) {
+          return { success: false, message: 'Could not find Trigger price input or value in Take profit section' };
+        }
+        
+        // Find TP limit price input (or Take profit Limit price)
+        let limitPriceInput = null;
+        let limitPriceInputId = '';
+        
+        for (const input of allInputsInSection) {
+          if (input.tagName !== 'INPUT') continue;
+          const placeholder = (input.getAttribute('placeholder') || '').trim().toLowerCase();
+          if (placeholder.includes('tp limit price') || placeholder.includes('take profit limit price') || 
+              placeholder.includes('limit price')) {
+            // Make sure it's not the trigger price input
+            if (!placeholder.includes('trigger')) {
+              limitPriceInput = input;
+              limitPriceInputId = input.id || '';
+              break;
             }
           }
         }
-        return null;
+        
+        if (!limitPriceInput) {
+          return { success: false, message: 'Could not find TP limit price input' };
+        }
+        
+        return {
+          success: true,
+          triggerPriceValue: triggerPriceValue,
+          limitPriceInputId: limitPriceInputId
+        };
       });
       
-      const confirmButton = confirmButtonHandle.asElement();
-      if (confirmButton) {
-        await confirmButton.evaluate(el => el.scrollIntoView({ behavior: 'smooth', block: 'center' }));
-        await delay(100);
-        await confirmButton.click();
-        console.log(`[${exchange.name}] ✅ [CONFIRM BUTTON] Clicked Confirm button`);
+      if (!limitPriceInfo || !limitPriceInfo.success) {
+        console.log(`[${exchange.name}] ⚠️  Could not find limit price input: ${limitPriceInfo?.message || 'unknown error'}`);
       } else {
-        console.log(`[${exchange.name}] ⚠️  [CONFIRM BUTTON] Confirm button not found or is disabled`);
+        console.log(`[${exchange.name}] ✅ Found Trigger price value: ${limitPriceInfo.triggerPriceValue}`);
+        console.log(`[${exchange.name}] ⌨️  Typing Trigger price into TP limit price input...`);
+        
+        // Get the limit price input element
+        let limitPriceElement = null;
+        if (limitPriceInfo.limitPriceInputId) {
+          limitPriceElement = await page.evaluateHandle((id) => {
+            return document.getElementById(id);
+          }, limitPriceInfo.limitPriceInputId);
+          
+          const isValid = await page.evaluate(el => el !== null && el !== undefined, limitPriceElement);
+          if (!isValid) {
+            limitPriceElement = null;
+          }
+        }
+        
+        // Fallback: find by placeholder
+        if (!limitPriceElement) {
+          const allInputs = await page.$$('input');
+          for (const input of allInputs) {
+            const placeholder = await page.evaluate(el => (el.getAttribute('placeholder') || '').trim().toLowerCase(), input);
+            if ((placeholder.includes('tp limit price') || placeholder.includes('take profit limit price') || 
+                 placeholder.includes('limit price')) && !placeholder.includes('trigger')) {
+              const isVisible = await page.evaluate(el => {
+                const style = window.getComputedStyle(el);
+                return el.offsetParent !== null && 
+                       style.display !== 'none' && 
+                       style.visibility !== 'hidden' &&
+                       !el.disabled && 
+                       !el.readOnly;
+              }, input);
+              
+              if (isVisible) {
+                limitPriceElement = input;
+                break;
+              }
+            }
+          }
+        }
+        
+        if (limitPriceElement) {
+          // Focus the input
+          await limitPriceElement.focus();
+          await delay(200);
+          
+          // Select all existing text
+          await page.keyboard.down('Control');
+          await page.keyboard.press('KeyA');
+          await page.keyboard.up('Control');
+          await delay(100);
+          
+          // Clear existing value
+          await page.keyboard.press('Backspace');
+          await delay(100);
+          
+          // Type the trigger price value character by character
+          await limitPriceElement.type(limitPriceInfo.triggerPriceValue, { delay: 50 });
+          await delay(200);
+          
+          console.log(`[${exchange.name}] ✅ Typed Trigger price (${limitPriceInfo.triggerPriceValue}) into TP limit price input`);
+        } else {
+          console.log(`[${exchange.name}] ⚠️  Could not find TP limit price input element to type into`);
+        }
       }
     } catch (error) {
-      console.log(`[${exchange.name}] ⚠️  [CONFIRM BUTTON] Error clicking Confirm button: ${error.message}`);
+      console.log(`[${exchange.name}] ⚠️  Error filling TP limit price: ${error.message}`);
+    }
+    
+    // Phase 4b: Fill SL limit price input with Trigger price value from Stop Loss section
+    console.log(`[${exchange.name}] 🔧 [PHASE 4b] Filling SL limit price input with Trigger price value...`);
+    try {
+      const slLimitPriceInfo = await page.evaluate(() => {
+        // Find TP/SL modal
+        const allElements = Array.from(document.querySelectorAll('*'));
+        let tpslModal = null;
+        
+        for (const el of allElements) {
+          const text = (el.textContent || '').trim();
+          if (text === 'TP/SL' && el.offsetParent !== null) {
+            let parent = el.parentElement;
+            for (let i = 0; i < 10 && parent; i++) {
+              const style = window.getComputedStyle(parent);
+              if (style.display !== 'none' && style.visibility !== 'hidden' &&
+                parent.offsetWidth > 0 && parent.offsetHeight > 0) {
+                const parentText = (parent.textContent || '').toLowerCase();
+                if (parentText.includes('take profit') && parentText.includes('stop loss')) {
+                  tpslModal = parent;
+                  break;
+                }
+              }
+              parent = parent.parentElement;
+            }
+            if (tpslModal) break;
+          }
+        }
+        
+        if (!tpslModal) return { success: false, message: 'TP/SL modal not found' };
+        
+        // Find Stop loss section
+        let stopLossSection = null;
+        const modalElements = Array.from(tpslModal.querySelectorAll('*'));
+        for (const el of modalElements) {
+          const text = (el.textContent || '').trim();
+          if (text.toLowerCase() === 'stop loss' && el.offsetParent !== null) {
+            stopLossSection = el;
+            break;
+          }
+        }
+        
+        if (!stopLossSection) return { success: false, message: 'Stop loss section not found' };
+        
+        // Find section parent
+        let sectionParent = stopLossSection.parentElement;
+        for (let i = 0; i < 10 && sectionParent; i++) {
+          const allDescendants = Array.from(sectionParent.querySelectorAll('*'));
+          let hasTakeProfit = false;
+          for (const el of allDescendants) {
+            const text = (el.textContent || '').trim();
+            if (text.toLowerCase() === 'take profit' && el.offsetParent !== null) {
+              hasTakeProfit = true;
+              break;
+            }
+          }
+          if (!hasTakeProfit) break;
+          sectionParent = sectionParent.parentElement;
+          if (!sectionParent) break;
+        }
+        
+        if (!sectionParent) sectionParent = stopLossSection.parentElement;
+        
+        // Find Trigger price input in Stop loss section
+        const allInputsInSection = Array.from(sectionParent.querySelectorAll('input'));
+        let triggerPriceInput = null;
+        let triggerPriceValue = '';
+        
+        for (const input of allInputsInSection) {
+          if (input.tagName !== 'INPUT') continue;
+          const placeholder = (input.getAttribute('placeholder') || '').trim().toLowerCase();
+          if (placeholder.includes('trigger price')) {
+            triggerPriceInput = input;
+            triggerPriceValue = input.value || '';
+            break;
+          }
+        }
+        
+        if (!triggerPriceInput || !triggerPriceValue) {
+          return { success: false, message: 'Could not find Trigger price input or value in Stop loss section' };
+        }
+        
+        // Find SL limit price input (or Stop loss Limit price)
+        let limitPriceInput = null;
+        let limitPriceInputId = '';
+        
+        for (const input of allInputsInSection) {
+          if (input.tagName !== 'INPUT') continue;
+          const placeholder = (input.getAttribute('placeholder') || '').trim().toLowerCase();
+          if (placeholder.includes('sl limit price') || placeholder.includes('stop loss limit price') || 
+              placeholder.includes('limit price')) {
+            // Make sure it's not the trigger price input
+            if (!placeholder.includes('trigger')) {
+              limitPriceInput = input;
+              limitPriceInputId = input.id || '';
+              break;
+            }
+          }
+        }
+        
+        if (!limitPriceInput) {
+          return { success: false, message: 'Could not find SL limit price input' };
+        }
+        
+        return {
+          success: true,
+          triggerPriceValue: triggerPriceValue,
+          limitPriceInputId: limitPriceInputId
+        };
+      });
+      
+      if (!slLimitPriceInfo || !slLimitPriceInfo.success) {
+        console.log(`[${exchange.name}] ⚠️  Could not find SL limit price input: ${slLimitPriceInfo?.message || 'unknown error'}`);
+      } else {
+        console.log(`[${exchange.name}] ✅ Found Trigger price value in Stop Loss section: ${slLimitPriceInfo.triggerPriceValue}`);
+        console.log(`[${exchange.name}] ⌨️  Typing Trigger price into SL limit price input...`);
+        
+        // Get the limit price input element
+        let slLimitPriceElement = null;
+        if (slLimitPriceInfo.limitPriceInputId) {
+          slLimitPriceElement = await page.evaluateHandle((id) => {
+            return document.getElementById(id);
+          }, slLimitPriceInfo.limitPriceInputId);
+          
+          const isValid = await page.evaluate(el => el !== null && el !== undefined, slLimitPriceElement);
+          if (!isValid) {
+            slLimitPriceElement = null;
+          }
+        }
+        
+        // Fallback: find by placeholder
+        if (!slLimitPriceElement) {
+          const allInputs = await page.$$('input');
+          for (const input of allInputs) {
+            const placeholder = await page.evaluate(el => (el.getAttribute('placeholder') || '').trim().toLowerCase(), input);
+            if ((placeholder.includes('sl limit price') || placeholder.includes('stop loss limit price') || 
+                 placeholder.includes('limit price')) && !placeholder.includes('trigger') && !placeholder.includes('tp')) {
+              const isVisible = await page.evaluate(el => {
+                const style = window.getComputedStyle(el);
+                return el.offsetParent !== null && 
+                       style.display !== 'none' && 
+                       style.visibility !== 'hidden' &&
+                       !el.disabled && 
+                       !el.readOnly;
+              }, input);
+              
+              if (isVisible) {
+                slLimitPriceElement = input;
+                break;
+              }
+            }
+          }
+        }
+        
+        if (slLimitPriceElement) {
+          // Focus the input
+          await slLimitPriceElement.focus();
+          await delay(200);
+          
+          // Select all existing text
+          await page.keyboard.down('Control');
+          await page.keyboard.press('KeyA');
+          await page.keyboard.up('Control');
+          await delay(100);
+          
+          // Clear existing value
+          await page.keyboard.press('Backspace');
+          await delay(100);
+          
+          // Type the trigger price value character by character
+          await slLimitPriceElement.type(slLimitPriceInfo.triggerPriceValue, { delay: 50 });
+          await delay(200);
+          
+          console.log(`[${exchange.name}] ✅ Typed Trigger price (${slLimitPriceInfo.triggerPriceValue}) into SL limit price input`);
+        } else {
+          console.log(`[${exchange.name}] ⚠️  Could not find SL limit price input element to type into`);
+        }
+      }
+    } catch (error) {
+      console.log(`[${exchange.name}] ⚠️  Error filling SL limit price: ${error.message}`);
+    }
+    
+    // Wait for UI to update after filling all inputs
+    console.log(`[${exchange.name}] ⏳ Waiting for UI to update after filling all inputs...`);
+    await delay(500);
+    
+    // Find and click the Confirm button in TP/SL modal (this saves TP/SL settings)
+    console.log(`[${exchange.name}] 🔍 [TP/SL CONFIRM] Looking for Confirm button in TP/SL modal...`);
+    let confirmButtonClicked = false;
+    
+    // Try multiple times to find and click the Confirm button (it might be disabled initially)
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        // First verify TP/SL modal is still open
+        const modalStillOpen = await page.evaluate(() => {
+          const allElements = Array.from(document.querySelectorAll('*'));
+          for (const el of allElements) {
+            const text = (el.textContent || '').trim();
+            if (text === 'TP/SL' && el.offsetParent !== null) {
+              let parent = el.parentElement;
+              for (let i = 0; i < 10 && parent; i++) {
+                const style = window.getComputedStyle(parent);
+                if (style.display !== 'none' && style.visibility !== 'hidden' &&
+                  parent.offsetWidth > 0 && parent.offsetHeight > 0) {
+                  const parentText = (parent.textContent || '').toLowerCase();
+                  if (parentText.includes('take profit') && parentText.includes('stop loss')) {
+                    return true;
+                  }
+                }
+                parent = parent.parentElement;
+              }
+            }
+          }
+          return false;
+        });
+        
+        if (!modalStillOpen) {
+          console.log(`[${exchange.name}] ⚠️  [TP/SL CONFIRM] TP/SL modal is not open, cannot find Confirm button`);
+          break;
+        }
+        
+        const confirmButtonInfo = await page.evaluate(() => {
+          // Find TP/SL modal first
+          const allElements = Array.from(document.querySelectorAll('*'));
+          let tpslModal = null;
+          
+          for (const el of allElements) {
+            const text = (el.textContent || '').trim();
+            if (text === 'TP/SL' && el.offsetParent !== null) {
+              let parent = el.parentElement;
+              for (let i = 0; i < 10 && parent; i++) {
+                const style = window.getComputedStyle(parent);
+                if (style.display !== 'none' && style.visibility !== 'hidden' &&
+                  parent.offsetWidth > 0 && parent.offsetHeight > 0) {
+                  const parentText = (parent.textContent || '').toLowerCase();
+                  if (parentText.includes('take profit') && parentText.includes('stop loss')) {
+                    tpslModal = parent;
+                    break;
+                  }
+                }
+                parent = parent.parentElement;
+              }
+              if (tpslModal) break;
+            }
+          }
+          
+          if (!tpslModal) return { found: false, message: 'TP/SL modal not found' };
+          
+          // Find Confirm button within TP/SL modal only
+          const allButtons = Array.from(tpslModal.querySelectorAll('button'));
+          for (const button of allButtons) {
+            const text = (button.textContent || '').trim();
+            if (text === 'Confirm' && button.offsetParent !== null) {
+              const rect = button.getBoundingClientRect();
+              return {
+                found: true,
+                disabled: button.disabled,
+                id: button.id || '',
+                className: button.className || '',
+                x: rect.x + rect.width / 2,
+                y: rect.y + rect.height / 2
+              };
+            }
+          }
+          return { found: false, message: 'Confirm button not found in TP/SL modal' };
+        });
+        
+        if (confirmButtonInfo.found) {
+          if (!confirmButtonInfo.disabled) {
+            // Button is enabled, click it
+            console.log(`[${exchange.name}] ✅ [CONFIRM BUTTON] Found enabled Confirm button, clicking...`);
+            
+            // Try to get element handle by ID first
+            let confirmButton = null;
+            if (confirmButtonInfo.id) {
+              try {
+                const handle = await page.evaluateHandle((id) => {
+                  return document.getElementById(id);
+                }, confirmButtonInfo.id);
+                const isValid = await page.evaluate(el => el !== null && el !== undefined, handle);
+                if (isValid) {
+                  confirmButton = handle.asElement();
+                }
+              } catch (e) {
+                // ID might contain special characters, fall back to coordinate click
+              }
+            }
+            
+            if (confirmButton) {
+              await confirmButton.evaluate(el => el.scrollIntoView({ behavior: 'smooth', block: 'center' }));
+              await delay(100);
+              await confirmButton.click();
+            } else {
+              // Fallback: click by coordinates
+              await page.mouse.click(confirmButtonInfo.x, confirmButtonInfo.y);
+            }
+            
+            console.log(`[${exchange.name}] ✅ [TP/SL CONFIRM] Clicked Confirm button in TP/SL modal`);
+            confirmButtonClicked = true;
+            
+            // Wait for modal to close after clicking Confirm
+            await delay(500);
+            break;
+          } else {
+            console.log(`[${exchange.name}] ⏳ [TP/SL CONFIRM] Confirm button found but is disabled, waiting... (attempt ${attempt + 1}/5)`);
+            await delay(300);
+          }
+        } else {
+          console.log(`[${exchange.name}] ⏳ [TP/SL CONFIRM] Confirm button not found yet: ${confirmButtonInfo?.message || 'unknown'}, waiting... (attempt ${attempt + 1}/5)`);
+          await delay(300);
+        }
+      } catch (error) {
+        console.log(`[${exchange.name}] ⚠️  [TP/SL CONFIRM] Error finding Confirm button (attempt ${attempt + 1}/5): ${error.message}`);
+        await delay(300);
+      }
+    }
+    
+    if (!confirmButtonClicked) {
+      console.log(`[${exchange.name}] ⚠️  [TP/SL CONFIRM] Could not click Confirm button after all attempts`);
+    } else {
+      console.log(`[${exchange.name}] ✅ [TP/SL CONFIG] TP/SL settings confirmed and modal should be closed`);
     }
   } else {
     console.log(`[${exchange.name}] ⚠️  TP/SL modal did not open after clicking Advanced button`);
@@ -1340,16 +2390,84 @@ export async function executeTradeGrvt(
   // So we select the tab first, then fill inputs
 
   // 1. Select Limit or Market tab (tabs are at the top)
+  // GRVT-specific: Scope search to CreateOrderPanel to avoid clicking deposit buttons
   console.log(`[${exchange.name}] Step 0: Selecting ${orderType.toUpperCase()} tab...`);
   try {
-    const orderTypePromise = selectOrderType(page, orderType, exchange);
-    const orderTypeTimeout = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error('selectOrderType timeout after 5 seconds')), 5000)
-    );
-
-    const orderTypeResult = await Promise.race([orderTypePromise, orderTypeTimeout]);
+    // First, try to find CreateOrderPanel and search within it
+    const createOrderPanel = await page.$('[data-sentry-element="CreateOrderPanel"]');
+    let orderTypeResult = false;
+    
+    if (createOrderPanel) {
+      console.log(`[${exchange.name}] ✅ Found CreateOrderPanel, searching for ${orderType.toUpperCase()} button within it...`);
+      const buttonText = orderType === "limit" ? exchange.selectors.limitButton : exchange.selectors.marketButton;
+      
+      // Search for button within CreateOrderPanel
+      const orderTypeBtn = await createOrderPanel.evaluateHandle((panel, searchText) => {
+        const buttons = Array.from(panel.querySelectorAll('button, div[role="button"], span[role="button"]'));
+        for (const btn of buttons) {
+          const btnText = (btn.textContent || '').trim();
+          if (btnText === searchText && btn.offsetParent !== null) {
+            return btn;
+          }
+        }
+        return null;
+      }, buttonText);
+      
+      const orderTypeElement = orderTypeBtn.asElement();
+      if (orderTypeElement) {
+        // Verify it's the correct button before clicking
+        const buttonInfo = await page.evaluate((el) => {
+          const text = (el.textContent || '').trim();
+          const href = el.getAttribute('href') || '';
+          const isLink = el.tagName === 'A' || href !== '';
+          return {
+            text: text,
+            isLink: isLink,
+            href: href,
+            tagName: el.tagName
+          };
+        }, orderTypeElement);
+        
+        // Make sure it's not a link (which would navigate away) and text matches
+        if (buttonInfo.isLink) {
+          console.log(`[${exchange.name}] ⚠️  Found ${orderType.toUpperCase()} button but it's a link (href: ${buttonInfo.href}), skipping to avoid navigation...`);
+        } else if (buttonInfo.text.toLowerCase().includes('deposit')) {
+          console.log(`[${exchange.name}] ⚠️  Found button but text contains "deposit" (${buttonInfo.text}), skipping to avoid navigation...`);
+        } else {
+          console.log(`[${exchange.name}] ✅ Found ${orderType.toUpperCase()} button in CreateOrderPanel (text: "${buttonInfo.text}"), clicking...`);
+          await orderTypeElement.click();
+          console.log(`[${exchange.name}] Selected ${orderType.toUpperCase()} order`);
+          orderTypeResult = true;
+          await delay(300);
+          
+          // Verify we're still on the trading page (not navigated away)
+          const currentUrl = page.url();
+          if (currentUrl.includes('/deposit') || currentUrl.includes('/withdraw')) {
+            console.log(`[${exchange.name}] ⚠️  Navigation detected to ${currentUrl}, going back...`);
+            await page.goBack();
+            await delay(1000);
+            orderTypeResult = false; // Retry
+          }
+        }
+      } else {
+        console.log(`[${exchange.name}] ⚠️  ${orderType.toUpperCase()} button not found in CreateOrderPanel, trying page-wide search...`);
+      }
+    }
+    
+    // Fallback: If not found in CreateOrderPanel, use standard selectOrderType
     if (!orderTypeResult) {
-      console.log(`[${exchange.name}] ⚠️  Failed to select order type tab, but continuing...`);
+      console.log(`[${exchange.name}] Falling back to page-wide search for ${orderType.toUpperCase()} button...`);
+      const orderTypePromise = selectOrderType(page, orderType, exchange);
+      const orderTypeTimeout = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('selectOrderType timeout after 5 seconds')), 5000)
+      );
+
+      const result = await Promise.race([orderTypePromise, orderTypeTimeout]);
+      if (result) {
+        orderTypeResult = true;
+      } else {
+        console.log(`[${exchange.name}] ⚠️  Failed to select order type tab, but continuing...`);
+      }
     }
   } catch (error) {
     console.log(`[${exchange.name}] ⚠️  Error selecting order type tab: ${error.message}, continuing...`);
@@ -1891,46 +3009,46 @@ export async function executeTradeGrvt(
   }
 
   // Step 4.6: Update price input value to (current value - 10) before clicking Buy/Sell button
-  if (orderType === "limit" && priceInput) {
-    console.log(`[${exchange.name}] Step 4.6: Updating price input value to (current value - 10) before clicking Buy/Sell button...`);
+  // if (orderType === "limit" && priceInput) {
+  //   console.log(`[${exchange.name}] Step 4.6: Updating price input value to (current value - 10) before clicking Buy/Sell button...`);
     
-    // Get current price input value
-    const currentPriceValue = await page.evaluate((el) => el.value || '', priceInput);
-    const currentPriceNum = parseFloat(currentPriceValue.replace(/,/g, '').replace(/ /g, ''));
+  //   // Get current price input value
+  //   const currentPriceValue = await page.evaluate((el) => el.value || '', priceInput);
+  //   const currentPriceNum = parseFloat(currentPriceValue.replace(/,/g, '').replace(/ /g, ''));
     
-    if (currentPriceValue && !isNaN(currentPriceNum)) {
-      const newPrice = currentPriceNum - 10;
-      console.log(`[${exchange.name}] Current price: ${currentPriceNum}, New price (current - 10): ${newPrice}`);
+  //   if (currentPriceValue && !isNaN(currentPriceNum)) {
+  //     const newPrice = currentPriceNum - 10;
+  //     console.log(`[${exchange.name}] Current price: ${currentPriceNum}, New price (current - 10): ${newPrice}`);
       
-      // Update the price input with the new value
-      const priceUpdateSuccess = await clearAndFillInputGrvt(priceInput, newPrice, 'Price');
-      if (!priceUpdateSuccess) {
-        console.log(`[${exchange.name}] ⚠️  Price update failed, retrying...`);
-        await delay(500);
-        const retrySuccess = await clearAndFillInputGrvt(priceInput, newPrice, 'Price');
-        if (!retrySuccess) {
-          console.log(`[${exchange.name}] ❌ Price update failed after retry, continuing anyway...`);
-        }
-      }
+  //     // Update the price input with the new value
+  //     const priceUpdateSuccess = await clearAndFillInputGrvt(priceInput, newPrice, 'Price');
+  //     if (!priceUpdateSuccess) {
+  //       console.log(`[${exchange.name}] ⚠️  Price update failed, retrying...`);
+  //       await delay(500);
+  //       const retrySuccess = await clearAndFillInputGrvt(priceInput, newPrice, 'Price');
+  //       if (!retrySuccess) {
+  //         console.log(`[${exchange.name}] ❌ Price update failed after retry, continuing anyway...`);
+  //       }
+  //     }
       
-      // Verify the updated price persists
-      await delay(500);
-      const updatedPriceCheck = await page.evaluate((el) => el.value || '', priceInput);
-      const updatedPriceNum = parseFloat(updatedPriceCheck.replace(/,/g, ''));
-      const priceTolerance = 0.1;
+  //     // Verify the updated price persists
+  //     await delay(500);
+  //     const updatedPriceCheck = await page.evaluate((el) => el.value || '', priceInput);
+  //     const updatedPriceNum = parseFloat(updatedPriceCheck.replace(/,/g, ''));
+  //     const priceTolerance = 0.1;
       
-      if (updatedPriceCheck && Math.abs(updatedPriceNum - newPrice) < priceTolerance) {
-        console.log(`[${exchange.name}] ✅ Price updated successfully: "${updatedPriceCheck}" (expected: ${newPrice}, got: ${updatedPriceNum})`);
-      } else {
-        console.log(`[${exchange.name}] ⚠️  Price update verification failed. Expected: ${newPrice}, Got: "${updatedPriceCheck}" (${updatedPriceNum})`);
-      }
-      await delay(300);
-    } else {
-      console.log(`[${exchange.name}] ⚠️  Could not read current price value: "${currentPriceValue}", skipping price update`);
-    }
-  } else {
-    console.log(`[${exchange.name}] Skipping price update - only applies to limit orders with price input`);
-  }
+  //     if (updatedPriceCheck && Math.abs(updatedPriceNum - newPrice) < priceTolerance) {
+  //       console.log(`[${exchange.name}] ✅ Price updated successfully: "${updatedPriceCheck}" (expected: ${newPrice}, got: ${updatedPriceNum})`);
+  //     } else {
+  //       console.log(`[${exchange.name}] ⚠️  Price update verification failed. Expected: ${newPrice}, Got: "${updatedPriceCheck}" (${updatedPriceNum})`);
+  //     }
+  //     await delay(300);
+  //   } else {
+  //     console.log(`[${exchange.name}] ⚠️  Could not read current price value: "${currentPriceValue}", skipping price update`);
+  //   }
+  // } else {
+  //   console.log(`[${exchange.name}] Skipping price update - only applies to limit orders with price input`);
+  // }
 
   // Step 5: Click Buy/Sell button - FOR GRVT, THIS IS THE FINAL CONFIRM BUTTON
   // GRVT: "Buy / Long" or "Sell / Short" button IS the confirm button (no separate confirm step)

@@ -259,28 +259,82 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null, clo
       console.log(`[${exchange.name}] Step 1: Navigating to Positions tab...`);
       let positionsTabClicked = false;
       
-      // Strategy 1: Find by data-text attribute containing "Positions"
-      const positionsClickedByDataText = await page.evaluate(() => {
-        const allElements = Array.from(document.querySelectorAll('div, button, span, a'));
-        for (const el of allElements) {
-          const dataText = el.getAttribute('data-text');
-          if (dataText && dataText.toLowerCase().includes('positions') && el.offsetParent !== null) {
-            el.click();
-            return true;
+      // Strategy 0: Find by tab item structure (GRVT specific: div with class containing "tabItem" containing span with "Positions")
+      const positionsClickedByStructure = await page.evaluate(() => {
+        // Look for divs with class containing "tabItem" or "tab-item"
+        const allDivs = Array.from(document.querySelectorAll('div'));
+        for (const div of allDivs) {
+          const divClass = (div.className || '').toLowerCase();
+          if ((divClass.includes('tabitem') || divClass.includes('tab-item')) && div.offsetParent !== null) {
+            // Check if this div contains a span with "Positions" text
+            const spans = Array.from(div.querySelectorAll('span'));
+            for (const span of spans) {
+              const spanText = (span.textContent || '').trim();
+              if (spanText.toLowerCase().startsWith('positions')) {
+                div.click();
+                return true;
+              }
+            }
           }
         }
         return false;
       });
       
-      if (positionsClickedByDataText) {
+      if (positionsClickedByStructure) {
         positionsTabClicked = true;
-        console.log(`[${exchange.name}] ✓ Clicked Positions tab (via data-text attribute)`);
+        console.log(`[${exchange.name}] ✓ Clicked Positions tab (via tab item structure)`);
         await delay(500);
       }
       
+      // Strategy 1: Find by data-text attribute containing "Positions"
+      if (!positionsTabClicked) {
+        const positionsClickedByDataText = await page.evaluate(() => {
+          const allElements = Array.from(document.querySelectorAll('div, button, span, a'));
+          for (const el of allElements) {
+            const dataText = el.getAttribute('data-text');
+            if (dataText && dataText.toLowerCase().includes('positions') && el.offsetParent !== null) {
+              el.click();
+              return true;
+            }
+          }
+          return false;
+        });
+        
+        if (positionsClickedByDataText) {
+          positionsTabClicked = true;
+          console.log(`[${exchange.name}] ✓ Clicked Positions tab (via data-text attribute)`);
+          await delay(500);
+        }
+      }
+      
       // Strategy 2: Find by text starting with "Positions" (handles "Positions (1)" format)
+      // GRVT structure: <div class="style_tabItem__..."><span class="style_label__...">Positions (1)</span></div>
       if (!positionsTabClicked) {
         const positionsClickedByText = await page.evaluate(() => {
+          // First, try to find the span with "Positions" text and click its parent div
+          const allSpans = Array.from(document.querySelectorAll('span'));
+          for (const span of allSpans) {
+            const text = (span.textContent || '').trim();
+            const isVisible = span.offsetParent !== null && span.offsetWidth > 0 && span.offsetHeight > 0;
+            // Match "Positions" or "Positions (1)" or "Positions (2)" etc.
+            if (isVisible && text.toLowerCase().startsWith('positions')) {
+              // Check if parent is a tab item (has class containing "tabItem" or "tab-item")
+              const parent = span.parentElement;
+              if (parent) {
+                const parentClass = (parent.className || '').toLowerCase();
+                if (parentClass.includes('tabitem') || parentClass.includes('tab-item') || 
+                    parent.tagName.toLowerCase() === 'div') {
+                  parent.click();
+                  return true;
+                }
+              }
+              // Fallback: click the span itself
+              span.click();
+              return true;
+            }
+          }
+          
+          // Fallback: Find any element with "Positions" text
           const allElements = Array.from(document.querySelectorAll('div, button, span, a'));
           for (const el of allElements) {
             const text = (el.textContent || '').trim();
@@ -404,23 +458,50 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null, clo
         for (const btn of allButtons) {
           const text = (btn.textContent || '').trim().toLowerCase();
           if (text === 'close' && btn.offsetParent !== null) {
-            // Verify it's in a positions table (check for nearby "Actions" text or table structure)
+            // First check: Is this Close button inside TablePositions component?
+            const isInTablePositions = btn.closest('[data-sentry-component="TablePositions"]') !== null;
+            
+            // Second check: Is it in the Actions column (cell-ping-right)?
             let parent = btn.parentElement;
-            let inActionsColumn = false;
+            let isInActionsColumn = false;
             for (let i = 0; i < 10 && parent; i++) {
-              const parentText = parent.textContent || '';
               const parentClass = (parent.className || '').toLowerCase();
-              // Check if it's in Actions column (has "Actions" text nearby or is in last column)
-              if (parentText.includes('Actions') || 
-                  parentClass.includes('cell-ping-right') || // Last column class
-                  parent.querySelector('span')?.textContent?.trim() === 'Actions') {
-                inActionsColumn = true;
+              if (parentClass.includes('cell-ping-right') || 
+                  (parent.textContent || '').includes('Actions')) {
+                isInActionsColumn = true;
                 break;
               }
               parent = parent.parentElement;
             }
             
-            if (inActionsColumn) {
+            // Third check: Look for position data (Long, Short, BTC, etc.) in the row
+            parent = btn.parentElement;
+            let hasPositionData = false;
+            for (let i = 0; i < 20 && parent; i++) {
+              const parentText = (parent.textContent || '').toLowerCase();
+              const parentClass = (parent.className || '').toLowerCase();
+              
+              const hasLongShort = parentText.includes('long') || parentText.includes('short');
+              const hasSymbol = parentText.includes('btc') || parentText.includes('perp') || 
+                               parentText.includes('eth') || parentText.includes('usd');
+              const hasPositionFields = parentText.includes('quantity') || parentText.includes('size') || 
+                                       parentText.includes('pnl') || parentText.includes('p&l') ||
+                                       parentText.includes('entry') || parentText.includes('mark') ||
+                                       parentText.includes('liq') || parentText.includes('margin');
+              const isRowLike = parentClass.includes('tablerow') || 
+                               parentClass.includes('table-row') ||
+                               parentClass.includes('row');
+              
+              if ((hasLongShort || hasSymbol || hasPositionFields) && (isRowLike || isInTablePositions)) {
+                hasPositionData = true;
+                break;
+              }
+              
+              parent = parent.parentElement;
+            }
+            
+            // If it's in TablePositions, Actions column, or has position data, it's valid
+            if (isInTablePositions || isInActionsColumn || hasPositionData) {
               return {
                 found: true,
                 text: btn.textContent?.trim() || 'Close'
@@ -443,22 +524,50 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null, clo
           for (const btn of allButtons) {
             const text = (btn.textContent || '').trim().toLowerCase();
             if (text === 'close' && btn.offsetParent !== null) {
-              // Verify it's in Actions column
+              // First check: Is this Close button inside TablePositions component?
+              const isInTablePositions = btn.closest('[data-sentry-component="TablePositions"]') !== null;
+              
+              // Second check: Is it in the Actions column (cell-ping-right)?
               let parent = btn.parentElement;
-              let inActionsColumn = false;
+              let isInActionsColumn = false;
               for (let i = 0; i < 10 && parent; i++) {
-                const parentText = parent.textContent || '';
                 const parentClass = (parent.className || '').toLowerCase();
-                if (parentText.includes('Actions') || 
-                    parentClass.includes('cell-ping-right') ||
-                    parent.querySelector('span')?.textContent?.trim() === 'Actions') {
-                  inActionsColumn = true;
+                if (parentClass.includes('cell-ping-right') || 
+                    (parent.textContent || '').includes('Actions')) {
+                  isInActionsColumn = true;
                   break;
                 }
                 parent = parent.parentElement;
               }
               
-              if (inActionsColumn) {
+              // Third check: Look for position data (Long, Short, BTC, etc.) in the row
+              parent = btn.parentElement;
+              let hasPositionData = false;
+              for (let i = 0; i < 20 && parent; i++) {
+                const parentText = (parent.textContent || '').toLowerCase();
+                const parentClass = (parent.className || '').toLowerCase();
+                
+                const hasLongShort = parentText.includes('long') || parentText.includes('short');
+                const hasSymbol = parentText.includes('btc') || parentText.includes('perp') || 
+                                 parentText.includes('eth') || parentText.includes('usd');
+                const hasPositionFields = parentText.includes('quantity') || parentText.includes('size') || 
+                                         parentText.includes('pnl') || parentText.includes('p&l') ||
+                                         parentText.includes('entry') || parentText.includes('mark') ||
+                                         parentText.includes('liq') || parentText.includes('margin');
+                const isRowLike = parentClass.includes('tablerow') || 
+                                 parentClass.includes('table-row') ||
+                                 parentClass.includes('row');
+                
+                if ((hasLongShort || hasSymbol || hasPositionFields) && (isRowLike || isInTablePositions)) {
+                  hasPositionData = true;
+                  break;
+                }
+                
+                parent = parent.parentElement;
+              }
+              
+              // If it's in TablePositions, Actions column, or has position data, it's valid
+              if (isInTablePositions || isInActionsColumn || hasPositionData) {
                 return btn;
               }
             }
@@ -546,22 +655,50 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null, clo
                 for (const btn of allButtons) {
                   const text = (btn.textContent || '').trim().toLowerCase();
                   if (text === 'close' && btn.offsetParent !== null) {
-                    // Verify it's in Actions column
+                    // First check: Is this Close button inside TablePositions component?
+                    const isInTablePositions = btn.closest('[data-sentry-component="TablePositions"]') !== null;
+                    
+                    // Second check: Is it in the Actions column (cell-ping-right)?
                     let parent = btn.parentElement;
-                    let inActionsColumn = false;
+                    let isInActionsColumn = false;
                     for (let i = 0; i < 10 && parent; i++) {
-                      const parentText = parent.textContent || '';
                       const parentClass = (parent.className || '').toLowerCase();
-                      if (parentText.includes('Actions') || 
-                          parentClass.includes('cell-ping-right') ||
-                          parent.querySelector('span')?.textContent?.trim() === 'Actions') {
-                        inActionsColumn = true;
+                      if (parentClass.includes('cell-ping-right') || 
+                          (parent.textContent || '').includes('Actions')) {
+                        isInActionsColumn = true;
                         break;
                       }
                       parent = parent.parentElement;
                     }
                     
-                    if (inActionsColumn) {
+                    // Third check: Look for position data (Long, Short, BTC, etc.) in the row
+                    parent = btn.parentElement;
+                    let hasPositionData = false;
+                    for (let i = 0; i < 20 && parent; i++) {
+                      const parentText = (parent.textContent || '').toLowerCase();
+                      const parentClass = (parent.className || '').toLowerCase();
+                      
+                      const hasLongShort = parentText.includes('long') || parentText.includes('short');
+                      const hasSymbol = parentText.includes('btc') || parentText.includes('perp') || 
+                                       parentText.includes('eth') || parentText.includes('usd');
+                      const hasPositionFields = parentText.includes('quantity') || parentText.includes('size') || 
+                                               parentText.includes('pnl') || parentText.includes('p&l') ||
+                                               parentText.includes('entry') || parentText.includes('mark') ||
+                                               parentText.includes('liq') || parentText.includes('margin');
+                      const isRowLike = parentClass.includes('tablerow') || 
+                                       parentClass.includes('table-row') ||
+                                       parentClass.includes('row');
+                      
+                      if ((hasLongShort || hasSymbol || hasPositionFields) && (isRowLike || isInTablePositions)) {
+                        hasPositionData = true;
+                        break;
+                      }
+                      
+                      parent = parent.parentElement;
+                    }
+                    
+                    // If it's in TablePositions, Actions column, or has position data, it's valid
+                    if (isInTablePositions || isInActionsColumn || hasPositionData) {
                       return btn;
                     }
                   }
@@ -2233,74 +2370,191 @@ async function checkGrvtOpenPositions(page) {
     }
     
     if (!positionsTabClicked) {
-      console.log(`[GRVT] ⚠️  Could not find Positions tab, continuing anyway...`);
-      await delay(500); // Wait a bit for page to stabilize
+      console.log(`[GRVT] ⚠️  Could not find Positions tab using standard methods, trying alternative approach...`);
+      
+      // Alternative: Try to find and click by looking for tab that contains "Positions" text
+      const positionsTabAlt = await page.evaluate(() => {
+        // Look for elements that might be tabs
+        const allElements = Array.from(document.querySelectorAll('*'));
+        for (const el of allElements) {
+          const text = (el.textContent || '').trim();
+          const isVisible = el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+          // Match "Positions" or "Positions (1)" etc.
+          if (isVisible && text.toLowerCase().startsWith('positions')) {
+            // Make sure it's clickable (button, link, or has click handler)
+            const tagName = el.tagName.toLowerCase();
+            if (tagName === 'button' || tagName === 'a' || 
+                el.getAttribute('role') === 'button' ||
+                el.getAttribute('role') === 'tab' ||
+                window.getComputedStyle(el).cursor === 'pointer') {
+              el.click();
+              return true;
+            }
+          }
+        }
+        return false;
+      });
+      
+      if (positionsTabAlt) {
+        positionsTabClicked = true;
+        console.log(`[GRVT] ✓ Clicked Positions tab (alternative method)`);
+        await delay(500);
+      } else {
+        console.log(`[GRVT] ⚠️  Could not find Positions tab, continuing anyway...`);
+        await delay(500); // Wait a bit for page to stabilize
+      }
     }
     
-    // Step 2: Wait for positions tab to load
-    await delay(300);
+    // Step 2: Wait for positions tab to load and verify TablePositions component appears
+    console.log(`[GRVT] Step 2: Waiting for Positions tab to load and TablePositions component to appear...`);
     
-    // Step 3: Count all Close buttons in Actions column and detect long/short
-    console.log(`[GRVT] Step 2: Counting Close buttons in Actions column and detecting long/short...`);
+    // Wait for TablePositions component to appear (with retries)
+    let tablePositionsFound = false;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      await delay(attempt === 0 ? 500 : 300); // First wait 500ms, then 300ms for retries
+      
+      const isOnPositionsPage = await page.evaluate(() => {
+        return document.querySelector('[data-sentry-component="TablePositions"]') !== null;
+      });
+      
+      if (isOnPositionsPage) {
+        tablePositionsFound = true;
+        console.log(`[GRVT] ✓ TablePositions component found (attempt ${attempt + 1}/5)`);
+        break;
+      } else if (attempt < 4) {
+        console.log(`[GRVT] ⏳ TablePositions component not found yet, waiting... (attempt ${attempt + 1}/5)`);
+      }
+    }
+    
+    if (!tablePositionsFound) {
+      console.log(`[GRVT] ⚠️  TablePositions component not found after all attempts - continuing anyway (may still work if positions exist)`);
+    }
+    
+    // Step 3: Count all Close buttons and detect long/short
+    console.log(`[GRVT] Step 2: Counting Close buttons and detecting long/short...`);
     const positionResult = await page.evaluate(() => {
       // GRVT uses div-based table structure, not standard <table>
-      // Look for Close buttons in the Actions column
+      // Look for Close buttons - if we're on Positions tab, any Close button is likely a position Close
       const allButtons = Array.from(document.querySelectorAll('button'));
       const validPositions = [];
+      const debugInfo = [];
       
+      // First, check if we're on Positions page by looking for position-related text
+      const pageText = (document.body.textContent || '').toLowerCase();
+      const isPositionsPage = pageText.includes('positions') && 
+                              (pageText.includes('long') || pageText.includes('short') || 
+                               pageText.includes('size') || pageText.includes('pnl'));
+      
+      debugInfo.push(`Total buttons found: ${allButtons.length}`);
+      debugInfo.push(`Is Positions page: ${isPositionsPage}`);
+      
+      // Check if TablePositions component exists
+      const tablePositionsExists = document.querySelector('[data-sentry-component="TablePositions"]') !== null;
+      debugInfo.push(`TablePositions component exists: ${tablePositionsExists}`);
+      
+      // Count Close buttons first
+      let totalCloseButtons = 0;
+      let visibleCloseButtons = 0;
+      for (const btn of allButtons) {
+        const text = (btn.textContent || '').trim().toLowerCase();
+        if (text === 'close') {
+          totalCloseButtons++;
+          if (btn.offsetParent !== null) {
+            visibleCloseButtons++;
+          }
+        }
+      }
+      debugInfo.push(`Total Close buttons: ${totalCloseButtons}, Visible: ${visibleCloseButtons}`);
+      
+      let closeButtonCount = 0;
       for (const btn of allButtons) {
         const text = (btn.textContent || '').trim().toLowerCase();
         if (text === 'close' && btn.offsetParent !== null) {
-          // Verify it's in a positions table (check for nearby "Actions" text or table structure)
-          let parent = btn.parentElement;
-          let inActionsColumn = false;
-          let positionRow = null;
+          closeButtonCount++;
+          // First check: Is this Close button inside TablePositions component?
+          const isInTablePositions = btn.closest('[data-sentry-component="TablePositions"]') !== null;
           
-          // Find the row containing this Close button
-          for (let i = 0; i < 15 && parent; i++) {
-            const parentText = parent.textContent || '';
+          // Second check: Is it in the Actions column (cell-ping-right)?
+          let parent = btn.parentElement;
+          let isInActionsColumn = false;
+          for (let i = 0; i < 5 && parent; i++) {
             const parentClass = (parent.className || '').toLowerCase();
-            
-            // Check if it's in Actions column (has "Actions" text nearby or is in last column)
-            if (parentText.includes('Actions') || 
-                parentClass.includes('cell-ping-right') || // Last column class
-                parentClass.includes('tablerow') ||
-                parent.getAttribute('data-sentry-component') === 'TablePositions' ||
-                parent.querySelector('[data-sentry-component="TablePositions"]') ||
-                parent.querySelector('span')?.textContent?.trim() === 'Actions') {
-              inActionsColumn = true;
-              
-              // Try to find the row element (usually has tablerow class or is a table row)
-              if (parentClass.includes('tablerow') || parentClass.includes('row') || 
-                  parent.getAttribute('data-sentry-component') === 'TablePositions') {
-                positionRow = parent;
-              } else {
-                // Look for parent with row-like structure
-                let rowParent = parent.parentElement;
-                for (let j = 0; j < 5 && rowParent; j++) {
-                  const rowClass = (rowParent.className || '').toLowerCase();
-                  if (rowClass.includes('tablerow') || rowClass.includes('row') ||
-                      rowParent.getAttribute('data-sentry-component') === 'TablePositions') {
-                    positionRow = rowParent;
-                    break;
-                  }
-                  rowParent = rowParent.parentElement;
-                }
-              }
+            if (parentClass.includes('cell-ping-right') || 
+                (parent.textContent || '').includes('Actions')) {
+              isInActionsColumn = true;
               break;
             }
             parent = parent.parentElement;
           }
           
-          if (inActionsColumn) {
-            // Get the row text to check for long/short
-            let rowText = '';
-            if (positionRow) {
-              rowText = (positionRow.textContent || '').toLowerCase();
-            } else {
+          debugInfo.push(`Close button #${closeButtonCount}: InTablePositions=${isInTablePositions}, InActionsColumn=${isInActionsColumn}`);
+          
+          // Get surrounding context to verify it's a position Close button
+          parent = btn.parentElement;
+          let positionRow = null;
+          let hasPositionData = false;
+          let rowText = '';
+          
+          // Walk up the DOM to find the row and check for position data
+          for (let i = 0; i < 20 && parent; i++) {
+            const parentText = (parent.textContent || '').toLowerCase();
+            const parentClass = (parent.className || '').toLowerCase();
+            
+            // Check if this parent contains position data (Long, Short, BTC, PERP, Size, PnL, etc.)
+            const hasLongShort = parentText.includes('long') || parentText.includes('short');
+            const hasSymbol = parentText.includes('btc') || parentText.includes('perp') || 
+                             parentText.includes('eth') || parentText.includes('usd');
+            const hasPositionFields = parentText.includes('quantity') || parentText.includes('size') || 
+                                     parentText.includes('pnl') || parentText.includes('p&l') ||
+                                     parentText.includes('entry') || parentText.includes('entry price') ||
+                                     parentText.includes('mark') || parentText.includes('mark price') ||
+                                     parentText.includes('liq') || parentText.includes('margin');
+            
+            // Check if it's a table row structure (more flexible matching)
+            // GRVT uses divs with classes like "style_tableRow__gbjWO" - when lowercased becomes "style_tablerow__gbjwo"
+            // So we check for "tablerow" (all lowercase) or "row" in the class name
+            const isRowLike = parentClass.includes('tablerow') || 
+                             parentClass.includes('table-row') ||
+                             parentClass.includes('row') ||
+                             parentClass.includes('tr') ||
+                             parent.tagName === 'TR' ||
+                             parent.getAttribute('data-sentry-component') === 'TablePositions' ||
+                             parent.querySelector('[data-sentry-component="TablePositions"]') ||
+                             // Check if parent has cell-ping-right (last column indicator) or is inside TablePositions
+                             parentClass.includes('cell-ping-right') ||
+                             parent.closest('[data-sentry-component="TablePositions"]');
+            
+            // If we find position data in a row-like structure, that's ideal
+            if ((hasLongShort || hasSymbol || hasPositionFields) && isRowLike) {
+              positionRow = parent;
+              rowText = parentText;
+              hasPositionData = true;
+              break;
+            }
+            
+            // Also check if parent has position data even if not row-like (might be in a cell or container)
+            // This is important for cases where the row structure isn't obvious
+            if (hasLongShort || (hasSymbol && (hasPositionFields || parentText.includes('cross') || parentText.includes('10x') || parentText.includes('20x')))) {
+              rowText = parentText;
+              hasPositionData = true;
+              // Don't break here - continue to see if we can find a better row structure
+              if (!positionRow && isRowLike) {
+                positionRow = parent;
+                break;
+              }
+            }
+            
+            parent = parent.parentElement;
+          }
+          
+          // If we found position data nearby, or we're on Positions page, or it's in TablePositions, consider it valid
+          // Also check if it's in Actions column (cell-ping-right) which is a strong indicator
+          if (hasPositionData || isPositionsPage || isInTablePositions || isInActionsColumn) {
+            // Get row text for long/short detection
+            if (!rowText) {
               // Fallback: check parent elements for position text
               let checkParent = btn.parentElement;
-              for (let i = 0; i < 10 && checkParent; i++) {
+              for (let i = 0; i < 15 && checkParent; i++) {
                 const checkText = (checkParent.textContent || '').toLowerCase();
                 if (checkText.includes('long') || checkText.includes('short') || 
                     checkText.includes('btc') || checkText.includes('perp')) {
@@ -2319,8 +2573,13 @@ async function checkGrvtOpenPositions(page) {
               visible: btn.offsetParent !== null,
               side: isLong ? 'long' : (isShort ? 'short' : 'unknown'),
               isLong: isLong,
-              isShort: isShort
+              isShort: isShort,
+              hasPositionData: hasPositionData
             });
+            
+            debugInfo.push(`Close #${closeButtonCount} VALID - Long: ${isLong}, Short: ${isShort}, HasPositionData: ${hasPositionData}, RowText: ${rowText.substring(0, 50)}`);
+          } else {
+            debugInfo.push(`Close #${closeButtonCount} SKIPPED - HasPositionData: ${hasPositionData}, IsPositionsPage: ${isPositionsPage}, IsInTablePositions: ${isInTablePositions}, IsInActionsColumn: ${isInActionsColumn}`);
           }
         }
       }
@@ -2334,9 +2593,15 @@ async function checkGrvtOpenPositions(page) {
         count: validPositions.length,
         longCount: longCount,
         shortCount: shortCount,
-        positions: validPositions
+        positions: validPositions,
+        debug: debugInfo
       };
     });
+    
+    // Log debug information
+    if (positionResult.debug && positionResult.debug.length > 0) {
+      console.log(`[GRVT] 🔍 Debug info: ${positionResult.debug.join(' | ')}`);
+    }
     
     if (positionResult.hasPositions) {
       console.log(`[GRVT] ✅ Found ${positionResult.count} open position(s) - Long: ${positionResult.longCount}, Short: ${positionResult.shortCount}`);

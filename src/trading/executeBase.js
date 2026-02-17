@@ -182,11 +182,39 @@ export async function selectOrderType(page, orderType, exchange) {
       console.log(`[${exchange.name}] Searching for Limit button with text: "${exchange.selectors.limitButton}"`);
       const limitBtn = await findByExactText(page, exchange.selectors.limitButton, ["button", "div"]);
       if (limitBtn) {
-        console.log(`[${exchange.name}] Found Limit button, clicking...`);
-        await limitBtn.click();
-        console.log(`[${exchange.name}] Selected LIMIT order`);
-        await delay(300);
-        return true;
+        // Safety check: Verify it's not a deposit/link button before clicking
+        const buttonInfo = await page.evaluate((el) => {
+          const text = (el.textContent || '').trim().toLowerCase();
+          const href = el.getAttribute('href') || '';
+          const isLink = el.tagName === 'A' || href !== '';
+          return {
+            text: text,
+            isLink: isLink,
+            href: href,
+            containsDeposit: text.includes('deposit') || text.includes('withdraw')
+          };
+        }, limitBtn);
+        
+        if (buttonInfo.isLink) {
+          console.log(`[${exchange.name}] ⚠️  Found button but it's a link (href: ${buttonInfo.href}), skipping to avoid navigation...`);
+        } else if (buttonInfo.containsDeposit) {
+          console.log(`[${exchange.name}] ⚠️  Found button but text contains deposit/withdraw (${buttonInfo.text}), skipping to avoid navigation...`);
+        } else {
+          console.log(`[${exchange.name}] Found Limit button, clicking...`);
+          await limitBtn.click();
+          console.log(`[${exchange.name}] Selected LIMIT order`);
+          await delay(300);
+          
+          // Verify we're still on trading page (not navigated away)
+          const currentUrl = page.url();
+          if (currentUrl.includes('/deposit') || currentUrl.includes('/withdraw')) {
+            console.log(`[${exchange.name}] ⚠️  Navigation detected to ${currentUrl}, going back...`);
+            await page.goBack();
+            await delay(1000);
+            return false; // Failed due to navigation
+          }
+          return true;
+        }
       } else {
         console.log(`[${exchange.name}] ⚠️  Limit button not found`);
       }
@@ -194,11 +222,39 @@ export async function selectOrderType(page, orderType, exchange) {
       console.log(`[${exchange.name}] Searching for Market button with text: "${exchange.selectors.marketButton}"`);
       const marketBtn = await findByExactText(page, exchange.selectors.marketButton, ["button", "div"]);
       if (marketBtn) {
-        console.log(`[${exchange.name}] Found Market button, clicking...`);
-        await marketBtn.click();
-        console.log(`[${exchange.name}] Selected MARKET order`);
-        await delay(300);
-        return true;
+        // Safety check: Verify it's not a deposit/link button before clicking
+        const buttonInfo = await page.evaluate((el) => {
+          const text = (el.textContent || '').trim().toLowerCase();
+          const href = el.getAttribute('href') || '';
+          const isLink = el.tagName === 'A' || href !== '';
+          return {
+            text: text,
+            isLink: isLink,
+            href: href,
+            containsDeposit: text.includes('deposit') || text.includes('withdraw')
+          };
+        }, marketBtn);
+        
+        if (buttonInfo.isLink) {
+          console.log(`[${exchange.name}] ⚠️  Found button but it's a link (href: ${buttonInfo.href}), skipping to avoid navigation...`);
+        } else if (buttonInfo.containsDeposit) {
+          console.log(`[${exchange.name}] ⚠️  Found button but text contains deposit/withdraw (${buttonInfo.text}), skipping to avoid navigation...`);
+        } else {
+          console.log(`[${exchange.name}] Found Market button, clicking...`);
+          await marketBtn.click();
+          console.log(`[${exchange.name}] Selected MARKET order`);
+          await delay(300);
+          
+          // Verify we're still on trading page (not navigated away)
+          const currentUrl = page.url();
+          if (currentUrl.includes('/deposit') || currentUrl.includes('/withdraw')) {
+            console.log(`[${exchange.name}] ⚠️  Navigation detected to ${currentUrl}, going back...`);
+            await page.goBack();
+            await delay(1000);
+            return false; // Failed due to navigation
+          }
+          return true;
+        }
       } else {
         console.log(`[${exchange.name}] ⚠️  Market button not found`);
       }
