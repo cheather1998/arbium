@@ -144,108 +144,323 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null, clo
       
       // Wait for confirmation modal to open (only if button was clicked)
       if (cancelAllOrdersBtnClicked) {
-        // Wait a moment for modal to appear
-        await delay(500);
+        console.log(`[${exchange.name}] Step 0.3: Waiting for confirmation modal/button to appear...`);
         
-        // Check if confirmation modal opened
-        const modalCheck = await page.evaluate(() => {
-          const modals = document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"], [class*="Dialog"]');
-          for (const modal of modals) {
-            const style = window.getComputedStyle(modal);
-            if (style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') {
-              return true;
-            }
-          }
-          return false;
-        });
+        // Wait for Confirm button to appear after clicking Cancel all orders
+        let confirmBtn = null;
+        let confirmBtnVisible = false;
         
-        if (modalCheck) {
-          console.log(`[${exchange.name}] Step 0.3: Waiting for confirmation modal to open...`);
-          let modalOpen = false;
-          for (let i = 0; i < 10; i++) {
-            await delay(300);
-            modalOpen = await page.evaluate(() => {
-              const modals = document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"], [class*="Dialog"]');
-              for (const modal of modals) {
-                const style = window.getComputedStyle(modal);
-                if (style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') {
-                  return true;
-                }
-              }
-              return false;
-            });
-            if (modalOpen) {
-              console.log(`[${exchange.name}] ✅ Confirmation modal opened`);
-              break;
-            }
-          }
+        // Wait up to 5 seconds for Confirm button to appear
+        for (let i = 0; i < 20; i++) {
+          await delay(250);
           
-          if (modalOpen) {
-            // Find and click Confirm button in modal
-            console.log(`[${exchange.name}] Step 0.4: Looking for Confirm button in cancellation modal...`);
-            await delay(500); // Wait for modal content to render
+          // Try to find Confirm button with multiple strategies
+          if (!confirmBtn) {
+            // Strategy 1: Find by exact text
+            confirmBtn = await findByExactText(page, "Confirm", ["button", "div", "span"]);
             
-            let confirmBtn = await findByExactText(page, "Confirm", ["button", "div", "span"]);
+            // Strategy 2: Find by partial text
             if (!confirmBtn) {
               confirmBtn = await findByText(page, "Confirm", ["button", "div", "span"]);
             }
             
-            if (confirmBtn) {
-              // Verify it's in the modal
-              const confirmInModal = await page.evaluate((btn) => {
-                let parent = btn.parentElement;
-                for (let i = 0; i < 10 && parent; i++) {
-                  const role = parent.getAttribute('role');
-                  const className = (parent.className || '').toLowerCase();
-                  if (role === 'dialog' || 
-                      className.includes('modal') || 
-                      className.includes('dialog')) {
-                    return true;
+            // Strategy 3: Find by class selector (for GRVT destructive button)
+            if (!confirmBtn) {
+              const confirmByClass = await page.evaluateHandle(() => {
+                const buttons = Array.from(document.querySelectorAll('button'));
+                for (const btn of buttons) {
+                  const text = (btn.textContent || '').trim();
+                  const className = (btn.className || '').toLowerCase();
+                  if (text === 'Confirm' && 
+                      (className.includes('destructive') || 
+                       className.includes('style_destructive') ||
+                       className.includes('style_btn'))) {
+                    const style = window.getComputedStyle(btn);
+                    const rect = btn.getBoundingClientRect();
+                    if (btn.offsetParent !== null &&
+                        style.display !== 'none' &&
+                        style.visibility !== 'hidden' &&
+                        rect.width > 0 &&
+                        rect.height > 0) {
+                      return btn;
+                    }
                   }
-                  parent = parent.parentElement;
                 }
-                return false;
+                return null;
+              });
+              confirmBtn = confirmByClass.asElement();
+              if (confirmBtn) {
+                console.log(`[${exchange.name}] ✅ Found Confirm button using class selector`);
+              }
+            }
+          }
+          
+          // Check if Confirm button is visible and clickable
+          if (confirmBtn) {
+            confirmBtnVisible = await page.evaluate((btn) => {
+              if (!btn) return false;
+              const style = window.getComputedStyle(btn);
+              const rect = btn.getBoundingClientRect();
+              return btn.offsetParent !== null &&
+                     style.display !== 'none' &&
+                     style.visibility !== 'hidden' &&
+                     style.opacity !== '0' &&
+                     rect.width > 0 &&
+                     rect.height > 0 &&
+                     !btn.disabled;
+            }, confirmBtn);
+            
+            if (confirmBtnVisible) {
+              console.log(`[${exchange.name}] ✅ Confirm button found and visible (attempt ${i + 1})`);
+              break;
+            }
+          }
+          
+          // Also check if page text indicates modal is open
+          const hasConfirmText = await page.evaluate(() => {
+            const text = document.body.innerText || '';
+            return text.toLowerCase().includes('confirm') && 
+                   (text.toLowerCase().includes('cancel') || text.toLowerCase().includes('order'));
+          });
+          
+          if (hasConfirmText && i > 5) {
+            // Give it a bit more time if we see confirm text
+            console.log(`[${exchange.name}] Confirm text detected on page, waiting a bit more...`);
+          }
+        }
+        
+        if (confirmBtn && confirmBtnVisible) {
+          // Find and click Confirm button with verification
+          console.log(`[${exchange.name}] Step 0.4: Clicking Confirm button in cancellation modal...`);
+          await delay(300); // Small delay before clicking
+          
+          try {
+            // Get button state before clicking for verification
+            const buttonStateBefore = await page.evaluate((btn) => {
+              if (!btn) return null;
+              return {
+                text: (btn.textContent || '').trim(),
+                disabled: btn.disabled,
+                className: btn.className || '',
+                visible: btn.offsetParent !== null
+              };
+            }, confirmBtn);
+            
+            // Try multiple click strategies for GRVT with verification
+            let clickSuccess = false;
+            let clickMethod = '';
+            
+            // Strategy 1: Scroll into view + JavaScript click with mouse events (most reliable for GRVT)
+            try {
+              const jsClickResult = await page.evaluate((btn) => {
+                if (!btn) return { success: false, error: 'Button not found' };
+                try {
+                  // Scroll into view
+                  btn.scrollIntoView({ behavior: 'instant', block: 'center' });
+                  
+                  // Focus the button
+                  btn.focus();
+                  
+                  // Trigger mouse events
+                  const mouseDown = new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window });
+                  const mouseUp = new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window });
+                  const clickEvent = new MouseEvent('click', { bubbles: true, cancelable: true, view: window });
+                  
+                  btn.dispatchEvent(mouseDown);
+                  btn.dispatchEvent(mouseUp);
+                  btn.dispatchEvent(clickEvent);
+                  
+                  // Also call click() method
+                  btn.click();
+                  
+                  return { success: true };
+                } catch (e) {
+                  return { success: false, error: e.message };
+                }
               }, confirmBtn);
               
-              if (confirmInModal) {
-                console.log(`[${exchange.name}] ✅ Found Confirm button in cancellation modal, clicking...`);
-                await confirmBtn.click();
+              if (jsClickResult && jsClickResult.success) {
+                clickSuccess = true;
+                clickMethod = 'JavaScript with mouse events';
+                console.log(`[${exchange.name}] ✅ Clicked Confirm button (${clickMethod})`);
+              }
+            } catch (error) {
+              console.log(`[${exchange.name}] ⚠️  JavaScript click with mouse events failed: ${error.message}`);
+            }
+            
+            // Strategy 2: Direct Puppeteer click with force option
+            if (!clickSuccess) {
+              try {
+                await confirmBtn.evaluate((btn) => btn.scrollIntoView({ behavior: 'instant', block: 'center' }));
+                await delay(100);
+                await confirmBtn.click({ delay: 50 });
+                clickSuccess = true;
+                clickMethod = 'Puppeteer click';
+                console.log(`[${exchange.name}] ✅ Clicked Confirm button (${clickMethod})`);
+              } catch (error) {
+                console.log(`[${exchange.name}] ⚠️  Puppeteer click failed: ${error.message}`);
+              }
+            }
+            
+            // Strategy 3: Coordinate-based click
+            if (!clickSuccess) {
+              try {
+                const coords = await page.evaluate((btn) => {
+                  if (!btn) return null;
+                  const rect = btn.getBoundingClientRect();
+                  return {
+                    x: rect.left + rect.width / 2,
+                    y: rect.top + rect.height / 2
+                  };
+                }, confirmBtn);
                 
-                // Wait for modal to close
-                console.log(`[${exchange.name}] Step 0.5: Waiting for cancellation modal to close...`);
-                let modalClosed = false;
-                for (let i = 0; i < 15; i++) {
-                  await delay(300);
-                  modalClosed = await page.evaluate(() => {
-                    const modals = document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"], [class*="Dialog"]');
-                    for (const modal of modals) {
-                      const style = window.getComputedStyle(modal);
-                      if (style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') {
-                        return false;
-                      }
-                    }
-                    return true;
-                  });
-                  if (modalClosed) {
-                    console.log(`[${exchange.name}] ✅ Cancellation modal closed`);
+                if (coords) {
+                  await page.mouse.move(coords.x, coords.y);
+                  await delay(100);
+                  await page.mouse.click(coords.x, coords.y);
+                  clickSuccess = true;
+                  clickMethod = 'Coordinate click';
+                  console.log(`[${exchange.name}] ✅ Clicked Confirm button (${clickMethod})`);
+                }
+              } catch (error) {
+                console.log(`[${exchange.name}] ⚠️  Coordinate click failed: ${error.message}`);
+              }
+            }
+            
+            // Verify the click actually worked by checking if modal/button state changed
+            if (clickSuccess) {
+              await delay(500); // Wait for click to register
+              
+              const clickVerified = await page.evaluate(() => {
+                // Check if Confirm button is gone or modal is closed
+                const buttons = Array.from(document.querySelectorAll('button'));
+                const hasConfirmBtn = buttons.some(btn => {
+                  const text = (btn.textContent || '').trim();
+                  return text === 'Confirm' && btn.offsetParent !== null;
+                });
+                
+                // Check for modals
+                const modals = document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"]');
+                let hasOpenModal = false;
+                for (const modal of modals) {
+                  const style = window.getComputedStyle(modal);
+                  if (style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') {
+                    hasOpenModal = true;
                     break;
                   }
                 }
                 
-                // Wait a bit more after cancellation
-                await delay(500);
-                console.log(`[${exchange.name}] ✅ All orders canceled, proceeding to close positions...`);
+                return !hasConfirmBtn || !hasOpenModal;
+              });
+              
+              if (clickVerified) {
+                console.log(`[${exchange.name}] ✅ Click verified - modal closed or Confirm button disappeared`);
               } else {
-                console.log(`[${exchange.name}] ⚠️  Found Confirm button but it's not in modal`);
+                console.log(`[${exchange.name}] ⚠️  Click may not have worked - modal/button still present, retrying...`);
+                // Retry with different method
+                try {
+                  await page.evaluate(() => {
+                    const buttons = Array.from(document.querySelectorAll('button'));
+                    for (const btn of buttons) {
+                      const text = (btn.textContent || '').trim();
+                      const className = (btn.className || '').toLowerCase();
+                      if (text === 'Confirm' && 
+                          (className.includes('destructive') || className.includes('style_destructive'))) {
+                        btn.scrollIntoView({ behavior: 'instant', block: 'center' });
+                        btn.focus();
+                        const mouseDown = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
+                        const mouseUp = new MouseEvent('mouseup', { bubbles: true, cancelable: true });
+                        const clickEvent = new MouseEvent('click', { bubbles: true, cancelable: true });
+                        btn.dispatchEvent(mouseDown);
+                        btn.dispatchEvent(mouseUp);
+                        btn.dispatchEvent(clickEvent);
+                        btn.click();
+                        break;
+                      }
+                    }
+                  });
+                  await delay(500);
+                  console.log(`[${exchange.name}] ✅ Retried click with JavaScript`);
+                } catch (retryError) {
+                  console.log(`[${exchange.name}] ⚠️  Retry also failed: ${retryError.message}`);
+                }
               }
             } else {
-              console.log(`[${exchange.name}] ⚠️  Could not find Confirm button in cancellation modal`);
+              console.log(`[${exchange.name}] ⚠️  All click methods failed`);
             }
-          } else {
-            console.log(`[${exchange.name}] ⚠️  Confirmation modal did not open after clicking Cancel all orders, continuing to close positions...`);
+            
+            // Wait for modal/confirmation to process
+            await delay(1000);
+            
+            // Wait for any modals to close
+            console.log(`[${exchange.name}] Step 0.5: Waiting for cancellation to complete...`);
+            let modalClosed = false;
+            for (let i = 0; i < 10; i++) {
+              await delay(300);
+              modalClosed = await page.evaluate(() => {
+                // Check if Confirm button is gone (indicates modal closed)
+                const buttons = Array.from(document.querySelectorAll('button, [role="button"]'));
+                const hasConfirmBtn = buttons.some(btn => {
+                  const text = (btn.textContent || '').trim().toLowerCase();
+                  return text === 'confirm' && btn.offsetParent !== null;
+                });
+                
+                // Also check for modals
+                const modals = document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"]');
+                for (const modal of modals) {
+                  const style = window.getComputedStyle(modal);
+                  if (style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') {
+                    return false;
+                  }
+                }
+                
+                return !hasConfirmBtn;
+              });
+              if (modalClosed) {
+                console.log(`[${exchange.name}] ✅ Cancellation completed`);
+                break;
+              }
+            }
+            
+            // Wait a bit more after cancellation
+            await delay(500);
+            
+            // Verify orders were actually canceled by checking the orders table
+            const ordersStillExist = await page.evaluate(() => {
+              const text = document.body.innerText || '';
+              // Check for active orders (not canceled/filled)
+              const hasActiveOrderText = (text.toLowerCase().includes('limit') || 
+                                         text.toLowerCase().includes('market') ||
+                                         text.toLowerCase().includes('pending')) &&
+                                        !text.toLowerCase().includes('canceled') &&
+                                        !text.toLowerCase().includes('filled') &&
+                                        !text.toLowerCase().includes('no orders');
+              return hasActiveOrderText;
+            });
+            
+            if (!ordersStillExist) {
+              console.log(`[${exchange.name}] ✅ All orders canceled successfully, proceeding to close positions...`);
+            } else {
+              console.log(`[${exchange.name}] ⚠️  Some orders may still exist after cancellation, but proceeding to close positions...`);
+            }
+          } catch (error) {
+            console.log(`[${exchange.name}] ⚠️  Error clicking Confirm button: ${error.message}`);
+            // Try to close any open modals
+            await page.keyboard.press('Escape');
+            await delay(500);
+          }
+        } else if (confirmBtn && !confirmBtnVisible) {
+          console.log(`[${exchange.name}] ⚠️  Found Confirm button but it's not visible/clickable, trying to click anyway...`);
+          try {
+            await confirmBtn.click();
+            await delay(1000);
+          } catch (error) {
+            console.log(`[${exchange.name}] ⚠️  Error clicking Confirm button: ${error.message}`);
           }
         } else {
-          console.log(`[${exchange.name}] ⚠️  Confirmation modal did not open, continuing to close positions...`);
+          console.log(`[${exchange.name}] ⚠️  Confirm button did not appear after clicking Cancel all orders`);
+          console.log(`[${exchange.name}]    This might mean: 1) No orders to cancel, 2) Orders canceled instantly, or 3) Button detection failed`);
+          console.log(`[${exchange.name}]    Proceeding to close positions...`);
         }
       } else {
         console.log(`[${exchange.name}] ⚠️  Cancel all orders button not clicked, proceeding to close positions...`);

@@ -232,7 +232,11 @@ export async function findConfirmButtonParadex(page, side, exchange) {
 export async function executeTradeParadex(
   page,
   { side, orderType, price, qty, setLeverageFirst = false, leverage = null },
-  exchange
+  exchange,
+  thresholdMetTime = null,
+  cycleCount = null,
+  sideLabel = '',
+  email = ''
 ) {
   console.log(`\n=== Executing Trade on ${exchange.name} ===`);
 

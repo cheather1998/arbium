@@ -2342,12 +2342,26 @@ export async function handleTpSlGrvt(page, exchange, price = null, side = 'buy')
 
 /**
  * Execute trade for GRVT
+ * @param {number} thresholdMetTime - Timestamp when opening threshold was met (for timing metrics)
+ * @param {number} cycleCount - Current cycle number (for logging)
+ * @param {string} sideLabel - Trade side label ('BUY' or 'SELL') for logging
+ * @param {string} email - Account email (for logging)
  */
 export async function executeTradeGrvt(
   page,
   { side, orderType, price, qty, setLeverageFirst = false, leverage = null },
-  exchange
+  exchange,
+  thresholdMetTime = null,
+  cycleCount = null,
+  sideLabel = '',
+  email = ''
 ) {
+  // ⏱️ TIMING: Track form fill start time
+  const formFillStartTime = Date.now();
+  if (thresholdMetTime) {
+    const timeSinceThreshold = formFillStartTime - thresholdMetTime;
+    console.log(`[${exchange.name}] ⏱️  [TIMING] Form filling started - ${(timeSinceThreshold / 1000).toFixed(2)}s after threshold met`);
+  }
   console.log(`\n=== Executing Trade on ${exchange.name} ===`);
 
   // Close any NotifyBarWrapper notifications before setting leverage
@@ -3099,6 +3113,15 @@ export async function executeTradeGrvt(
 
   // For GRVT, the Buy/Sell button click opens a modal - use clickConfirmButton for proper scrolling/visibility
   console.log(`[${exchange.name}] ✅ Found ${side.toUpperCase()} button via METHOD 1: Exact text match (findByExactText), clicking (this will open a confirmation modal for GRVT)...`);
+  
+  // ⏱️ TIMING: Track Buy/Sell button click time
+  const buySellButtonClickTime = Date.now();
+  if (thresholdMetTime) {
+    const timeSinceThreshold = buySellButtonClickTime - thresholdMetTime;
+    const formFillTime = buySellButtonClickTime - formFillStartTime;
+    console.log(`[${exchange.name}] ⏱️  [TIMING] Buy/Sell button clicked - ${(timeSinceThreshold / 1000).toFixed(2)}s after threshold met (form fill took ${(formFillTime / 1000).toFixed(2)}s)`);
+  }
+  
   await clickConfirmButton(page, buySellBtn, buttonText, exchange, side);
 
   // Step 6: Wait for modal to open and click Confirm button in the modal
@@ -3142,14 +3165,47 @@ export async function executeTradeGrvt(
 
     if (isInModal) {
       console.log(`[${exchange.name}] ✅ Found Confirm button in modal (via METHOD 1: Exact text match (findByExactText)), clicking...`);
+      
+      // ⏱️ TIMING: Track final Confirm button click (order submission)
+      const confirmButtonClickTime = Date.now();
+      
       try {
         await confirmModalBtn.click();
         console.log(`[${exchange.name}] ✅ Clicked Confirm button in modal (direct click)`);
+        
+        // ⏱️ TIMING: Log total time metrics
+        if (thresholdMetTime) {
+          const totalTime = confirmButtonClickTime - thresholdMetTime;
+          const formFillTime = buySellButtonClickTime - formFillStartTime;
+          const buttonClickTime = confirmButtonClickTime - buySellButtonClickTime;
+          
+          console.log(`\n[${exchange.name}] ⏱️  [TIMING METRICS] ${sideLabel} Order Submission Complete:`);
+          console.log(`[${exchange.name}]    Account: ${email}`);
+          console.log(`[${exchange.name}]    Total time (threshold → submit): ${(totalTime / 1000).toFixed(2)}s`);
+          console.log(`[${exchange.name}]    Form fill time: ${(formFillTime / 1000).toFixed(2)}s`);
+          console.log(`[${exchange.name}]    Button click time: ${(buttonClickTime / 1000).toFixed(2)}s`);
+          console.log(`[${exchange.name}]    Timestamp: ${new Date(confirmButtonClickTime).toISOString()}\n`);
+        }
+        
         await delay(1000); // Wait for order to be processed
       } catch (error) {
         console.log(`[${exchange.name}] ⚠️  Direct click failed, trying JavaScript click: ${error.message}`);
         await confirmModalBtn.evaluate((el) => el.click());
         console.log(`[${exchange.name}] ✅ Clicked Confirm button via JavaScript`);
+        
+        // ⏱️ TIMING: Log total time metrics (for JS click fallback)
+        if (thresholdMetTime) {
+          const totalTime = Date.now() - thresholdMetTime;
+          const formFillTime = buySellButtonClickTime - formFillStartTime;
+          const buttonClickTime = Date.now() - buySellButtonClickTime;
+          
+          console.log(`\n[${exchange.name}] ⏱️  [TIMING METRICS] ${sideLabel} Order Submission Complete (JS click):`);
+          console.log(`[${exchange.name}]    Account: ${email}`);
+          console.log(`[${exchange.name}]    Total time (threshold → submit): ${(totalTime / 1000).toFixed(2)}s`);
+          console.log(`[${exchange.name}]    Form fill time: ${(formFillTime / 1000).toFixed(2)}s`);
+          console.log(`[${exchange.name}]    Button click time: ${(buttonClickTime / 1000).toFixed(2)}s\n`);
+        }
+        
         await delay(1000);
       }
     } else {
