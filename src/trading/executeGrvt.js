@@ -2342,12 +2342,26 @@ export async function handleTpSlGrvt(page, exchange, price = null, side = 'buy')
 
 /**
  * Execute trade for GRVT
+ * @param {number} thresholdMetTime - Timestamp when opening threshold was met (for timing metrics)
+ * @param {number} cycleCount - Current cycle number (for logging)
+ * @param {string} sideLabel - Trade side label ('BUY' or 'SELL') for logging
+ * @param {string} email - Account email (for logging)
  */
 export async function executeTradeGrvt(
   page,
   { side, orderType, price, qty, setLeverageFirst = false, leverage = null },
-  exchange
+  exchange,
+  thresholdMetTime = null,
+  cycleCount = null,
+  sideLabel = '',
+  email = ''
 ) {
+  // ⏱️ TIMING: Track form fill start time
+  const formFillStartTime = Date.now();
+  if (thresholdMetTime) {
+    const timeSinceThreshold = formFillStartTime - thresholdMetTime;
+    console.log(`[${exchange.name}] ⏱️  [TIMING] Form filling started - ${(timeSinceThreshold / 1000).toFixed(2)}s after threshold met`);
+  }
   console.log(`\n=== Executing Trade on ${exchange.name} ===`);
 
   // Close any NotifyBarWrapper notifications before setting leverage
@@ -2392,30 +2406,73 @@ export async function executeTradeGrvt(
   // 1. Select Limit or Market tab (tabs are at the top)
   // GRVT-specific: Scope search to CreateOrderPanel to avoid clicking deposit buttons
   console.log(`[${exchange.name}] Step 0: Selecting ${orderType.toUpperCase()} tab...`);
+  
+  // Check URL before starting - make sure we're on the trading page
+  const initialUrl = page.url();
+  if (initialUrl.includes('/deposit') || initialUrl.includes('/withdraw')) {
+    console.log(`[${exchange.name}] ⚠️  Already on ${initialUrl}, navigating to trading page first...`);
+    await page.goto(exchange.url, { waitUntil: 'networkidle2', timeout: 30000 });
+    await delay(2000);
+  }
+  
+  // Scroll to top to ensure Limit/Market buttons are in viewport (they're at the top)
+  // This is important because cleanup might have scrolled the page down
+  console.log(`[${exchange.name}] Scrolling to top to ensure ${orderType.toUpperCase()} button is in viewport...`);
+  await page.evaluate(() => {
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  });
+  await delay(500); // Wait for scroll to complete
+  
   try {
     // First, try to find CreateOrderPanel and search within it
     const createOrderPanel = await page.$('[data-sentry-element="CreateOrderPanel"]');
     let orderTypeResult = false;
+    
+    if (!createOrderPanel) {
+      console.log(`[${exchange.name}] ⚠️  CreateOrderPanel not found, waiting and retrying...`);
+      await delay(1000);
+      const createOrderPanelRetry = await page.$('[data-sentry-element="CreateOrderPanel"]');
+      if (!createOrderPanelRetry) {
+        console.log(`[${exchange.name}] ❌ CreateOrderPanel still not found after retry`);
+      }
+    }
     
     if (createOrderPanel) {
       console.log(`[${exchange.name}] ✅ Found CreateOrderPanel, searching for ${orderType.toUpperCase()} button within it...`);
       const buttonText = orderType === "limit" ? exchange.selectors.limitButton : exchange.selectors.marketButton;
       
       // Search for button within CreateOrderPanel
-      const orderTypeBtn = await createOrderPanel.evaluateHandle((panel, searchText) => {
+      const orderTypeBtn = await createOrderPanel.evaluateHandle((panel, searchText, orderType) => {
         const buttons = Array.from(panel.querySelectorAll('button, div[role="button"], span[role="button"]'));
         for (const btn of buttons) {
+          if (btn.offsetParent === null) continue; // Skip hidden buttons
+          
           const btnText = (btn.textContent || '').trim();
-          if (btnText === searchText && btn.offsetParent !== null) {
-            return btn;
+          const btnTextLower = btnText.toLowerCase();
+          const href = btn.getAttribute('href') || '';
+          const isLink = btn.tagName === 'A' || href !== '';
+          
+          // Skip links and deposit/withdraw buttons
+          if (isLink) continue;
+          if (btnTextLower.includes('deposit') || btnTextLower.includes('withdraw')) continue;
+          
+          // Match Limit or Market (case-insensitive, allows partial match)
+          if (orderType === 'limit') {
+            if (btnTextLower === 'limit' || btnTextLower.includes('limit')) {
+              return btn;
+            }
+          } else {
+            if (btnTextLower === 'market' || btnTextLower.includes('market')) {
+              return btn;
+            }
           }
         }
         return null;
-      }, buttonText);
+      }, buttonText, orderType);
       
       const orderTypeElement = orderTypeBtn.asElement();
       if (orderTypeElement) {
-        // Verify it's the correct button before clicking
+        // Basic verification before clicking
         const buttonInfo = await page.evaluate((el) => {
           const text = (el.textContent || '').trim();
           const href = el.getAttribute('href') || '';
@@ -2423,40 +2480,46 @@ export async function executeTradeGrvt(
           return {
             text: text,
             isLink: isLink,
-            href: href,
-            tagName: el.tagName
+            href: href
           };
         }, orderTypeElement);
         
-        // Make sure it's not a link (which would navigate away) and text matches
-        if (buttonInfo.isLink) {
-          console.log(`[${exchange.name}] ⚠️  Found ${orderType.toUpperCase()} button but it's a link (href: ${buttonInfo.href}), skipping to avoid navigation...`);
-        } else if (buttonInfo.text.toLowerCase().includes('deposit')) {
-          console.log(`[${exchange.name}] ⚠️  Found button but text contains "deposit" (${buttonInfo.text}), skipping to avoid navigation...`);
+        // Skip if it's a link or contains deposit/withdraw
+        if (buttonInfo.isLink || buttonInfo.text.toLowerCase().includes('deposit') || buttonInfo.text.toLowerCase().includes('withdraw')) {
+          console.log(`[${exchange.name}] ⚠️  Found button but it's a link or contains deposit/withdraw (${buttonInfo.text}), skipping...`);
         } else {
+          // Ensure button is in viewport before clicking
+          const isInViewport = await page.evaluate((el) => {
+            const rect = el.getBoundingClientRect();
+            return (
+              rect.top >= 0 &&
+              rect.left >= 0 &&
+              rect.bottom <= (window.innerHeight || document.documentElement.clientHeight) &&
+              rect.right <= (window.innerWidth || document.documentElement.clientWidth)
+            );
+          }, orderTypeElement);
+          
+          if (!isInViewport) {
+            console.log(`[${exchange.name}] ${orderType.toUpperCase()} button is not in viewport, scrolling it into view...`);
+            await orderTypeElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            await delay(500); // Wait for scroll to complete
+          }
+          
           console.log(`[${exchange.name}] ✅ Found ${orderType.toUpperCase()} button in CreateOrderPanel (text: "${buttonInfo.text}"), clicking...`);
           await orderTypeElement.click();
           console.log(`[${exchange.name}] Selected ${orderType.toUpperCase()} order`);
           orderTypeResult = true;
           await delay(300);
-          
-          // Verify we're still on the trading page (not navigated away)
-          const currentUrl = page.url();
-          if (currentUrl.includes('/deposit') || currentUrl.includes('/withdraw')) {
-            console.log(`[${exchange.name}] ⚠️  Navigation detected to ${currentUrl}, going back...`);
-            await page.goBack();
-            await delay(1000);
-            orderTypeResult = false; // Retry
-          }
         }
       } else {
-        console.log(`[${exchange.name}] ⚠️  ${orderType.toUpperCase()} button not found in CreateOrderPanel, trying page-wide search...`);
+        console.log(`[${exchange.name}] ⚠️  ${orderType.toUpperCase()} button not found in CreateOrderPanel, trying fallback...`);
       }
     }
     
     // Fallback: If not found in CreateOrderPanel, use standard selectOrderType
     if (!orderTypeResult) {
-      console.log(`[${exchange.name}] Falling back to page-wide search for ${orderType.toUpperCase()} button...`);
+      console.log(`[${exchange.name}] Falling back to standard selectOrderType for ${orderType.toUpperCase()} button...`);
+      const { selectOrderType } = await import('./executeBase.js');
       const orderTypePromise = selectOrderType(page, orderType, exchange);
       const orderTypeTimeout = new Promise((_, reject) =>
         setTimeout(() => reject(new Error('selectOrderType timeout after 5 seconds')), 5000)
@@ -3099,6 +3162,15 @@ export async function executeTradeGrvt(
 
   // For GRVT, the Buy/Sell button click opens a modal - use clickConfirmButton for proper scrolling/visibility
   console.log(`[${exchange.name}] ✅ Found ${side.toUpperCase()} button via METHOD 1: Exact text match (findByExactText), clicking (this will open a confirmation modal for GRVT)...`);
+  
+  // ⏱️ TIMING: Track Buy/Sell button click time
+  const buySellButtonClickTime = Date.now();
+  if (thresholdMetTime) {
+    const timeSinceThreshold = buySellButtonClickTime - thresholdMetTime;
+    const formFillTime = buySellButtonClickTime - formFillStartTime;
+    console.log(`[${exchange.name}] ⏱️  [TIMING] Buy/Sell button clicked - ${(timeSinceThreshold / 1000).toFixed(2)}s after threshold met (form fill took ${(formFillTime / 1000).toFixed(2)}s)`);
+  }
+  
   await clickConfirmButton(page, buySellBtn, buttonText, exchange, side);
 
   // Step 6: Wait for modal to open and click Confirm button in the modal
@@ -3142,14 +3214,47 @@ export async function executeTradeGrvt(
 
     if (isInModal) {
       console.log(`[${exchange.name}] ✅ Found Confirm button in modal (via METHOD 1: Exact text match (findByExactText)), clicking...`);
+      
+      // ⏱️ TIMING: Track final Confirm button click (order submission)
+      const confirmButtonClickTime = Date.now();
+      
       try {
         await confirmModalBtn.click();
         console.log(`[${exchange.name}] ✅ Clicked Confirm button in modal (direct click)`);
+        
+        // ⏱️ TIMING: Log total time metrics
+        if (thresholdMetTime) {
+          const totalTime = confirmButtonClickTime - thresholdMetTime;
+          const formFillTime = buySellButtonClickTime - formFillStartTime;
+          const buttonClickTime = confirmButtonClickTime - buySellButtonClickTime;
+          
+          console.log(`\n[${exchange.name}] ⏱️  [TIMING METRICS] ${sideLabel} Order Submission Complete:`);
+          console.log(`[${exchange.name}]    Account: ${email}`);
+          console.log(`[${exchange.name}]    Total time (threshold → submit): ${(totalTime / 1000).toFixed(2)}s`);
+          console.log(`[${exchange.name}]    Form fill time: ${(formFillTime / 1000).toFixed(2)}s`);
+          console.log(`[${exchange.name}]    Button click time: ${(buttonClickTime / 1000).toFixed(2)}s`);
+          console.log(`[${exchange.name}]    Timestamp: ${new Date(confirmButtonClickTime).toISOString()}\n`);
+        }
+        
         await delay(1000); // Wait for order to be processed
       } catch (error) {
         console.log(`[${exchange.name}] ⚠️  Direct click failed, trying JavaScript click: ${error.message}`);
         await confirmModalBtn.evaluate((el) => el.click());
         console.log(`[${exchange.name}] ✅ Clicked Confirm button via JavaScript`);
+        
+        // ⏱️ TIMING: Log total time metrics (for JS click fallback)
+        if (thresholdMetTime) {
+          const totalTime = Date.now() - thresholdMetTime;
+          const formFillTime = buySellButtonClickTime - formFillStartTime;
+          const buttonClickTime = Date.now() - buySellButtonClickTime;
+          
+          console.log(`\n[${exchange.name}] ⏱️  [TIMING METRICS] ${sideLabel} Order Submission Complete (JS click):`);
+          console.log(`[${exchange.name}]    Account: ${email}`);
+          console.log(`[${exchange.name}]    Total time (threshold → submit): ${(totalTime / 1000).toFixed(2)}s`);
+          console.log(`[${exchange.name}]    Form fill time: ${(formFillTime / 1000).toFixed(2)}s`);
+          console.log(`[${exchange.name}]    Button click time: ${(buttonClickTime / 1000).toFixed(2)}s\n`);
+        }
+        
         await delay(1000);
       }
     } else {

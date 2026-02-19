@@ -663,7 +663,7 @@ async function clickLimitOption(page, optionText, exchange) {
  * Select order type from dropdown for Kraken
  * The dropdown is located on the right side of Buy/Sell tabs
  */
-async function selectOrderTypeKraken(page, orderType, exchange) {
+export async function selectOrderTypeKraken(page, orderType, exchange) {
   console.log(`[${exchange.name}] Looking for order type dropdown (${orderType.toUpperCase()})...`);
   
   // First, try a simple direct search for button with aria-haspopup="listbox"
@@ -1080,7 +1080,7 @@ async function selectOrderTypeKraken(page, orderType, exchange) {
  * Find size and price inputs for Kraken
  * Kraken has inputs in the order form panel (can be on left side)
  */
-async function findKrakenInputs(page, orderType) {
+export async function findKrakenInputs(page, orderType) {
   console.log(`[Kraken] Finding inputs for Kraken (order type: ${orderType})...`);
   
   const inputs = await page.$$('input[type="text"], input[type="number"], input:not([type="hidden"])');
@@ -1205,8 +1205,19 @@ async function findKrakenInputs(page, orderType) {
 export async function executeTradeKraken(
   page,
   { side, orderType, price, qty, setLeverageFirst = false, leverage = null },
-  exchange
+  exchange,
+  thresholdMetTime = null,
+  cycleCount = null,
+  sideLabel = '',
+  email = ''
 ) {
+  // ⏱️ TIMING: Track form fill start time
+  const formFillStartTime = Date.now();
+  if (thresholdMetTime) {
+    const timeSinceThreshold = formFillStartTime - thresholdMetTime;
+    console.log(`[${exchange.name}] ⏱️  [TIMING] Form filling started - ${(timeSinceThreshold / 1000).toFixed(2)}s after threshold met`);
+  }
+  
   console.log(`\n=== Executing Trade on ${exchange.name} ===`);
 
   // Step 0: Cancel all existing orders first (modal-based flow for Kraken)
@@ -1629,6 +1640,14 @@ export async function executeTradeKraken(
     return { success: false, error: `Confirm button not found. Looking for: "${confirmText}"` };
   }
 
+  // ⏱️ TIMING: Track first Confirm button click time
+  const firstConfirmButtonClickTime = Date.now();
+  if (thresholdMetTime) {
+    const timeSinceThreshold = firstConfirmButtonClickTime - thresholdMetTime;
+    const formFillTime = firstConfirmButtonClickTime - formFillStartTime;
+    console.log(`[${exchange.name}] ⏱️  [TIMING] First Confirm button clicked - ${(timeSinceThreshold / 1000).toFixed(2)}s after threshold met (form fill took ${(formFillTime / 1000).toFixed(2)}s)`);
+  }
+  
   // Click confirm button
   await clickConfirmButton(page, confirmBtn, confirmText, exchange, side);
 
@@ -1665,13 +1684,44 @@ export async function executeTradeKraken(
     
     if (isInModal) {
       console.log(`[${exchange.name}] ✅ Found Confirm button in modal, clicking...`);
+      
+      // ⏱️ TIMING: Track final Confirm button click (order submission)
+      const confirmButtonClickTime = Date.now();
+      
       try {
         await confirmModalBtn.click();
         console.log(`[${exchange.name}] ✅ Clicked Confirm button in modal`);
+        
+        // ⏱️ TIMING: Log total time metrics
+        if (thresholdMetTime) {
+          const totalTime = confirmButtonClickTime - thresholdMetTime;
+          const formFillTime = firstConfirmButtonClickTime - formFillStartTime;
+          const buttonClickTime = confirmButtonClickTime - firstConfirmButtonClickTime;
+          
+          console.log(`\n[${exchange.name}] ⏱️  [TIMING METRICS] ${sideLabel} Order Submission Complete:`);
+          console.log(`[${exchange.name}]    Account: ${email}`);
+          console.log(`[${exchange.name}]    Total time (threshold → submit): ${(totalTime / 1000).toFixed(2)}s`);
+          console.log(`[${exchange.name}]    Form fill time: ${(formFillTime / 1000).toFixed(2)}s`);
+          console.log(`[${exchange.name}]    Button click time: ${(buttonClickTime / 1000).toFixed(2)}s`);
+          console.log(`[${exchange.name}]    Timestamp: ${new Date(confirmButtonClickTime).toISOString()}\n`);
+        }
       } catch (error) {
         console.log(`[${exchange.name}] Direct click failed, trying JavaScript click...`);
         await confirmModalBtn.evaluate((el) => el.click());
         console.log(`[${exchange.name}] ✅ Clicked Confirm button in modal (JavaScript click)`);
+        
+        // ⏱️ TIMING: Log total time metrics (for JS click fallback)
+        if (thresholdMetTime) {
+          const totalTime = Date.now() - thresholdMetTime;
+          const formFillTime = firstConfirmButtonClickTime - formFillStartTime;
+          const buttonClickTime = Date.now() - firstConfirmButtonClickTime;
+          
+          console.log(`\n[${exchange.name}] ⏱️  [TIMING METRICS] ${sideLabel} Order Submission Complete (JS click):`);
+          console.log(`[${exchange.name}]    Account: ${email}`);
+          console.log(`[${exchange.name}]    Total time (threshold → submit): ${(totalTime / 1000).toFixed(2)}s`);
+          console.log(`[${exchange.name}]    Form fill time: ${(formFillTime / 1000).toFixed(2)}s`);
+          console.log(`[${exchange.name}]    Button click time: ${(buttonClickTime / 1000).toFixed(2)}s\n`);
+        }
       }
       
       // Wait for modal to close

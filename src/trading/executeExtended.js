@@ -1191,7 +1191,11 @@ export async function handleTpSlExtended(page, exchange, price = null, side = 'b
 export async function executeTradeExtended(
   page,
   { side, orderType, price, qty, setLeverageFirst = false, leverage = null },
-  exchange
+  exchange,
+  thresholdMetTime = null,
+  cycleCount = null,
+  sideLabel = '',
+  email = ''
 ) {
   console.log(`\n=== Executing Trade on ${exchange.name} ===`);
 

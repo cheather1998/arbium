@@ -1472,15 +1472,96 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
           // For GRVT: Close any NotifyBarWrapper notifications before cleanup
           await closeNotifyBarWrapperNotifications(page, exchange, 'before cleanup');
           
-          // Step 1: Cancel orders
-          const cancelResult = isKraken 
-            ? (wasCloseAtMarketProvided 
-                ? await cancelKrakenOrders(page, true)  // Pass true if parameter was provided
-                : await cancelKrakenOrders(page))  // Don't pass parameter if not provided
-            : await cancelAllOrders(page);
+          // Step 1: Cancel orders with retry logic and verification
+          let cancelResult;
+          let maxRetries = 3;
+          let retryCount = 0;
           
-          if (cancelResult.success) {
-            console.log(`✓ [${email}] Orders canceled`);
+          // Helper function to verify if orders still exist
+          const verifyOrdersExist = async () => {
+            if (isKraken) {
+              // For Kraken, check Open Orders tab
+              const hasOrders = await page.evaluate(() => {
+                const container = document.getElementById('open-orders') || 
+                                 Array.from(document.querySelectorAll('[role="table"]')).find(t => {
+                                   const text = (t.textContent || '').toLowerCase();
+                                   return (text.includes('limit') || text.includes('market')) && 
+                                          (text.includes('buy') || text.includes('sell'));
+                                 });
+                if (!container) return false;
+                const rows = Array.from(container.querySelectorAll('[role="button"], tr'));
+                return rows.some(row => {
+                  const text = (row.textContent || '').toLowerCase();
+                  return (text.includes('limit') || text.includes('market')) &&
+                         (text.includes('buy') || text.includes('sell')) &&
+                         !text.includes('canceled') && !text.includes('filled');
+                });
+              });
+              return hasOrders;
+            } else {
+              // For other exchanges, check for order tables
+              const hasOrders = await page.evaluate(() => {
+                const tables = Array.from(document.querySelectorAll('table'));
+                for (const table of tables) {
+                  const rows = Array.from(table.querySelectorAll('tbody tr, tr:not(:first-child)'));
+                  const orderRows = rows.filter(row => {
+                    if (row.offsetParent === null) return false;
+                    const text = (row.textContent || '').toLowerCase();
+                    return (text.includes('limit') || text.includes('market') || text.includes('pending')) &&
+                           !text.includes('canceled') && !text.includes('filled');
+                  });
+                  if (orderRows.length > 0) return true;
+                }
+                return false;
+              });
+              return hasOrders;
+            }
+          };
+          
+          while (retryCount < maxRetries) {
+            cancelResult = isKraken 
+              ? (wasCloseAtMarketProvided 
+                  ? await cancelKrakenOrders(page, true)  // Pass true if parameter was provided
+                  : await cancelKrakenOrders(page))  // Don't pass parameter if not provided
+              : await cancelAllOrders(page);
+            
+            // Wait a bit for UI to update
+            await delay(1000);
+            
+            // Verify if orders still exist
+            const ordersStillExist = await verifyOrdersExist();
+            
+            if (cancelResult.success && !ordersStillExist) {
+              console.log(`✓ [${email}] All orders canceled successfully`);
+              break;
+            } else if (ordersStillExist) {
+              retryCount++;
+              const remainingCount = cancelResult.remaining || 'unknown';
+              console.log(`⚠️  [${email}] Orders still exist after cancellation attempt ${retryCount}/${maxRetries} (remaining: ${remainingCount})`);
+              if (retryCount < maxRetries) {
+                console.log(`[${email}] Retrying order cancellation in 2 seconds...`);
+                await delay(2000);
+              } else {
+                console.log(`⚠️  [${email}] Max retries reached. Some orders may still remain.`);
+              }
+            } else if (!cancelResult.success) {
+              retryCount++;
+              console.log(`⚠️  [${email}] Order cancellation failed: ${cancelResult.message || 'Unknown error'}`);
+              if (retryCount < maxRetries) {
+                console.log(`[${email}] Retrying order cancellation in 2 seconds...`);
+                await delay(2000);
+              }
+            } else {
+              // Success but verification passed
+              break;
+            }
+          }
+          
+          if (retryCount >= maxRetries) {
+            const finalCheck = await verifyOrdersExist();
+            if (finalCheck) {
+              console.log(`❌ [${email}] Failed to cancel all orders after ${maxRetries} attempts. Some orders may still remain.`);
+            }
           }
           
           // Step 2: Close positions (skip for Kraken - already handled by cancelKrakenOrders, skip for Extended Exchange - handled in clickOrdersTab)
@@ -1578,8 +1659,9 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
 
 
 
-      const executeTradeWithTimeout = async (page, tradeParams, exchange, timeoutMs = 30000) => {
-        const tradePromise = executeTrade(page, tradeParams, exchange);
+      const executeTradeWithTimeout = async (page, tradeParams, exchange, timeoutMs = 30000, thresholdMetTime = null, cycleCount = null, side = '', email = '') => {
+        // Pass timing info to executeTrade
+        const tradePromise = executeTrade(page, tradeParams, exchange, thresholdMetTime, cycleCount, side, email);
         const timeoutPromise = new Promise((_, reject) => 
           setTimeout(() => reject(new Error(`Trade execution timeout after ${timeoutMs}ms`)), timeoutMs)
         );
@@ -1599,9 +1681,51 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
       
       await delay(300); // Small delay after cleanup
 
+      // Step 3: Pre-fill forms for Kraken only (order type, quantity, TP/SL - excluding price and side)
+      // GRVT will use the old executeTrade flow (no prefill)
+      console.log(`\n[CYCLE ${cycleCount}] Step 3: Pre-filling forms for Kraken (order type, quantity, TP/SL - excluding price and side)...`);
+      console.log(`[CYCLE ${cycleCount}]    GRVT will use the old flow (no prefill).`);
+      
+      const { prefillFormKraken } = await import('../trading/prefillForm.js');
+      
+      // Pre-fill only Kraken accounts in parallel
+      const prefillPromises = [];
+      
+      // Pre-fill Account 1 if it's Kraken
+      const exchange1NameLower = exchange1.name?.toLowerCase() || '';
+      if (exchange1NameLower.includes('kraken')) {
+        prefillPromises.push(
+          prefillFormKraken(page1, { orderType: "limit", qty: TRADE_CONFIG.buyQty }, exchange1)
+            .then(result => ({ account: 1, exchange: 'kraken', result }))
+            .catch(error => ({ account: 1, exchange: 'kraken', result: { success: false, error: error.message } }))
+        );
+      }
+      
+      // Pre-fill Account 2 if it's Kraken
+      const exchange2NameLower = exchange2.name?.toLowerCase() || '';
+      if (exchange2NameLower.includes('kraken')) {
+        prefillPromises.push(
+          prefillFormKraken(page2, { orderType: "limit", qty: TRADE_CONFIG.sellQty }, exchange2)
+            .then(result => ({ account: 2, exchange: 'kraken', result }))
+            .catch(error => ({ account: 2, exchange: 'kraken', result: { success: false, error: error.message } }))
+        );
+      }
+      
+      const prefillResults = await Promise.all(prefillPromises);
+      
+      // Store prefill data for later use (only for Kraken)
+      const prefillData = {};
+      for (const { account, exchange: exch, result } of prefillResults) {
+        if (result.success) {
+          prefillData[account] = { ...result, exchange: exch };
+          console.log(`[CYCLE ${cycleCount}] ✅ Account ${account} (${exch}) pre-filled successfully`);
+        } else {
+          console.log(`[CYCLE ${cycleCount}] ⚠️  Account ${account} (${exch}) pre-fill failed: ${result.error}`);
+        }
+      }
 
-      // Step 3: Get price comparison to determine buy/sell accounts (AFTER closing positions)
-      console.log(`\n[CYCLE ${cycleCount}] Step 3: Getting price comparison to determine buy/sell accounts...`);
+      // Step 4: Get price comparison to determine buy/sell accounts (AFTER pre-filling forms)
+      console.log(`\n[CYCLE ${cycleCount}] Step 4: Getting price comparison to determine buy/sell accounts...`);
       const priceComparison = await comparePricesFromExchanges(exchangeAccounts);
       
       if (!priceComparison.success || priceComparison.successfulPrices.length < 2) {
@@ -1646,8 +1770,8 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
       //   }
       // }
       
-      // Step 4: Wait for opening threshold (AFTER determining buy/sell) before placing new trades
-      console.log(`\n[CYCLE ${cycleCount}] Step 4: Checking opening threshold before placing new trades...`);
+      // Step 5: Wait for opening threshold (AFTER determining buy/sell) before placing new trades
+      console.log(`\n[CYCLE ${cycleCount}] Step 5: Checking opening threshold before placing new trades...`);
       const thresholdPriceComparison = await waitForPriceThreshold(
         exchangeAccounts, 
         TRADE_CONFIG.openingThreshold, 
@@ -1660,6 +1784,10 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
         await delay(TRADE_CONFIG.waitTime);
         continue;
       }
+      
+      // ⏱️ START TIMING: Opening threshold met - start measuring form fill + submit time
+      const thresholdMetTime = Date.now();
+      console.log(`\n[CYCLE ${cycleCount}] ⏱️  [TIMING] Opening threshold met at ${new Date(thresholdMetTime).toISOString()}`);
       
       // Verify buy/sell accounts are still correct (prices may have changed during threshold wait)
       const finalHighestPriceExchange = thresholdPriceComparison.highest;
@@ -1684,29 +1812,99 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
       const tradeBuyAccount = finalBuyAccount;
       const tradeSellAccount = finalSellAccount;
       
-      // Step 5: Execute trades based on price comparison
-      console.log(`\n[CYCLE ${cycleCount}] Executing trades...`);
-      console.log(`   BUY on ${tradeBuyAccount.exchange.name} (${tradeBuyAccount.email})`);
-      console.log(`   SELL on ${tradeSellAccount.exchange.name} (${tradeSellAccount.email})`);
+      // Step 6: Execute trades
+      // GRVT: Use old executeTrade flow (no prefill)
+      // Kraken: Use quick fill flow (with prefill - side and price filled after threshold)
+      console.log(`\n[CYCLE ${cycleCount}] Step 6: Executing trades...`);
+      console.log(`   BUY on ${tradeBuyAccount.exchange.name} (${tradeBuyAccount.email}) at $${finalLowestPriceExchange.price.toLocaleString()}`);
+      console.log(`   SELL on ${tradeSellAccount.exchange.name} (${tradeSellAccount.email}) at $${finalHighestPriceExchange.price.toLocaleString()}`);
       
-      // Helper function to wrap trade execution with timeout
-
+      // Helper function for Kraken quick fill (with prefill)
+      const quickFillAndSubmitWithTimeout = async (page, price, tradeParams, exchange, prefillData, timeoutMs = 30000, thresholdMetTime, cycleCount, sideLabel, email) => {
+        const { fillPriceSideAndSubmitKraken } = await import('../trading/prefillForm.js');
+        
+        const quickFillPromise = fillPriceSideAndSubmitKraken(page, price, tradeParams, exchange, thresholdMetTime, cycleCount, sideLabel, email, prefillData);
+        
+        const timeoutPromise = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error(`Quick fill timeout after ${timeoutMs}ms`)), timeoutMs)
+        );
+        
+        try {
+          return await Promise.race([quickFillPromise, timeoutPromise]);
+        } catch (error) {
+          console.log(`⚠️  [${exchange.name}] Quick fill error or timeout: ${error.message}`);
+          return { success: false, error: error.message };
+        }
+      };
       
-      // Execute both trades in parallel and wait for BOTH to complete
+      // Determine which account is which for prefill data (only for Kraken)
+      const buyAccountNum = tradeBuyAccount.email === email1 ? 1 : 2;
+      const sellAccountNum = tradeSellAccount.email === email1 ? 1 : 2;
+      
+      // Determine which accounts are Kraken vs GRVT
+      const buyIsKraken = tradeBuyAccount.exchange.name?.toLowerCase().includes('kraken');
+      const sellIsKraken = tradeSellAccount.exchange.name?.toLowerCase().includes('kraken');
+      
+      // Execute trades based on exchange type
       console.log(`[CYCLE ${cycleCount}] Starting parallel trade execution - waiting for both to complete...`);
       
-      // Create promises - they start executing immediately when created
-      const buyTradePromise = executeTradeWithTimeout(tradeBuyAccount.page, {
-        side: "buy",
-        orderType: "limit",
-        qty: TRADE_CONFIG.buyQty,
-      }, tradeBuyAccount.exchange, 30000);
+      const buyTradePromise = buyIsKraken
+        ? quickFillAndSubmitWithTimeout(
+            tradeBuyAccount.page,
+            finalLowestPriceExchange.price,
+            { side: "buy", orderType: "limit", qty: TRADE_CONFIG.buyQty },
+            tradeBuyAccount.exchange,
+            prefillData[buyAccountNum] || {},
+            30000,
+            thresholdMetTime,
+            cycleCount,
+            'BUY',
+            tradeBuyAccount.email
+          )
+        : executeTradeWithTimeout(
+            tradeBuyAccount.page,
+            {
+              side: "buy",
+              orderType: "limit",
+              price: finalLowestPriceExchange.price,
+              qty: TRADE_CONFIG.buyQty
+            },
+            tradeBuyAccount.exchange,
+            30000,
+            thresholdMetTime,
+            cycleCount,
+            'BUY',
+            tradeBuyAccount.email
+          );
       
-      const sellTradePromise = executeTradeWithTimeout(tradeSellAccount.page, {
-        side: "sell",
-        orderType: "limit",
-        qty: TRADE_CONFIG.sellQty,
-      }, tradeSellAccount.exchange, 30000);
+      const sellTradePromise = sellIsKraken
+        ? quickFillAndSubmitWithTimeout(
+            tradeSellAccount.page,
+            finalHighestPriceExchange.price,
+            { side: "sell", orderType: "limit", qty: TRADE_CONFIG.sellQty },
+            tradeSellAccount.exchange,
+            prefillData[sellAccountNum] || {},
+            30000,
+            thresholdMetTime,
+            cycleCount,
+            'SELL',
+            tradeSellAccount.email
+          )
+        : executeTradeWithTimeout(
+            tradeSellAccount.page,
+            {
+              side: "sell",
+              orderType: "limit",
+              price: finalHighestPriceExchange.price,
+              qty: TRADE_CONFIG.sellQty
+            },
+            tradeSellAccount.exchange,
+            30000,
+            thresholdMetTime,
+            cycleCount,
+            'SELL',
+            tradeSellAccount.email
+          );
       
       // Use allSettled to wait for BOTH promises to complete (fulfilled or rejected)
       // This ensures we wait for both trades before continuing
