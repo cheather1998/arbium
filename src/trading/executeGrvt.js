@@ -2406,30 +2406,73 @@ export async function executeTradeGrvt(
   // 1. Select Limit or Market tab (tabs are at the top)
   // GRVT-specific: Scope search to CreateOrderPanel to avoid clicking deposit buttons
   console.log(`[${exchange.name}] Step 0: Selecting ${orderType.toUpperCase()} tab...`);
+  
+  // Check URL before starting - make sure we're on the trading page
+  const initialUrl = page.url();
+  if (initialUrl.includes('/deposit') || initialUrl.includes('/withdraw')) {
+    console.log(`[${exchange.name}] ⚠️  Already on ${initialUrl}, navigating to trading page first...`);
+    await page.goto(exchange.url, { waitUntil: 'networkidle2', timeout: 30000 });
+    await delay(2000);
+  }
+  
+  // Scroll to top to ensure Limit/Market buttons are in viewport (they're at the top)
+  // This is important because cleanup might have scrolled the page down
+  console.log(`[${exchange.name}] Scrolling to top to ensure ${orderType.toUpperCase()} button is in viewport...`);
+  await page.evaluate(() => {
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  });
+  await delay(500); // Wait for scroll to complete
+  
   try {
     // First, try to find CreateOrderPanel and search within it
     const createOrderPanel = await page.$('[data-sentry-element="CreateOrderPanel"]');
     let orderTypeResult = false;
+    
+    if (!createOrderPanel) {
+      console.log(`[${exchange.name}] ⚠️  CreateOrderPanel not found, waiting and retrying...`);
+      await delay(1000);
+      const createOrderPanelRetry = await page.$('[data-sentry-element="CreateOrderPanel"]');
+      if (!createOrderPanelRetry) {
+        console.log(`[${exchange.name}] ❌ CreateOrderPanel still not found after retry`);
+      }
+    }
     
     if (createOrderPanel) {
       console.log(`[${exchange.name}] ✅ Found CreateOrderPanel, searching for ${orderType.toUpperCase()} button within it...`);
       const buttonText = orderType === "limit" ? exchange.selectors.limitButton : exchange.selectors.marketButton;
       
       // Search for button within CreateOrderPanel
-      const orderTypeBtn = await createOrderPanel.evaluateHandle((panel, searchText) => {
+      const orderTypeBtn = await createOrderPanel.evaluateHandle((panel, searchText, orderType) => {
         const buttons = Array.from(panel.querySelectorAll('button, div[role="button"], span[role="button"]'));
         for (const btn of buttons) {
+          if (btn.offsetParent === null) continue; // Skip hidden buttons
+          
           const btnText = (btn.textContent || '').trim();
-          if (btnText === searchText && btn.offsetParent !== null) {
-            return btn;
+          const btnTextLower = btnText.toLowerCase();
+          const href = btn.getAttribute('href') || '';
+          const isLink = btn.tagName === 'A' || href !== '';
+          
+          // Skip links and deposit/withdraw buttons
+          if (isLink) continue;
+          if (btnTextLower.includes('deposit') || btnTextLower.includes('withdraw')) continue;
+          
+          // Match Limit or Market (case-insensitive, allows partial match)
+          if (orderType === 'limit') {
+            if (btnTextLower === 'limit' || btnTextLower.includes('limit')) {
+              return btn;
+            }
+          } else {
+            if (btnTextLower === 'market' || btnTextLower.includes('market')) {
+              return btn;
+            }
           }
         }
         return null;
-      }, buttonText);
+      }, buttonText, orderType);
       
       const orderTypeElement = orderTypeBtn.asElement();
       if (orderTypeElement) {
-        // Verify it's the correct button before clicking
+        // Basic verification before clicking
         const buttonInfo = await page.evaluate((el) => {
           const text = (el.textContent || '').trim();
           const href = el.getAttribute('href') || '';
@@ -2437,40 +2480,46 @@ export async function executeTradeGrvt(
           return {
             text: text,
             isLink: isLink,
-            href: href,
-            tagName: el.tagName
+            href: href
           };
         }, orderTypeElement);
         
-        // Make sure it's not a link (which would navigate away) and text matches
-        if (buttonInfo.isLink) {
-          console.log(`[${exchange.name}] ⚠️  Found ${orderType.toUpperCase()} button but it's a link (href: ${buttonInfo.href}), skipping to avoid navigation...`);
-        } else if (buttonInfo.text.toLowerCase().includes('deposit')) {
-          console.log(`[${exchange.name}] ⚠️  Found button but text contains "deposit" (${buttonInfo.text}), skipping to avoid navigation...`);
+        // Skip if it's a link or contains deposit/withdraw
+        if (buttonInfo.isLink || buttonInfo.text.toLowerCase().includes('deposit') || buttonInfo.text.toLowerCase().includes('withdraw')) {
+          console.log(`[${exchange.name}] ⚠️  Found button but it's a link or contains deposit/withdraw (${buttonInfo.text}), skipping...`);
         } else {
+          // Ensure button is in viewport before clicking
+          const isInViewport = await page.evaluate((el) => {
+            const rect = el.getBoundingClientRect();
+            return (
+              rect.top >= 0 &&
+              rect.left >= 0 &&
+              rect.bottom <= (window.innerHeight || document.documentElement.clientHeight) &&
+              rect.right <= (window.innerWidth || document.documentElement.clientWidth)
+            );
+          }, orderTypeElement);
+          
+          if (!isInViewport) {
+            console.log(`[${exchange.name}] ${orderType.toUpperCase()} button is not in viewport, scrolling it into view...`);
+            await orderTypeElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            await delay(500); // Wait for scroll to complete
+          }
+          
           console.log(`[${exchange.name}] ✅ Found ${orderType.toUpperCase()} button in CreateOrderPanel (text: "${buttonInfo.text}"), clicking...`);
           await orderTypeElement.click();
           console.log(`[${exchange.name}] Selected ${orderType.toUpperCase()} order`);
           orderTypeResult = true;
           await delay(300);
-          
-          // Verify we're still on the trading page (not navigated away)
-          const currentUrl = page.url();
-          if (currentUrl.includes('/deposit') || currentUrl.includes('/withdraw')) {
-            console.log(`[${exchange.name}] ⚠️  Navigation detected to ${currentUrl}, going back...`);
-            await page.goBack();
-            await delay(1000);
-            orderTypeResult = false; // Retry
-          }
         }
       } else {
-        console.log(`[${exchange.name}] ⚠️  ${orderType.toUpperCase()} button not found in CreateOrderPanel, trying page-wide search...`);
+        console.log(`[${exchange.name}] ⚠️  ${orderType.toUpperCase()} button not found in CreateOrderPanel, trying fallback...`);
       }
     }
     
     // Fallback: If not found in CreateOrderPanel, use standard selectOrderType
     if (!orderTypeResult) {
-      console.log(`[${exchange.name}] Falling back to page-wide search for ${orderType.toUpperCase()} button...`);
+      console.log(`[${exchange.name}] Falling back to standard selectOrderType for ${orderType.toUpperCase()} button...`);
+      const { selectOrderType } = await import('./executeBase.js');
       const orderTypePromise = selectOrderType(page, orderType, exchange);
       const orderTypeTimeout = new Promise((_, reject) =>
         setTimeout(() => reject(new Error('selectOrderType timeout after 5 seconds')), 5000)
