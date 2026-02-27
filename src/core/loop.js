@@ -1681,51 +1681,8 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
       
       await delay(300); // Small delay after cleanup
 
-      // Step 3: Pre-fill forms for Kraken only (order type, quantity, TP/SL - excluding price and side)
-      // GRVT will use the old executeTrade flow (no prefill)
-      console.log(`\n[CYCLE ${cycleCount}] Step 3: Pre-filling forms for Kraken (order type, quantity, TP/SL - excluding price and side)...`);
-      console.log(`[CYCLE ${cycleCount}]    GRVT will use the old flow (no prefill).`);
-      
-      const { prefillFormKraken } = await import('../trading/prefillForm.js');
-      
-      // Pre-fill only Kraken accounts in parallel
-      const prefillPromises = [];
-      
-      // Pre-fill Account 1 if it's Kraken
-      const exchange1NameLower = exchange1.name?.toLowerCase() || '';
-      if (exchange1NameLower.includes('kraken')) {
-        prefillPromises.push(
-          prefillFormKraken(page1, { orderType: "limit", qty: TRADE_CONFIG.buyQty }, exchange1)
-            .then(result => ({ account: 1, exchange: 'kraken', result }))
-            .catch(error => ({ account: 1, exchange: 'kraken', result: { success: false, error: error.message } }))
-        );
-      }
-      
-      // Pre-fill Account 2 if it's Kraken
-      const exchange2NameLower = exchange2.name?.toLowerCase() || '';
-      if (exchange2NameLower.includes('kraken')) {
-        prefillPromises.push(
-          prefillFormKraken(page2, { orderType: "limit", qty: TRADE_CONFIG.sellQty }, exchange2)
-            .then(result => ({ account: 2, exchange: 'kraken', result }))
-            .catch(error => ({ account: 2, exchange: 'kraken', result: { success: false, error: error.message } }))
-        );
-      }
-      
-      const prefillResults = await Promise.all(prefillPromises);
-      
-      // Store prefill data for later use (only for Kraken)
-      const prefillData = {};
-      for (const { account, exchange: exch, result } of prefillResults) {
-        if (result.success) {
-          prefillData[account] = { ...result, exchange: exch };
-          console.log(`[CYCLE ${cycleCount}] ✅ Account ${account} (${exch}) pre-filled successfully`);
-        } else {
-          console.log(`[CYCLE ${cycleCount}] ⚠️  Account ${account} (${exch}) pre-fill failed: ${result.error}`);
-        }
-      }
-
-      // Step 4: Get price comparison to determine buy/sell accounts (AFTER pre-filling forms)
-      console.log(`\n[CYCLE ${cycleCount}] Step 4: Getting price comparison to determine buy/sell accounts...`);
+      // Step 3: Get price comparison FIRST to determine buy/sell accounts (BEFORE pre-filling forms)
+      console.log(`\n[CYCLE ${cycleCount}] Step 3: Getting price comparison to determine buy/sell accounts...`);
       const priceComparison = await comparePricesFromExchanges(exchangeAccounts);
       
       if (!priceComparison.success || priceComparison.successfulPrices.length < 2) {
@@ -1736,6 +1693,7 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
       }
       
       // Determine buy/sell sides based on price comparison
+      // High price exchange = SELL, Low price exchange = BUY
       const highestPriceExchange = priceComparison.highest;
       const lowestPriceExchange = priceComparison.lowest;
       
@@ -1752,31 +1710,79 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
         await delay(TRADE_CONFIG.waitTime);
         continue;
       }
+
+      // Step 4: Pre-fill forms for BOTH GRVT and Kraken (order type, quantity, TP/SL - excluding price and side)
+      // Now we know which account is buy/sell, so we can pre-fill with correct quantities
+      // Threshold check will run in parallel with prefilling
+      console.log(`\n[CYCLE ${cycleCount}] Step 4: Pre-filling forms for BOTH GRVT and Kraken (order type, quantity, TP/SL - excluding price and side)...`);
+      console.log(`[CYCLE ${cycleCount}]    Buy account: ${buyAccount.exchange.name} (${buyAccount.email})`);
+      console.log(`[CYCLE ${cycleCount}]    Sell account: ${sellAccount.exchange.name} (${sellAccount.email})`);
       
-      // Pre-trade flow for Extended Exchange
-      // const hasExtendedExchange = buyAccount.exchange.name === 'Extended Exchange' || sellAccount.exchange.name === 'Extended Exchange';
-      // if (hasExtendedExchange) {
-      //   console.log(`\n[CYCLE ${cycleCount}] Running pre-trade flow for Extended Exchange...`);
-      //   const preTradePromises = [];
-      //   if (buyAccount.exchange.name === 'Extended Exchange') {
-      //     preTradePromises.push(clickOrdersTab(buyAccount.page, buyAccount.email, true));
-      //   }
-      //   if (sellAccount.exchange.name === 'Extended Exchange') {
-      //     preTradePromises.push(clickOrdersTab(sellAccount.page, sellAccount.email, true));
-      //   }
-      //   if (preTradePromises.length > 0) {
-      //     await Promise.all(preTradePromises);
-      //     await delay(2000);
-      //   }
-      // }
+      const { prefillFormKraken, prefillFormGrvt } = await import('../trading/prefillForm.js');
       
-      // Step 5: Wait for opening threshold (AFTER determining buy/sell) before placing new trades
-      console.log(`\n[CYCLE ${cycleCount}] Step 5: Checking opening threshold before placing new trades...`);
-      const thresholdPriceComparison = await waitForPriceThreshold(
+      // Pre-fill both GRVT and Kraken accounts in parallel with correct quantities based on buy/sell determination
+      const prefillPromises = [];
+      
+      // Pre-fill buy account
+      const buyAccountIsKraken = buyAccount.exchange.name?.toLowerCase().includes('kraken');
+      const buyAccountIsGrvt = buyAccount.exchange.name?.toLowerCase().includes('grvt');
+      if (buyAccountIsKraken) {
+        prefillPromises.push(
+          prefillFormKraken(buyAccount.page, { orderType: "limit", qty: TRADE_CONFIG.buyQty }, buyAccount.exchange)
+            .then(result => ({ email: buyAccount.email, exchange: 'kraken', side: 'buy', result }))
+            .catch(error => ({ email: buyAccount.email, exchange: 'kraken', side: 'buy', result: { success: false, error: error.message } }))
+        );
+      } else if (buyAccountIsGrvt) {
+        prefillPromises.push(
+          prefillFormGrvt(buyAccount.page, { orderType: "limit", qty: TRADE_CONFIG.buyQty }, buyAccount.exchange)
+            .then(result => ({ email: buyAccount.email, exchange: 'grvt', side: 'buy', result }))
+            .catch(error => ({ email: buyAccount.email, exchange: 'grvt', side: 'buy', result: { success: false, error: error.message } }))
+        );
+      }
+      
+      // Pre-fill sell account
+      const sellAccountIsKraken = sellAccount.exchange.name?.toLowerCase().includes('kraken');
+      const sellAccountIsGrvt = sellAccount.exchange.name?.toLowerCase().includes('grvt');
+      if (sellAccountIsKraken) {
+        prefillPromises.push(
+          prefillFormKraken(sellAccount.page, { orderType: "limit", qty: TRADE_CONFIG.sellQty }, sellAccount.exchange)
+            .then(result => ({ email: sellAccount.email, exchange: 'kraken', side: 'sell', result }))
+            .catch(error => ({ email: sellAccount.email, exchange: 'kraken', side: 'sell', result: { success: false, error: error.message } }))
+        );
+      } else if (sellAccountIsGrvt) {
+        prefillPromises.push(
+          prefillFormGrvt(sellAccount.page, { orderType: "limit", qty: TRADE_CONFIG.sellQty }, sellAccount.exchange)
+            .then(result => ({ email: sellAccount.email, exchange: 'grvt', side: 'sell', result }))
+            .catch(error => ({ email: sellAccount.email, exchange: 'grvt', side: 'sell', result: { success: false, error: error.message } }))
+        );
+      }
+      
+      // Step 5: Wait for opening threshold IN PARALLEL with prefilling
+      // If threshold is met during prefilling, continue prefilling until both are done
+      console.log(`\n[CYCLE ${cycleCount}] Step 5: Checking opening threshold IN PARALLEL with form prefilling...`);
+      const thresholdPromise = waitForPriceThreshold(
         exchangeAccounts, 
         TRADE_CONFIG.openingThreshold, 
         cycleCount
       );
+      
+      // Wait for BOTH prefilling and threshold check to complete
+      // Even if threshold is met, we wait for prefilling to finish
+      const [prefillResults, thresholdPriceComparison] = await Promise.all([
+        Promise.all(prefillPromises),
+        thresholdPromise
+      ]);
+      
+      // Store prefill data for later use (for both GRVT and Kraken) - keyed by email
+      const prefillData = {};
+      for (const { email, exchange: exch, side, result } of prefillResults) {
+        if (result.success) {
+          prefillData[email] = { ...result, exchange: exch, side };
+          console.log(`[CYCLE ${cycleCount}] ✅ ${side.toUpperCase()} account (${email}, ${exch}) pre-filled successfully`);
+        } else {
+          console.log(`[CYCLE ${cycleCount}] ⚠️  ${side.toUpperCase()} account (${email}, ${exch}) pre-fill failed: ${result.error}`);
+        }
+      }
       
       if (!thresholdPriceComparison) {
         console.log(`\n[CYCLE ${cycleCount}] ⚠️  Opening threshold not met. Skipping trade execution this cycle...`);
@@ -1788,17 +1794,19 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
       // ⏱️ START TIMING: Opening threshold met - start measuring form fill + submit time
       const thresholdMetTime = Date.now();
       console.log(`\n[CYCLE ${cycleCount}] ⏱️  [TIMING] Opening threshold met at ${new Date(thresholdMetTime).toISOString()}`);
+      console.log(`[CYCLE ${cycleCount}] ✅ All forms pre-filled. Proceeding with quick fill...`);
       
-      // Verify buy/sell accounts are still correct (prices may have changed during threshold wait)
+      // Step 5b: Price comparison at threshold - update buy/sell sides based on current prices
+      // Prices may have changed during threshold wait, so we re-compare and update sides
       const finalHighestPriceExchange = thresholdPriceComparison.highest;
       const finalLowestPriceExchange = thresholdPriceComparison.lowest;
       
-      console.log(`\n[CYCLE ${cycleCount}] Opening threshold met. Final price-based trading decision:`);
+      console.log(`\n[CYCLE ${cycleCount}] Opening threshold met. Price comparison and side update:`);
       console.log(`   🔺 SELL on ${finalHighestPriceExchange.exchange} (highest price: $${finalHighestPriceExchange.price.toLocaleString()})`);
       console.log(`   🔻 BUY on ${finalLowestPriceExchange.exchange} (lowest price: $${finalLowestPriceExchange.price.toLocaleString()})`);
       console.log(`   Price spread: ${thresholdPriceComparison.comparison.priceDiffPercent}%`);
       
-      // Re-determine accounts in case prices changed during threshold wait
+      // Re-determine accounts based on threshold price comparison (sides may have changed)
       const finalBuyAccount = getAccountForExchange(finalLowestPriceExchange.exchange);
       const finalSellAccount = getAccountForExchange(finalHighestPriceExchange.exchange);
       
@@ -1808,19 +1816,28 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
         continue;
       }
       
-      // Use final accounts for trade execution
+      // Check if sides changed between initial comparison and threshold check
+      const sidesChanged = (buyAccount.email !== finalBuyAccount.email) || (sellAccount.email !== finalSellAccount.email);
+      if (sidesChanged) {
+        console.log(`\n[CYCLE ${cycleCount}] ⚠️  Sides changed between initial comparison and threshold check:`);
+        console.log(`   Initial: BUY=${buyAccount.email}, SELL=${sellAccount.email}`);
+        console.log(`   Final:   BUY=${finalBuyAccount.email}, SELL=${finalSellAccount.email}`);
+        console.log(`   Note: Prefill data may be for different accounts, but side will be set correctly during execution.`);
+      } else {
+        console.log(`\n[CYCLE ${cycleCount}] ✓ Sides unchanged - same accounts for buy/sell`);
+      }
+      
+      // Use final accounts for trade execution (from threshold price comparison)
       const tradeBuyAccount = finalBuyAccount;
       const tradeSellAccount = finalSellAccount;
       
-      // Step 6: Execute trades
-      // GRVT: Use old executeTrade flow (no prefill)
-      // Kraken: Use quick fill flow (with prefill - side and price filled after threshold)
-      console.log(`\n[CYCLE ${cycleCount}] Step 6: Executing trades...`);
+      // Step 6: Execute trades using quick fill for BOTH GRVT and Kraken (with prefill - side and price filled after threshold)
+      console.log(`\n[CYCLE ${cycleCount}] Step 6: Executing trades using quick fill (both GRVT and Kraken)...`);
       console.log(`   BUY on ${tradeBuyAccount.exchange.name} (${tradeBuyAccount.email}) at $${finalLowestPriceExchange.price.toLocaleString()}`);
       console.log(`   SELL on ${tradeSellAccount.exchange.name} (${tradeSellAccount.email}) at $${finalHighestPriceExchange.price.toLocaleString()}`);
       
       // Helper function for Kraken quick fill (with prefill)
-      const quickFillAndSubmitWithTimeout = async (page, price, tradeParams, exchange, prefillData, timeoutMs = 30000, thresholdMetTime, cycleCount, sideLabel, email) => {
+      const quickFillAndSubmitKrakenWithTimeout = async (page, price, tradeParams, exchange, prefillData, timeoutMs = 30000, thresholdMetTime, cycleCount, sideLabel, email) => {
         const { fillPriceSideAndSubmitKraken } = await import('../trading/prefillForm.js');
         
         const quickFillPromise = fillPriceSideAndSubmitKraken(page, price, tradeParams, exchange, thresholdMetTime, cycleCount, sideLabel, email, prefillData);
@@ -1837,24 +1854,53 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
         }
       };
       
-      // Determine which account is which for prefill data (only for Kraken)
-      const buyAccountNum = tradeBuyAccount.email === email1 ? 1 : 2;
-      const sellAccountNum = tradeSellAccount.email === email1 ? 1 : 2;
+      // Helper function for GRVT quick fill (with prefill)
+      const quickFillAndSubmitGrvtWithTimeout = async (page, price, tradeParams, exchange, prefillData, timeoutMs = 30000, thresholdMetTime, cycleCount, sideLabel, email) => {
+        const { fillPriceSideAndSubmitGrvt } = await import('../trading/prefillForm.js');
+        
+        const quickFillPromise = fillPriceSideAndSubmitGrvt(page, price, tradeParams, exchange, thresholdMetTime, cycleCount, sideLabel, email, prefillData);
+        
+        const timeoutPromise = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error(`Quick fill timeout after ${timeoutMs}ms`)), timeoutMs)
+        );
+        
+        try {
+          return await Promise.race([quickFillPromise, timeoutPromise]);
+        } catch (error) {
+          console.log(`⚠️  [${exchange.name}] Quick fill error or timeout: ${error.message}`);
+          return { success: false, error: error.message };
+        }
+      };
       
       // Determine which accounts are Kraken vs GRVT
       const buyIsKraken = tradeBuyAccount.exchange.name?.toLowerCase().includes('kraken');
+      const buyIsGrvt = tradeBuyAccount.exchange.name?.toLowerCase().includes('grvt');
       const sellIsKraken = tradeSellAccount.exchange.name?.toLowerCase().includes('kraken');
+      const sellIsGrvt = tradeSellAccount.exchange.name?.toLowerCase().includes('grvt');
       
-      // Execute trades based on exchange type
+      // Execute trades based on exchange type - use quick fill for both GRVT and Kraken
       console.log(`[CYCLE ${cycleCount}] Starting parallel trade execution - waiting for both to complete...`);
       
       const buyTradePromise = buyIsKraken
-        ? quickFillAndSubmitWithTimeout(
+        ? quickFillAndSubmitKrakenWithTimeout(
             tradeBuyAccount.page,
             finalLowestPriceExchange.price,
             { side: "buy", orderType: "limit", qty: TRADE_CONFIG.buyQty },
             tradeBuyAccount.exchange,
-            prefillData[buyAccountNum] || {},
+            prefillData[tradeBuyAccount.email] || {},
+            30000,
+            thresholdMetTime,
+            cycleCount,
+            'BUY',
+            tradeBuyAccount.email
+          )
+        : buyIsGrvt
+        ? quickFillAndSubmitGrvtWithTimeout(
+            tradeBuyAccount.page,
+            finalLowestPriceExchange.price,
+            { side: "buy", orderType: "limit", qty: TRADE_CONFIG.buyQty },
+            tradeBuyAccount.exchange,
+            prefillData[tradeBuyAccount.email] || {},
             30000,
             thresholdMetTime,
             cycleCount,
@@ -1878,12 +1924,25 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
           );
       
       const sellTradePromise = sellIsKraken
-        ? quickFillAndSubmitWithTimeout(
+        ? quickFillAndSubmitKrakenWithTimeout(
             tradeSellAccount.page,
             finalHighestPriceExchange.price,
             { side: "sell", orderType: "limit", qty: TRADE_CONFIG.sellQty },
             tradeSellAccount.exchange,
-            prefillData[sellAccountNum] || {},
+            prefillData[tradeSellAccount.email] || {},
+            30000,
+            thresholdMetTime,
+            cycleCount,
+            'SELL',
+            tradeSellAccount.email
+          )
+        : sellIsGrvt
+        ? quickFillAndSubmitGrvtWithTimeout(
+            tradeSellAccount.page,
+            finalHighestPriceExchange.price,
+            { side: "sell", orderType: "limit", qty: TRADE_CONFIG.sellQty },
+            tradeSellAccount.exchange,
+            prefillData[tradeSellAccount.email] || {},
             30000,
             thresholdMetTime,
             cycleCount,
