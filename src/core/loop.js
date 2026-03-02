@@ -64,6 +64,12 @@ async function waitForPriceThreshold(exchangeAccounts, threshold, cycleCount) {
     console.log(`   Price difference: $${priceDiff.toLocaleString()}`);
     console.log(`   Threshold required: $${threshold.toLocaleString()}`);
     
+    // Opening threshold: only positive values allowed (must be >= 0)
+    if (threshold < 0) {
+      console.log(`\n⚠️  [CYCLE ${cycleCount}] Opening threshold cannot be negative. Using absolute value: $${Math.abs(threshold).toLocaleString()}`);
+      threshold = Math.abs(threshold);
+    }
+    
     if (priceDiff >= threshold) {
       console.log(`\n✅ [CYCLE ${cycleCount}] Price difference ($${priceDiff.toLocaleString()}) >= threshold ($${threshold.toLocaleString()}). Proceeding with trade.`);
       return priceComparison;
@@ -243,8 +249,9 @@ async function waitForClosingThreshold(exchangeAccounts, threshold, cycleCount) 
       continue;
     }
     
-    // Use absolute price difference (highest - lowest)
-    const priceDiff = Math.abs(priceComparison.comparison.priceDiff);
+    // Use actual price difference (highest - lowest), which is always positive
+    // Support negative thresholds for closing as well
+    const priceDiff = priceComparison.comparison.priceDiff; // Already positive (highest - lowest)
     const remainingTime = Math.max(0, maxWaitTime - elapsedTime);
     const remainingMinutes = Math.floor(remainingTime / 60000);
     const remainingSeconds = Math.floor((remainingTime % 60000) / 1000);
@@ -256,11 +263,24 @@ async function waitForClosingThreshold(exchangeAccounts, threshold, cycleCount) 
     console.log(`   Closing threshold: $${threshold.toLocaleString()}`);
     console.log(`   Time remaining: ${remainingMinutes}m ${remainingSeconds}s`);
     
-    if (priceDiff <= threshold) {
-      console.log(`\n✅ [CYCLE ${cycleCount}] Price difference ($${priceDiff.toLocaleString()}) <= closing threshold ($${threshold.toLocaleString()}). Proceeding to close positions.`);
+    // Support negative thresholds: if threshold is negative, use absolute value for comparison
+    // For closing: we want priceDiff <= threshold (or <= |threshold| if negative)
+    const thresholdForComparison = threshold < 0 ? Math.abs(threshold) : threshold;
+    const thresholdMet = priceDiff <= thresholdForComparison;
+    
+    if (thresholdMet) {
+      if (threshold < 0) {
+        console.log(`\n✅ [CYCLE ${cycleCount}] Price difference ($${priceDiff.toLocaleString()}) <= |closing threshold| ($${thresholdForComparison.toLocaleString()}, original: $${threshold.toLocaleString()}). Proceeding to close positions.`);
+      } else {
+        console.log(`\n✅ [CYCLE ${cycleCount}] Price difference ($${priceDiff.toLocaleString()}) <= closing threshold ($${threshold.toLocaleString()}). Proceeding to close positions.`);
+      }
       return priceComparison;
     } else {
-      console.log(`\n⏳ [CYCLE ${cycleCount}] Price difference ($${priceDiff.toLocaleString()}) > closing threshold ($${threshold.toLocaleString()}). Waiting 2 seconds and checking again...`);
+      if (threshold < 0) {
+        console.log(`\n⏳ [CYCLE ${cycleCount}] Price difference ($${priceDiff.toLocaleString()}) > |closing threshold| ($${thresholdForComparison.toLocaleString()}, original: $${threshold.toLocaleString()}). Waiting 2 seconds and checking again...`);
+      } else {
+        console.log(`\n⏳ [CYCLE ${cycleCount}] Price difference ($${priceDiff.toLocaleString()}) > closing threshold ($${threshold.toLocaleString()}). Waiting 2 seconds and checking again...`);
+      }
       await delay(2000);
     }
   }
