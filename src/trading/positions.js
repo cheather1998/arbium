@@ -111,6 +111,9 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null, clo
       // Find and click "Cancel all orders" button
       console.log(`[${exchange.name}] Step 0.2: Looking for "Cancel all orders" button...`);
       let cancelAllOrdersBtnClicked = false;
+      let cancelAllOrdersBtnElement = null;
+      
+      // Strategy 1: Find by exact text
       const cancelAllOrdersBtn = await findByExactText(page, "Cancel all orders", ["button", "div", "span"]);
       
       if (cancelAllOrdersBtn) {
@@ -118,41 +121,268 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null, clo
           return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
         }, cancelAllOrdersBtn);
         if (isVisible) {
-          console.log(`[${exchange.name}] ✅ Found "Cancel all orders" button, clicking...`);
-          await cancelAllOrdersBtn.click();
-          cancelAllOrdersBtnClicked = true;
+          cancelAllOrdersBtnElement = cancelAllOrdersBtn;
         }
       }
       
-      if (!cancelAllOrdersBtnClicked) {
+      // Strategy 2: Find by partial text if exact didn't work
+      if (!cancelAllOrdersBtnElement) {
         const cancelAllOrdersBtn2 = await findByText(page, "Cancel all orders", ["button", "div", "span"]);
         if (cancelAllOrdersBtn2) {
           const isVisible = await page.evaluate((el) => {
             return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
           }, cancelAllOrdersBtn2);
           if (isVisible) {
-            console.log(`[${exchange.name}] ✅ Found "Cancel all orders" button, clicking...`);
-            await cancelAllOrdersBtn2.click();
+            cancelAllOrdersBtnElement = cancelAllOrdersBtn2;
+          }
+        }
+      }
+      
+      // Strategy 3: Find by JavaScript evaluation (more robust for GRVT)
+      if (!cancelAllOrdersBtnElement) {
+        const btnInfo = await page.evaluate(() => {
+          const allElements = Array.from(document.querySelectorAll('button, div, span, a'));
+          for (const el of allElements) {
+            const text = (el.textContent || '').trim();
+            if (text.toLowerCase().includes('cancel all orders') && el.offsetParent !== null) {
+              const style = window.getComputedStyle(el);
+              const rect = el.getBoundingClientRect();
+              const isDisabled = el.disabled || el.getAttribute('disabled') !== null || 
+                                style.pointerEvents === 'none' || style.cursor === 'not-allowed';
+              
+              if (style.display !== 'none' && 
+                  style.visibility !== 'hidden' &&
+                  rect.width > 0 && 
+                  rect.height > 0 &&
+                  !isDisabled) {
+                return {
+                  found: true,
+                  tagName: el.tagName,
+                  text: text.substring(0, 50),
+                  className: el.className || '',
+                  disabled: isDisabled,
+                  x: rect.left + rect.width / 2,
+                  y: rect.top + rect.height / 2
+                };
+              }
+            }
+          }
+          return { found: false };
+        });
+        
+        if (btnInfo.found) {
+          if (btnInfo.disabled) {
+            console.log(`[${exchange.name}] ⚠️  "Cancel all orders" button found but is DISABLED - no orders to cancel`);
+          } else {
+            console.log(`[${exchange.name}] ✅ Found "Cancel all orders" button via JavaScript (${btnInfo.tagName}, text: "${btnInfo.text}")`);
+            // Click using coordinates with mouse events
+            await page.mouse.move(btnInfo.x, btnInfo.y);
+            await delay(200);
+            await page.mouse.down();
+            await delay(100);
+            await page.mouse.up();
+            await delay(100);
+            await page.mouse.click(btnInfo.x, btnInfo.y);
             cancelAllOrdersBtnClicked = true;
+            await delay(500);
+          }
+        }
+      }
+      
+      // Check if there are actually orders to cancel before proceeding
+      if (cancelAllOrdersBtnClicked) {
+        const hasOrders = await page.evaluate(() => {
+          // Check for order rows in tables
+          const tables = Array.from(document.querySelectorAll('table'));
+          for (const table of tables) {
+            const rows = Array.from(table.querySelectorAll('tbody tr, tr:not(:first-child)'));
+            const orderRows = rows.filter(row => {
+              if (row.offsetParent === null) return false;
+              const text = (row.textContent || '').toLowerCase();
+              return (text.includes('limit') || text.includes('market') || text.includes('pending')) &&
+                     !text.includes('canceled') && !text.includes('filled');
+            });
+            if (orderRows.length > 0) return true;
+          }
+          return false;
+        });
+        
+        if (!hasOrders) {
+          console.log(`[${exchange.name}] ⚠️  No orders found in table - button may have been clicked but no orders to cancel`);
+          cancelAllOrdersBtnClicked = false; // Reset since there's nothing to cancel
+        } else {
+          console.log(`[${exchange.name}] ✅ Orders found in table - proceeding with cancellation`);
+        }
+      }
+      
+      // Click the button if found via helper functions
+      if (cancelAllOrdersBtnElement && !cancelAllOrdersBtnClicked) {
+        console.log(`[${exchange.name}] ✅ Found "Cancel all orders" button, clicking...`);
+        
+        // Try multiple click methods for GRVT
+        let clickWorked = false;
+        
+        // Method 1: JavaScript click with events
+        try {
+          const jsClickResult = await page.evaluate((btn) => {
+            if (!btn) return { success: false };
+            try {
+              btn.scrollIntoView({ behavior: 'instant', block: 'center' });
+              btn.focus();
+              
+              // Dispatch mouse events
+              const mouseDown = new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window });
+              const mouseUp = new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window });
+              const clickEvent = new MouseEvent('click', { bubbles: true, cancelable: true, view: window });
+              
+              btn.dispatchEvent(mouseDown);
+              btn.dispatchEvent(mouseUp);
+              btn.dispatchEvent(clickEvent);
+              btn.click();
+              
+              return { success: true };
+            } catch (e) {
+              return { success: false, error: e.message };
+            }
+          }, cancelAllOrdersBtnElement);
+          
+          if (jsClickResult && jsClickResult.success) {
+            clickWorked = true;
+            console.log(`[${exchange.name}] ✅ Clicked "Cancel all orders" button using JavaScript`);
+          }
+        } catch (error) {
+          console.log(`[${exchange.name}] ⚠️  JavaScript click failed: ${error.message}`);
+        }
+        
+        // Method 2: Puppeteer click
+        if (!clickWorked) {
+          try {
+            await cancelAllOrdersBtnElement.evaluate((btn) => btn.scrollIntoView({ behavior: 'instant', block: 'center' }));
+            await delay(200);
+            await cancelAllOrdersBtnElement.click();
+            clickWorked = true;
+            console.log(`[${exchange.name}] ✅ Clicked "Cancel all orders" button using Puppeteer`);
+          } catch (error) {
+            console.log(`[${exchange.name}] ⚠️  Puppeteer click failed: ${error.message}`);
+          }
+        }
+        
+        if (clickWorked) {
+          cancelAllOrdersBtnClicked = true;
+          await delay(500); // Wait for modal to start opening
+          
+          // Verify that modal actually opened after clicking
+          const modalOpened = await page.evaluate(() => {
+            // Check for modals
+            const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"]'));
+            for (const modal of modals) {
+              const style = window.getComputedStyle(modal);
+              if (style.display !== 'none' && 
+                  style.visibility !== 'hidden' && 
+                  style.opacity !== '0' &&
+                  modal.offsetWidth > 0 && 
+                  modal.offsetHeight > 0) {
+                const modalText = (modal.textContent || '').toLowerCase();
+                if (modalText.includes('cancel') || modalText.includes('confirm') || modalText.includes('order')) {
+                  return true;
+                }
+              }
+            }
+            
+            // Also check for Confirm button
+            const buttons = Array.from(document.querySelectorAll('button, [role="button"]'));
+            for (const btn of buttons) {
+              const text = (btn.textContent || '').trim().toLowerCase();
+              if (text === 'confirm' && btn.offsetParent !== null) {
+                const style = window.getComputedStyle(btn);
+                if (style.display !== 'none' && style.visibility !== 'hidden') {
+                  return true;
+                }
+              }
+            }
+            
+            return false;
+          });
+          
+          if (!modalOpened) {
+            console.log(`[${exchange.name}] ⚠️  Modal did not open after clicking "Cancel all orders" button. Retrying click...`);
+            // Retry with more aggressive click
+            await delay(500);
+            try {
+              await page.evaluate(() => {
+                const allElements = Array.from(document.querySelectorAll('button, div, span, a'));
+                for (const el of allElements) {
+                  const text = (el.textContent || '').trim();
+                  if (text.toLowerCase().includes('cancel all orders') && el.offsetParent !== null) {
+                    el.scrollIntoView({ behavior: 'instant', block: 'center' });
+                    el.focus();
+                    const mouseDown = new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window });
+                    const mouseUp = new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window });
+                    const clickEvent = new MouseEvent('click', { bubbles: true, cancelable: true, view: window });
+                    el.dispatchEvent(mouseDown);
+                    el.dispatchEvent(mouseUp);
+                    el.dispatchEvent(clickEvent);
+                    el.click();
+                    return;
+                  }
+                }
+              });
+              await delay(1000); // Wait longer after retry
+              console.log(`[${exchange.name}] ✅ Retried clicking "Cancel all orders" button`);
+            } catch (retryError) {
+              console.log(`[${exchange.name}] ⚠️  Retry click failed: ${retryError.message}`);
+            }
+          } else {
+            console.log(`[${exchange.name}] ✅ Modal opened after clicking "Cancel all orders" button`);
           }
         }
       }
       
       if (!cancelAllOrdersBtnClicked) {
-        console.log(`[${exchange.name}] ⚠️  Could not find "Cancel all orders" button, no orders to cancel - proceeding to close positions...`);
+        console.log(`[${exchange.name}] ⚠️  Could not find or click "Cancel all orders" button, no orders to cancel - proceeding to close positions...`);
       }
       
       // Wait for confirmation modal to open (only if button was clicked)
       if (cancelAllOrdersBtnClicked) {
         console.log(`[${exchange.name}] Step 0.3: Waiting for confirmation modal/button to appear...`);
         
+        // First, wait a bit for modal to start opening
+        await delay(1000); // Wait 1 second for GRVT modal to start opening
+        
         // Wait for Confirm button to appear after clicking Cancel all orders
         let confirmBtn = null;
         let confirmBtnVisible = false;
+        let modalDetected = false;
         
-        // Wait up to 5 seconds for Confirm button to appear
-        for (let i = 0; i < 20; i++) {
+        // Wait up to 10 seconds for Confirm button to appear (increased for GRVT)
+        for (let i = 0; i < 40; i++) {
           await delay(250);
+          
+          // Check if modal is open first
+          if (!modalDetected) {
+            modalDetected = await page.evaluate(() => {
+              // Check for modals
+              const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="overlay"]'));
+              for (const modal of modals) {
+                const style = window.getComputedStyle(modal);
+                if (style.display !== 'none' && 
+                    style.visibility !== 'hidden' && 
+                    style.opacity !== '0' &&
+                    modal.offsetWidth > 0 && 
+                    modal.offsetHeight > 0) {
+                  const modalText = (modal.textContent || '').toLowerCase();
+                  if (modalText.includes('cancel') || modalText.includes('confirm') || modalText.includes('order')) {
+                    return true;
+                  }
+                }
+              }
+              return false;
+            });
+            
+            if (modalDetected) {
+              console.log(`[${exchange.name}] ✅ Modal detected (attempt ${i + 1})`);
+            }
+          }
           
           // Try to find Confirm button with multiple strategies
           if (!confirmBtn) {

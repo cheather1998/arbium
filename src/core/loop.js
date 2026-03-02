@@ -22,6 +22,7 @@ const TRADE_CONFIG = {
   stopLoss: parseFloat(process.env.STOP_LOSS) || null,
   openingThreshold: parseFloat(process.env.OPENING_THRESHOLD) || 0.0, // Absolute price difference threshold (in dollars: highest - lowest)
   closingThreshold: parseFloat(process.env.CLOSING_THRESHOLD) || 0.0, // Absolute price difference threshold for closing (in dollars: highest - lowest)
+  closingSpread: parseFloat(process.env.CLOSING_SPREAD) || 0.0, // Spread threshold for closing: (price_difference - opening_threshold) >= closingSpread
 };
 
 // Debug: Log the configuration values being used
@@ -31,9 +32,14 @@ console.log(`  SELL_QTY: ${process.env.SELL_QTY || 'not set'} -> ${TRADE_CONFIG.
 console.log(`  LEVERAGE: ${process.env.LEVERAGE || 'not set'} -> ${TRADE_CONFIG.leverage}x`);
 console.log(`  STOP_LOSS: ${process.env.STOP_LOSS || 'not set'} -> ${TRADE_CONFIG.stopLoss || 'disabled'}`);
 console.log(`  OPENING_THRESHOLD: ${process.env.OPENING_THRESHOLD || 'not set'} -> $${TRADE_CONFIG.openingThreshold.toLocaleString()}`);
-console.log(`  CLOSING_THRESHOLD: ${process.env.CLOSING_THRESHOLD || 'not set'} -> $${TRADE_CONFIG.closingThreshold.toLocaleString()}\n`);
+console.log(`  CLOSING_THRESHOLD: ${process.env.CLOSING_THRESHOLD || 'not set'} -> $${TRADE_CONFIG.closingThreshold.toLocaleString()}`);
+console.log(`  CLOSING_SPREAD: ${process.env.CLOSING_SPREAD || 'not set'} -> $${TRADE_CONFIG.closingSpread.toLocaleString()}\n`);
 
 let isShuttingDown = false;
+
+// Store the opening threshold used when both positions opened successfully
+// This will be used in the next cycle before closing positions
+let savedOpeningThreshold = null;
 
 /**
  * Helper function to check prices and wait until threshold is met
@@ -281,6 +287,68 @@ async function waitForClosingThreshold(exchangeAccounts, threshold, cycleCount) 
       } else {
         console.log(`\n⏳ [CYCLE ${cycleCount}] Price difference ($${priceDiff.toLocaleString()}) > closing threshold ($${threshold.toLocaleString()}). Waiting 2 seconds and checking again...`);
       }
+      await delay(2000);
+    }
+  }
+  
+  return null;
+}
+
+/**
+ * Helper function to check prices and wait until closing spread threshold is met
+ * Closes positions when (price_difference - opening_threshold) >= closingSpread
+ * Returns price comparison result when threshold is satisfied
+ */
+async function waitForClosingSpreadThreshold(exchangeAccounts, openingThreshold, closingSpread, cycleCount) {
+  const startTime = Date.now();
+  const maxWaitTime = 15 * 60 * 1000; // 15 minutes in milliseconds
+  let attemptCount = 0;
+  
+  while (!isShuttingDown) {
+    attemptCount++;
+    const elapsedTime = Date.now() - startTime;
+    
+    // Check if 15 minutes have passed
+    if (elapsedTime >= maxWaitTime) {
+      console.log(`\n⏰ [CYCLE ${cycleCount}] 15 minutes elapsed. Force closing positions regardless of threshold.`);
+      return null; // Return null to indicate force close
+    }
+    
+    const priceComparison = await comparePricesFromExchanges(exchangeAccounts);
+    
+    if (!priceComparison.success || priceComparison.successfulPrices.length < 2) {
+      console.log(`\n[CYCLE ${cycleCount}] ⚠️  Price comparison failed or insufficient prices. Retrying in 2 seconds...`);
+      await delay(2000);
+      continue;
+    }
+    
+    // Use actual price difference (highest - lowest), which is always positive
+    const priceDiff = priceComparison.comparison.priceDiff; // Already positive (highest - lowest)
+    
+    // Calculate spread: (price_difference - opening_threshold)
+    const spread = openingThreshold- priceDiff;
+    
+    const remainingTime = Math.max(0, maxWaitTime - elapsedTime);
+    const remainingMinutes = Math.floor(remainingTime / 60000);
+    const remainingSeconds = Math.floor((remainingTime % 60000) / 1000);
+    
+    console.log(`\n[CYCLE ${cycleCount}] Closing spread threshold check attempt ${attemptCount} (${Math.floor(elapsedTime / 1000)}s elapsed):`);
+    console.log(`   Highest: ${priceComparison.highest.exchange} at $${priceComparison.highest.price.toLocaleString()}`);
+    console.log(`   Lowest: ${priceComparison.lowest.exchange} at $${priceComparison.lowest.price.toLocaleString()}`);
+    console.log(`   Current price difference: $${priceDiff.toLocaleString()}`);
+    console.log(`   Opening threshold (saved): $${openingThreshold.toLocaleString()}`);
+    console.log(`   Spread (price_diff - opening_threshold): $${spread.toLocaleString()}`);
+    console.log(`   Closing spread threshold: $${closingSpread.toLocaleString()}`);
+    console.log(`   Time remaining: ${remainingMinutes}m ${remainingSeconds}s`);
+    
+    // Check if spread >= closingSpread
+    const thresholdMet = spread >= closingSpread;
+    
+    if (thresholdMet) {
+      console.log(`\n✅ [CYCLE ${cycleCount}] Spread ($${spread.toLocaleString()}) >= closing spread threshold ($${closingSpread.toLocaleString()}). Proceeding to close positions.`);
+      return priceComparison;
+    } else {
+      console.log(`\n⏳ [CYCLE ${cycleCount}] Spread ($${spread.toLocaleString()}) < closing spread threshold ($${closingSpread.toLocaleString()}). Waiting 2 seconds and checking again...`);
       await delay(2000);
     }
   }
@@ -1149,7 +1217,7 @@ async function automatedTradingLoop3Exchanges(krakenAccount, grvtAccount, extend
       }
 
       // Check closing threshold before closing positions
-      console.log(`\n[CYCLE ${cycleCount}] Checking closing threshold before closing positions...`);
+      console.log(`\n[CYCLE ${cycleCount}] Checking closing threshold ($${TRADE_CONFIG.closingThreshold.toLocaleString()}) before closing positions...`);
       const closingPriceCheck = await waitForClosingThreshold(
         exchangeAccounts,
         TRADE_CONFIG.closingThreshold,
@@ -1456,13 +1524,36 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
 
 
       if(account1OpenPositionSide && account2OpenPositionSide){
-        // Step 1: Check closing threshold before closing positions
-        console.log(`\n[CYCLE ${cycleCount}] Step 1: Checking closing threshold before closing positions...`);
-        const closingPriceCheck = await waitForClosingThreshold(
-          exchangeAccounts,
-          TRADE_CONFIG.closingThreshold,
-          cycleCount
-        );
+        // Step 1: Check closing spread threshold before closing positions
+        // Use saved opening threshold and CLOSING_SPREAD from env
+        // Close when (price_difference - opening_threshold) >= CLOSING_SPREAD
+        let closingPriceCheck = null;
+        
+        if (savedOpeningThreshold !== null) {
+          console.log(`\n[CYCLE ${cycleCount}] Step 1: Checking closing spread threshold before closing positions...`);
+          console.log(`   Saved opening threshold: $${savedOpeningThreshold.toLocaleString()}`);
+          console.log(`   Closing spread threshold: $${TRADE_CONFIG.closingSpread.toLocaleString()}`);
+          console.log(`   Will close when: (price_difference - opening_threshold) >= closing_spread`);
+          
+          closingPriceCheck = await waitForClosingSpreadThreshold(
+            exchangeAccounts,
+            savedOpeningThreshold,
+            TRADE_CONFIG.closingSpread,
+            cycleCount
+          );
+          
+          // Clear saved opening threshold after using it
+          console.log(`[CYCLE ${cycleCount}] 🗑️  Cleared saved opening threshold after use`);
+          savedOpeningThreshold = null;
+        } else {
+          // Fallback to regular closing threshold if no saved opening threshold
+          console.log(`\n[CYCLE ${cycleCount}] Step 1: No saved opening threshold found. Using regular closing threshold ($${TRADE_CONFIG.closingThreshold.toLocaleString()})...`);
+          closingPriceCheck = await waitForClosingThreshold(
+            exchangeAccounts,
+            TRADE_CONFIG.closingThreshold,
+            cycleCount
+          );
+        }
         
         // Close positions (skip for Extended Exchange - handled in clickOrdersTab)
         // closingPriceCheck can be null (force close after 15 min) or a valid comparison (threshold met)
@@ -1545,15 +1636,46 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
                   : await cancelKrakenOrders(page))  // Don't pass parameter if not provided
               : await cancelAllOrders(page);
             
-            // Wait a bit for UI to update
-            await delay(1000);
+            // For GRVT: Wait longer for orders to be fully canceled (GRVT UI can be slower)
+            const waitTime = exchange.name === 'GRVT' ? 4000 : 1000;
+            console.log(`[${exchange.name}] Waiting ${waitTime}ms for UI to update after order cancellation...`);
+            await delay(waitTime);
             
-            // Verify if orders still exist
-            const ordersStillExist = await verifyOrdersExist();
+            // Verify if orders still exist (with additional wait for GRVT)
+            let ordersStillExist = await verifyOrdersExist();
+            
+            // For GRVT: Double-check after additional wait if orders still exist
+            if (exchange.name === 'GRVT' && ordersStillExist) {
+              console.log(`[${exchange.name}] Orders still detected, waiting additional 3 seconds for GRVT to process cancellation...`);
+              await delay(3000);
+              ordersStillExist = await verifyOrdersExist();
+              
+              // If still exist, wait one more time
+              if (ordersStillExist) {
+                console.log(`[${exchange.name}] Orders still detected after first wait, waiting additional 2 seconds...`);
+                await delay(2000);
+                ordersStillExist = await verifyOrdersExist();
+              }
+            }
             
             if (cancelResult.success && !ordersStillExist) {
               console.log(`✓ [${email}] All orders canceled successfully`);
-              break;
+              // For GRVT: Additional wait to ensure cancellation is fully processed before leaving orders tab
+              if (exchange.name === 'GRVT') {
+                console.log(`[${exchange.name}] Orders canceled, waiting additional 2 seconds to ensure GRVT fully processes cancellation...`);
+                await delay(2000);
+                // Final check to make sure orders are still gone
+                const finalVerify = await verifyOrdersExist();
+                if (!finalVerify) {
+                  console.log(`✓ [${email}] GRVT orders confirmed canceled - safe to proceed to positions`);
+                  break;
+                } else {
+                  console.log(`⚠️  [${email}] GRVT orders reappeared, will retry...`);
+                  ordersStillExist = true;
+                }
+              } else {
+                break;
+              }
             } else if (ordersStillExist) {
               retryCount++;
               const remainingCount = cancelResult.remaining || 'unknown';
@@ -1577,17 +1699,45 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
             }
           }
           
+          // Final verification before proceeding to position close
           if (retryCount >= maxRetries) {
             const finalCheck = await verifyOrdersExist();
             if (finalCheck) {
               console.log(`❌ [${email}] Failed to cancel all orders after ${maxRetries} attempts. Some orders may still remain.`);
+              // For GRVT: Wait a bit more and check one more time before giving up
+              if (exchange.name === 'GRVT') {
+                console.log(`[${exchange.name}] Waiting additional 5 seconds for GRVT orders to cancel before proceeding...`);
+                await delay(5000);
+                const finalCheck2 = await verifyOrdersExist();
+                if (finalCheck2) {
+                  console.log(`❌ [${email}] GRVT orders still exist after extended wait. Proceeding to position close anyway.`);
+                } else {
+                  console.log(`✓ [${email}] GRVT orders finally canceled after extended wait.`);
+                }
+              }
+            }
+          } else {
+            // Even if cancellation succeeded, wait a bit more for GRVT to fully process
+            if (exchange.name === 'GRVT') {
+              console.log(`[${exchange.name}] Order cancellation succeeded, waiting additional 2 seconds for GRVT to fully process before leaving orders tab...`);
+              await delay(2000);
+              // One final verification
+              const finalVerify = await verifyOrdersExist();
+              if (finalVerify) {
+                console.log(`⚠️  [${email}] GRVT orders detected again after wait - will need to retry`);
+              } else {
+                console.log(`✓ [${email}] GRVT orders confirmed gone - safe to proceed to positions tab`);
+              }
             }
           }
           
           // Step 2: Close positions (skip for Kraken - already handled by cancelKrakenOrders, skip for Extended Exchange - handled in clickOrdersTab)
           if (exchange.name !== 'Extended Exchange' && !isKraken) {
             console.log(`[${exchange.name}] 🔄 Starting position close for ${accountId}...`);
-            await delay(500); // Small delay between cancel and close
+            // For GRVT: Wait longer between cancel and close to ensure orders are fully processed
+            const delayBeforeClose = exchange.name === 'GRVT' ? 1500 : 500;
+            console.log(`[${exchange.name}] Waiting ${delayBeforeClose}ms before closing positions...`);
+            await delay(delayBeforeClose);
             const closeResult = wasCloseAtMarketProvided
               ? await closeAllPositions(page, 100, exchange, true)  // Pass true if parameter was provided
               : await closeAllPositions(page, 100, exchange);  // Don't pass parameter if not provided
@@ -2027,77 +2177,246 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
         console.log(`✗ [${tradeSellAccount.email}] SELL order failed: ${sellResult.error || 'unknown error'}`);
       }
       
-      // CRITICAL: Wait for both orders to be fully placed and processed before checking for partial fills
+      // CRITICAL: Wait for both orders to be fully placed and processed before checking positions
       // executeTrade returns when order is placed, but we need to wait for orders to potentially fill
-      console.log(`[CYCLE ${cycleCount}] ⏳ Waiting for orders to be fully processed before checking for partial fills...`);
-      await delay(3000); // Wait 3 seconds for orders to potentially fill
-      console.log(`[CYCLE ${cycleCount}] ✅ Waited for order processing, now checking for partial fills...`);
+      // GRVT takes longer to place orders than Kraken, so we need to wait longer if GRVT is involved
+      // Note: buyIsGrvt and sellIsGrvt are already declared above (line 1927, 1929)
+      const hasGrvt = buyIsGrvt || sellIsGrvt;
       
-      // Check for partial fill scenario (one account has position, other doesn't)
-      const checkPartialFill = async () => {
-        const positions = await checkOpenPositionsForAccounts(params);
-        const hasAccount1Position = !!positions.account1OpenPositionSide;
-        const hasAccount2Position = !!positions.account2OpenPositionSide;
+      if (hasGrvt) {
+        console.log(`[CYCLE ${cycleCount}] ⏳ GRVT detected - waiting longer for orders to be fully placed and processed (GRVT is slower than Kraken)...`);
+        await delay(7000); // Wait 7 seconds for GRVT orders to potentially fill
+        console.log(`[CYCLE ${cycleCount}] ✅ Waited for GRVT order processing, now checking positions...`);
+      } else {
+        console.log(`[CYCLE ${cycleCount}] ⏳ Waiting for orders to be fully processed before checking positions...`);
+        await delay(3000); // Wait 3 seconds for orders to potentially fill
+        console.log(`[CYCLE ${cycleCount}] ✅ Waited for order processing, now checking positions...`);
+      }
+      
+      // Step 7: Check if positions opened on both sides after order placement
+      console.log(`\n[CYCLE ${cycleCount}] 📊 Checking position status after order placement...`);
+      const positionCheck = await checkOpenPositionsForAccounts(params);
+      const account1HasPosition = !!positionCheck.account1OpenPositionSide;
+      const account2HasPosition = !!positionCheck.account2OpenPositionSide;
+      const account1PositionSide = positionCheck.account1OpenPositionSide || 'none';
+      const account2PositionSide = positionCheck.account2OpenPositionSide || 'none';
+      
+      // Log position status
+      console.log(`[CYCLE ${cycleCount}] 📊 Position Status After Order Placement:`);
+      console.log(`   Account 1 (${email1} - ${exchange1.name}): ${account1HasPosition ? `✅ OPEN (${account1PositionSide})` : '❌ NO POSITION'}`);
+      console.log(`   Account 2 (${email2} - ${exchange2.name}): ${account2HasPosition ? `✅ OPEN (${account2PositionSide})` : '❌ NO POSITION'}`);
+      
+      // Check if both positions opened
+      if (account1HasPosition && account2HasPosition) {
+        console.log(`[CYCLE ${cycleCount}] ✅ SUCCESS: Both positions opened successfully!`);
+        console.log(`   Account 1: ${account1PositionSide}, Account 2: ${account2PositionSide}`);
         
-        // Only proceed if exactly one account has a position
-        if (hasAccount1Position === hasAccount2Position) {
-          return null; // Both have positions or both don't - not a partial fill
+        // Save the opening threshold that was used for this trade
+        // This will be used in the next cycle before closing positions
+        savedOpeningThreshold = TRADE_CONFIG.openingThreshold;
+        console.log(`[CYCLE ${cycleCount}] 💾 Saved opening threshold: $${savedOpeningThreshold.toLocaleString()} (will be used in next cycle before closing)`);
+        
+        // Step 7.5: Verify position directions match expected directions
+        console.log(`\n[CYCLE ${cycleCount}] 🔍 Checking position directions match expected directions...`);
+        
+        // Determine expected directions based on which account was buy vs sell
+        const account1ExpectedSide = tradeBuyAccount.email === email1 ? 'long' : 'short';
+        const account2ExpectedSide = tradeBuyAccount.email === email2 ? 'long' : 'short';
+        
+        console.log(`[CYCLE ${cycleCount}] Expected directions:`);
+        console.log(`   Account 1 (${email1}): Expected ${account1ExpectedSide.toUpperCase()}, Got ${account1PositionSide.toUpperCase()}`);
+        console.log(`   Account 2 (${email2}): Expected ${account2ExpectedSide.toUpperCase()}, Got ${account2PositionSide.toUpperCase()}`);
+        
+        const account1DirectionCorrect = account1PositionSide === account1ExpectedSide;
+        const account2DirectionCorrect = account2PositionSide === account2ExpectedSide;
+        
+        if (account1DirectionCorrect && account2DirectionCorrect) {
+          console.log(`[CYCLE ${cycleCount}] ✅ Position directions are CORRECT! Both positions match expected directions.`);
+        } else {
+          console.log(`\n[CYCLE ${cycleCount}] ⚠️  ⚠️  ⚠️  CRITICAL: Position directions are WRONG!`);
+          console.log(`   Account 1: Expected ${account1ExpectedSide}, Got ${account1PositionSide} - ${account1DirectionCorrect ? '✅ CORRECT' : '❌ WRONG'}`);
+          console.log(`   Account 2: Expected ${account2ExpectedSide}, Got ${account2PositionSide} - ${account2DirectionCorrect ? '✅ CORRECT' : '❌ WRONG'}`);
+          console.log(`[CYCLE ${cycleCount}] 🚨 Closing both positions ASAP due to wrong direction!`);
+          
+          // Close both positions immediately (use market close for speed)
+          const closePromises = [];
+          
+          if (!account1DirectionCorrect || !account2DirectionCorrect) {
+            // Close Account 1 if direction is wrong
+            if (!account1DirectionCorrect) {
+              console.log(`[CYCLE ${cycleCount}] 🔄 Closing Account 1 position (wrong direction: expected ${account1ExpectedSide}, got ${account1PositionSide})...`);
+              closePromises.push(
+                performCleanup(
+                  page1,
+                  exchange1,
+                  email1,
+                  'Account 1',
+                  account1IsKraken,
+                  true // Force market close for speed
+                )
+              );
+            }
+            
+            // Close Account 2 if direction is wrong
+            if (!account2DirectionCorrect) {
+              console.log(`[CYCLE ${cycleCount}] 🔄 Closing Account 2 position (wrong direction: expected ${account2ExpectedSide}, got ${account2PositionSide})...`);
+              closePromises.push(
+                performCleanup(
+                  page2,
+                  exchange2,
+                  email2,
+                  'Account 2',
+                  account2IsKraken,
+                  true // Force market close for speed
+                )
+              );
+            }
+            
+            // Wait for both to close
+            if (closePromises.length > 0) {
+              await Promise.all(closePromises);
+              console.log(`[CYCLE ${cycleCount}] ✅ Closed positions with wrong directions`);
+              
+              // Verify positions are closed
+              await delay(3000);
+              const verifyAfterClose = await checkOpenPositionsForAccounts(params);
+              const account1StillOpen = !!verifyAfterClose.account1OpenPositionSide;
+              const account2StillOpen = !!verifyAfterClose.account2OpenPositionSide;
+              
+              if (account1StillOpen || account2StillOpen) {
+                console.log(`[CYCLE ${cycleCount}] ⚠️  Some positions still open after close attempt, retrying with market close...`);
+                const retryClosePromises = [];
+                if (account1StillOpen) {
+                  retryClosePromises.push(
+                    performCleanup(page1, exchange1, email1, 'Account 1', account1IsKraken, true)
+                  );
+                }
+                if (account2StillOpen) {
+                  retryClosePromises.push(
+                    performCleanup(page2, exchange2, email2, 'Account 2', account2IsKraken, true)
+                  );
+                }
+                if (retryClosePromises.length > 0) {
+                  await Promise.all(retryClosePromises);
+                  await delay(2000);
+                }
+              } else {
+                console.log(`[CYCLE ${cycleCount}] ✅ All positions with wrong directions have been closed`);
+              }
+            }
+          }
+        }
+      } else if (!account1HasPosition && !account2HasPosition) {
+        console.log(`[CYCLE ${cycleCount}] ⚠️  WARNING: No positions opened on either account. Orders may not have filled yet.`);
+      } else {
+        // Only one position opened - need to check direction and close it ASAP
+        const accountWithPosition = account1HasPosition ? 1 : 2;
+        const accountWithoutPosition = account1HasPosition ? 2 : 1;
+        const positionSide = account1HasPosition ? account1PositionSide : account2PositionSide;
+        const accountWithPositionEmail = account1HasPosition ? email1 : email2;
+        const accountWithPositionExchange = account1HasPosition ? exchange1 : exchange2;
+        const accountWithPositionName = account1HasPosition ? exchange1.name : exchange2.name;
+        
+        console.log(`\n[CYCLE ${cycleCount}] ⚠️  ⚠️  ⚠️  CRITICAL: Only ONE position opened!`);
+        console.log(`   Account ${accountWithPosition} (${accountWithPositionEmail} - ${accountWithPositionName}): ✅ OPEN (${positionSide})`);
+        console.log(`   Account ${accountWithoutPosition}: ❌ NO POSITION`);
+        
+        // Check direction for the single position
+        console.log(`\n[CYCLE ${cycleCount}] 🔍 Checking position direction for single position...`);
+        const accountWithPositionExpectedSide = tradeBuyAccount.email === accountWithPositionEmail ? 'long' : 'short';
+        const directionCorrect = positionSide === accountWithPositionExpectedSide;
+        
+        console.log(`[CYCLE ${cycleCount}] Expected direction for Account ${accountWithPosition}: ${accountWithPositionExpectedSide.toUpperCase()}`);
+        console.log(`[CYCLE ${cycleCount}] Actual direction: ${positionSide.toUpperCase()}`);
+        
+        if (!directionCorrect) {
+          console.log(`\n[CYCLE ${cycleCount}] ⚠️  ⚠️  ⚠️  CRITICAL: Single position has WRONG direction!`);
+          console.log(`   Expected: ${accountWithPositionExpectedSide.toUpperCase()}, Got: ${positionSide.toUpperCase()}`);
+          console.log(`[CYCLE ${cycleCount}] 🚨 Closing position ASAP due to wrong direction!`);
+        } else {
+          console.log(`[CYCLE ${cycleCount}] ✅ Position direction is CORRECT, but closing anyway due to single leg exposure...`);
         }
         
-        return {
-          accountWithPosition: hasAccount1Position ? 1 : 2,
-          positionSide: hasAccount1Position ? positions.account1OpenPositionSide : positions.account2OpenPositionSide,
-          accountWithoutPosition: hasAccount1Position ? 2 : 1
-        };
-      };
-      
-      let partialFill = await checkPartialFill();
-      
-      if (partialFill) {
-        console.log(`\n[CYCLE ${cycleCount}] ⚠️  Partial fill detected - Account ${partialFill.accountWithPosition} has position, Account ${partialFill.accountWithoutPosition} does not. Waiting 15s before retry...`);
-        await delay(30000);
+        console.log(`[CYCLE ${cycleCount}] 🚨 Closing single position ASAP to prevent exposure...`);
         
-        // Re-check after delay
-        partialFill = await checkPartialFill();
+        // Determine which account/page to close
+        const accountToClose = accountWithPosition === 1
+          ? { page: page1, exchange: exchange1, email: email1, accountId: 'Account 1', isKraken: account1IsKraken }
+          : { page: page2, exchange: exchange2, email: email2, accountId: 'Account 2', isKraken: account2IsKraken };
         
-        if (partialFill) {
-          const { accountWithPosition, positionSide, accountWithoutPosition } = partialFill;
+        // Step 1: Try closing with limit order first (normal cleanup)
+        console.log(`[CYCLE ${cycleCount}] 🔄 Attempt 1: Closing position on Account ${accountWithPosition} (${accountToClose.email}) with LIMIT order...`);
+        await performCleanup(
+          accountToClose.page,
+          accountToClose.exchange,
+          accountToClose.email,
+          accountToClose.accountId,
+          accountToClose.isKraken,
+          false // Don't force market close - try limit first
+        );
+        
+        // Wait 5 seconds and check if position is closed
+        console.log(`[CYCLE ${cycleCount}] ⏳ Waiting 5 seconds before checking if position closed...`);
+        await delay(5000);
+        
+        const verifyClose = await checkOpenPositionsForAccounts(params);
+        const stillOpen = accountWithPosition === 1 
+          ? !!verifyClose.account1OpenPositionSide 
+          : !!verifyClose.account2OpenPositionSide;
+        
+        if (stillOpen) {
+          console.log(`[CYCLE ${cycleCount}] ⚠️  Position still open after limit order attempt. Retrying with limit order...`);
           
-          // Determine which account needs cleanup and which needs trade
-          const accountToCleanup = accountWithoutPosition === 1 
-            ? { page: page1, exchange: exchange1, email: email1, accountId: 'Account 1', isKraken: account1IsKraken }
-            : { page: page2, exchange: exchange2, email: email2, accountId: 'Account 2', isKraken: account2IsKraken };
-          
-          console.log(`\n[CYCLE ${cycleCount}] Account ${accountWithPosition} has ${positionSide} position, Account ${accountWithoutPosition} does not. Cleaning up Account ${accountWithoutPosition} and placing matching trade...`);
-          
-          // Cleanup the account without position
+          // Step 2: Try limit order again
           await performCleanup(
-            accountToCleanup.page,
-            accountToCleanup.exchange,
-            accountToCleanup.email,
-            accountToCleanup.accountId,
-            accountToCleanup.isKraken
+            accountToClose.page,
+            accountToClose.exchange,
+            accountToClose.email,
+            accountToClose.accountId,
+            accountToClose.isKraken,
+            false // Still using limit order
           );
           
-          // Determine trade side and account based on position side
-          // If account has 'long' position, we need to SELL to close it (use tradeSellAccount)
-          // If account has 'short' position, we need to BUY to close it (use tradeBuyAccount)
-          const tradeConfig = positionSide === 'long'
-            ? { account: tradeSellAccount, side: 'sell', qty: TRADE_CONFIG.sellQty }
-            : { account: tradeBuyAccount, side: 'buy', qty: TRADE_CONFIG.buyQty };
+          // Wait 5 seconds again
+          console.log(`[CYCLE ${cycleCount}] ⏳ Waiting 5 seconds before checking again...`);
+          await delay(5000);
           
-          console.log(`[CYCLE ${cycleCount}] Placing ${tradeConfig.side.toUpperCase()} order on ${tradeConfig.account.exchange.name} to match ${positionSide} position...`);
+          // Check again
+          const verifyClose2 = await checkOpenPositionsForAccounts(params);
+          const stillOpen2 = accountWithPosition === 1 
+            ? !!verifyClose2.account1OpenPositionSide 
+            : !!verifyClose2.account2OpenPositionSide;
           
-          await executeTradeWithTimeout(
-            tradeConfig.account.page,
-            {
-              side: tradeConfig.side,
-              orderType: "limit",
-              qty: tradeConfig.qty,
-            },
-            tradeConfig.account.exchange,
-            30000
-          );
+          if (stillOpen2) {
+            console.log(`[CYCLE ${cycleCount}] ⚠️  Position still open after second limit order attempt. Using MARKET close as last resort...`);
+            
+            // Step 3: Force close at market price (last resort)
+            await performCleanup(
+              accountToClose.page,
+              accountToClose.exchange,
+              accountToClose.email,
+              accountToClose.accountId,
+              accountToClose.isKraken,
+              true // Force close at market price
+            );
+            
+            // Final verification
+            await delay(2000);
+            const finalCheck = await checkOpenPositionsForAccounts(params);
+            const finalStillOpen = accountWithPosition === 1 
+              ? !!finalCheck.account1OpenPositionSide 
+              : !!finalCheck.account2OpenPositionSide;
+            
+            if (finalStillOpen) {
+              console.log(`[CYCLE ${cycleCount}] ❌ ERROR: Failed to close single position after limit attempts + market close!`);
+            } else {
+              console.log(`[CYCLE ${cycleCount}] ✅ Successfully closed single position using MARKET close.`);
+            }
+          } else {
+            console.log(`[CYCLE ${cycleCount}] ✅ Successfully closed single position on second limit order attempt.`);
+          }
+        } else {
+          console.log(`[CYCLE ${cycleCount}] ✅ Successfully closed single position with first limit order attempt.`);
         }
       }
       

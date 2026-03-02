@@ -775,29 +775,111 @@ async function setupTpSlGrvtPrefill(page, exchange) {
           return { success: false, step: 3, message: `Could not find parent of "${sectionName}" element` };
         }
 
-        // Look for ROI% text element
+        // Step 4: Find ROI% element - look for React Select control structure
+        // Strategy: Find ROI% text, then walk up to find the React Select control container
+        // The control container will have: ROI% text + input[role="combobox"] as children/descendants
+        
         const allDescendants = Array.from(sectionParent.querySelectorAll('*'));
-        let roiElement = null;
+        let roiTextElement = null;
+        
+        // First, find the ROI% text element
         for (const el of allDescendants) {
           const text = (el.textContent || '').trim();
           if (text === 'ROI%' && el.offsetParent !== null) {
-            roiElement = el;
+            roiTextElement = el;
             break;
           }
         }
-
-        if (!roiElement) {
-          return { success: false, step: 3, message: `Could not find "ROI%" element inside "${sectionName}" parent` };
+        
+        if (!roiTextElement) {
+          return { success: false, step: 3, message: `Could not find "ROI%" text element inside "${sectionName}" parent` };
+        }
+        
+        // Walk up from ROI% text to find the React Select control container
+        // The control container should contain both ROI% text AND an input[role="combobox"]
+        let roiClickableElement = null;
+        let current = roiTextElement.parentElement;
+        
+        for (let i = 0; i < 15 && current; i++) {
+          // Check if this element contains both ROI% text and a combobox input
+          const hasRoiText = (current.textContent || '').includes('ROI%');
+          const hasCombobox = current.querySelector('input[role="combobox"]') !== null;
+          const hasAriaHaspopup = current.querySelector('[aria-haspopup="true"]') !== null;
+          
+          // Also check if this element itself is the combobox input
+          const isCombobox = current.tagName.toLowerCase() === 'input' && 
+                            current.getAttribute('role') === 'combobox';
+          
+          // Check if this is a div that looks like a select control container
+          const isDiv = current.tagName.toLowerCase() === 'div';
+          const style = window.getComputedStyle(current);
+          const isVisible = style.display !== 'none' && style.visibility !== 'hidden';
+          
+          // If it has both ROI% text and combobox input, or is the combobox itself, it's likely the control
+          if ((hasRoiText && (hasCombobox || hasAriaHaspopup)) || isCombobox) {
+            if (isVisible && current.offsetParent !== null) {
+              roiClickableElement = current;
+              break;
+            }
+          }
+          
+          // Also check for dropdown indicator (arrow icon) - if parent contains it, it's likely the control
+          const hasDropdownIndicator = current.querySelector('svg') !== null || 
+                                      current.querySelector('[aria-hidden="true"]') !== null;
+          if (hasRoiText && hasDropdownIndicator && isDiv && isVisible) {
+            roiClickableElement = current;
+            break;
+          }
+          
+          current = current.parentElement;
+        }
+        
+        // If still not found, try to find the combobox input directly
+        if (!roiClickableElement) {
+          const comboboxInput = sectionParent.querySelector('input[role="combobox"][aria-haspopup="true"]');
+          if (comboboxInput) {
+            // Check if it's near the ROI% text (same parent structure)
+            let checkParent = comboboxInput.parentElement;
+            for (let i = 0; i < 5 && checkParent; i++) {
+              if ((checkParent.textContent || '').includes('ROI%')) {
+                roiClickableElement = comboboxInput;
+                break;
+              }
+              checkParent = checkParent.parentElement;
+            }
+          }
+        }
+        
+        // Fallback: use the ROI% text element's parent that contains the combobox
+        if (!roiClickableElement) {
+          let parent = roiTextElement.parentElement;
+          for (let i = 0; i < 10 && parent; i++) {
+            const hasCombobox = parent.querySelector('input[role="combobox"]') !== null;
+            if (hasCombobox) {
+              const style = window.getComputedStyle(parent);
+              if (style.display !== 'none' && style.visibility !== 'hidden' && parent.offsetParent !== null) {
+                roiClickableElement = parent;
+                break;
+              }
+            }
+            parent = parent.parentElement;
+          }
+        }
+        
+        // Final fallback: use ROI% text element itself
+        if (!roiClickableElement) {
+          roiClickableElement = roiTextElement;
         }
 
-        // Step 4: Get the ROI% element's bounding rect for clicking
-        // In GRVT, clicking directly on the ROI% text element should open the dropdown
-        const rect = roiElement.getBoundingClientRect();
+        // Get the clickable element's bounding rect for clicking
+        const rect = roiClickableElement.getBoundingClientRect();
         return {
           success: true,
           clickX: rect.x + rect.width / 2,
           clickY: rect.y + rect.height / 2,
-          roiElementText: (roiElement.textContent || '').trim()
+          roiElementText: (roiClickableElement.textContent || '').trim().substring(0, 20),
+          clickableTag: roiClickableElement.tagName,
+          clickableRole: roiClickableElement.getAttribute('role') || 'none'
         };
       }, sectionName);
       
@@ -807,11 +889,12 @@ async function setupTpSlGrvtPrefill(page, exchange) {
       }
       
       try {
-        // Phase 1: Click on ROI% element - try multiple approaches
+        // Phase 1: Click on ROI% element - try multiple methods
         console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] Clicking on ROI% element for ${sectionName}...`);
+        console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] Found element: ${roiParentInfo.clickableTag}, role: ${roiParentInfo.clickableRole}, text: "${roiParentInfo.roiElementText}"`);
         
-        // First, try to find and click the actual dropdown element
-        const dropdownElement = await page.evaluate((sectionName) => {
+        // Try JavaScript click first on the React Select control or combobox input
+        const jsClickWorked = await page.evaluate((sectionName) => {
           const allElements = Array.from(document.querySelectorAll('*'));
           let tpslModal = null;
           
@@ -835,7 +918,7 @@ async function setupTpSlGrvtPrefill(page, exchange) {
             }
           }
           
-          if (!tpslModal) return null;
+          if (!tpslModal) return false;
           
           const sectionNameLower = sectionName.toLowerCase();
           let sectionElement = null;
@@ -848,400 +931,229 @@ async function setupTpSlGrvtPrefill(page, exchange) {
             }
           }
           
-          if (!sectionElement) return null;
+          if (!sectionElement) return false;
           
           let sectionParent = sectionElement.parentElement;
-          if (!sectionParent) return null;
+          if (!sectionParent) return false;
           
-          // Find ROI% text element
+          // Strategy: Find ROI% text, then find the React Select control container
+          // The control container contains both ROI% text AND input[role="combobox"]
           const allDescendants = Array.from(sectionParent.querySelectorAll('*'));
-          let roiElement = null;
+          let roiTextElement = null;
+          
           for (const el of allDescendants) {
             const text = (el.textContent || '').trim();
             if (text === 'ROI%' && el.offsetParent !== null) {
-              roiElement = el;
+              roiTextElement = el;
               break;
             }
           }
           
-          if (!roiElement) return null;
+          if (!roiTextElement) return false;
           
-          // Try to find a clickable parent (button, div with role, etc.)
-          let clickable = roiElement;
-          let parent = roiElement.parentElement;
-          for (let i = 0; i < 5 && parent; i++) {
-            const tag = parent.tagName.toLowerCase();
-            const role = parent.getAttribute('role');
-            const hasClick = parent.onclick !== null || parent.getAttribute('onclick') !== null;
+          // Walk up to find the React Select control container
+          let current = roiTextElement.parentElement;
+          for (let i = 0; i < 15 && current; i++) {
+            const hasRoiText = (current.textContent || '').includes('ROI%');
+            const hasCombobox = current.querySelector('input[role="combobox"]') !== null;
+            const hasAriaHaspopup = current.querySelector('[aria-haspopup="true"]') !== null;
+            const isCombobox = current.tagName.toLowerCase() === 'input' && 
+                              current.getAttribute('role') === 'combobox';
             
-            if (tag === 'button' || tag === 'select' || 
-                (tag === 'div' && (role === 'button' || hasClick)) ||
-                parent.style.cursor === 'pointer') {
-              clickable = parent;
-              break;
+            const style = window.getComputedStyle(current);
+            const isVisible = style.display !== 'none' && style.visibility !== 'hidden';
+            
+            // Found the control container or combobox input
+            if ((hasRoiText && (hasCombobox || hasAriaHaspopup)) || isCombobox) {
+              if (isVisible && current.offsetParent !== null) {
+                if (current.click) {
+                  current.click();
+                  return true;
+                }
+              }
+            }
+            
+            current = current.parentElement;
+          }
+          
+          // Fallback: Find and click the combobox input directly
+          const comboboxInput = sectionParent.querySelector('input[role="combobox"][aria-haspopup="true"]');
+          if (comboboxInput) {
+            let checkParent = comboboxInput.parentElement;
+            for (let i = 0; i < 5 && checkParent; i++) {
+              if ((checkParent.textContent || '').includes('ROI%')) {
+                if (comboboxInput.click) {
+                  comboboxInput.click();
+                  return true;
+                }
+                break;
+              }
+              checkParent = checkParent.parentElement;
+            }
+          }
+          
+          // Final fallback: click parent of ROI% text that contains combobox
+          let parent = roiTextElement.parentElement;
+          for (let i = 0; i < 10 && parent; i++) {
+            const hasCombobox = parent.querySelector('input[role="combobox"]') !== null;
+            if (hasCombobox) {
+              const style = window.getComputedStyle(parent);
+              if (style.display !== 'none' && style.visibility !== 'hidden' && parent.offsetParent !== null) {
+                if (parent.click) {
+                  parent.click();
+                  return true;
+                }
+              }
             }
             parent = parent.parentElement;
           }
           
-          return {
-            x: clickable.getBoundingClientRect().x + clickable.getBoundingClientRect().width / 2,
-            y: clickable.getBoundingClientRect().y + clickable.getBoundingClientRect().height / 2,
-            tag: clickable.tagName,
-            role: clickable.getAttribute('role'),
-            text: (clickable.textContent || '').trim().substring(0, 20)
-          };
+          return false;
         }, sectionName);
         
-        // Try clicking with the found element info - use JavaScript click first
-        let clickSuccess = false;
-        if (dropdownElement) {
-          console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] Found dropdown element: ${dropdownElement.tag}, role: ${dropdownElement.role || 'none'}, text: "${dropdownElement.text}"`);
-          
-          // Try JavaScript click on the element directly - find and click it
-          const jsClickResult = await page.evaluate((sectionName) => {
-            const allElements = Array.from(document.querySelectorAll('*'));
-            let tpslModal = null;
-            
-            for (const el of allElements) {
-              const text = (el.textContent || '').trim();
-              if (text === 'TP/SL' && el.offsetParent !== null) {
-                let parent = el.parentElement;
-                for (let i = 0; i < 10 && parent; i++) {
-                  const style = window.getComputedStyle(parent);
-                  if (style.display !== 'none' && style.visibility !== 'hidden' &&
-                    parent.offsetWidth > 0 && parent.offsetHeight > 0) {
-                    const parentText = (parent.textContent || '').toLowerCase();
-                    if (parentText.includes('take profit') && parentText.includes('stop loss')) {
-                      tpslModal = parent;
-                      break;
-                    }
-                  }
-                  parent = parent.parentElement;
-                }
-                if (tpslModal) break;
-              }
-            }
-            
-            if (!tpslModal) return { clicked: false, reason: 'Modal not found' };
-            
-            const sectionNameLower = sectionName.toLowerCase();
-            let sectionElement = null;
-            const modalElements = Array.from(tpslModal.querySelectorAll('*'));
-            for (const el of modalElements) {
-              const text = (el.textContent || '').trim();
-              if (text.toLowerCase() === sectionNameLower && el.offsetParent !== null) {
-                sectionElement = el;
-                break;
-              }
-            }
-            
-            if (!sectionElement) return { clicked: false, reason: 'Section not found' };
-            
-            let sectionParent = sectionElement.parentElement;
-            if (!sectionParent) return { clicked: false, reason: 'Section parent not found' };
-            
-            const allDescendants = Array.from(sectionParent.querySelectorAll('*'));
-            for (const el of allDescendants) {
-              const text = (el.textContent || '').trim();
-              if (text === 'ROI%' && el.offsetParent !== null) {
-                let clickable = el;
-                let parent = el.parentElement;
-                for (let i = 0; i < 5 && parent; i++) {
-                  const tag = parent.tagName.toLowerCase();
-                  const role = parent.getAttribute('role');
-                  const hasClick = parent.onclick !== null || parent.getAttribute('onclick') !== null;
-                  
-                  if (tag === 'button' || tag === 'select' || 
-                      (tag === 'div' && (role === 'button' || hasClick)) ||
-                      parent.style.cursor === 'pointer') {
-                    clickable = parent;
-                    break;
-                  }
-                  parent = parent.parentElement;
-                }
-                
-                // Try to click the element - use both click() and dispatchEvent
-                try {
-                  // First try native click
-                  if (clickable.click) {
-                    clickable.click();
-                    return { clicked: true, method: 'native click' };
-                  }
-                  
-                  // Then try MouseEvent
-                  if (clickable.dispatchEvent) {
-                    const mouseDown = new MouseEvent('mousedown', {
-                      bubbles: true,
-                      cancelable: true,
-                      view: window,
-                      button: 0
-                    });
-                    const mouseUp = new MouseEvent('mouseup', {
-                      bubbles: true,
-                      cancelable: true,
-                      view: window,
-                      button: 0
-                    });
-                    const clickEvent = new MouseEvent('click', {
-                      bubbles: true,
-                      cancelable: true,
-                      view: window,
-                      button: 0
-                    });
-                    
-                    clickable.dispatchEvent(mouseDown);
-                    clickable.dispatchEvent(mouseUp);
-                    clickable.dispatchEvent(clickEvent);
-                    return { clicked: true, method: 'MouseEvent dispatch' };
-                  }
-                } catch (err) {
-                  return { clicked: false, reason: `Error: ${err.message}` };
-                }
-                break;
-              }
-            }
-            return { clicked: false, reason: 'ROI% element not found' };
-          }, sectionName);
-          
-          const jsClickWorked = jsClickResult && jsClickResult.clicked;
-          
-          if (jsClickWorked) {
-            console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ✅ JavaScript click executed on ROI% element`);
-            await delay(500);
-            
-            // Check if dropdown opened
-            const dropdownCheck = await page.evaluate(() => {
-              const listboxes = Array.from(document.querySelectorAll('[role="listbox"]'));
-              const menus = Array.from(document.querySelectorAll('[role="menu"]'));
-              const expanded = Array.from(document.querySelectorAll('[aria-expanded="true"]'));
-              return listboxes.length > 0 || menus.length > 0 || expanded.length > 0;
-            });
-            
-            if (dropdownCheck) {
-              clickSuccess = true;
-              console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ✅ Dropdown opened after JavaScript click`);
-            } else {
-              console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ⚠️  JavaScript click didn't open dropdown, trying mouse click...`);
-            }
-          }
-          
-          // If JS click didn't work, try mouse click
-          if (!clickSuccess) {
-            await page.mouse.click(dropdownElement.x, dropdownElement.y);
-            await delay(500);
-            
-            const dropdownCheck = await page.evaluate(() => {
-              const listboxes = Array.from(document.querySelectorAll('[role="listbox"]'));
-              const menus = Array.from(document.querySelectorAll('[role="menu"]'));
-              const expanded = Array.from(document.querySelectorAll('[aria-expanded="true"]'));
-              return listboxes.length > 0 || menus.length > 0 || expanded.length > 0;
-            });
-            
-            if (dropdownCheck) {
-              clickSuccess = true;
-              console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ✅ Dropdown opened after mouse click`);
-            }
-          }
-        }
-        
-        // Fallback: use original coordinates with mouse click
-        if (!clickSuccess) {
-          console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] Using fallback coordinates: (${roiParentInfo.clickX}, ${roiParentInfo.clickY})`);
+        if (jsClickWorked) {
+          console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ✅ JavaScript click executed on ROI% element`);
+          await delay(500);
+        } else {
+          // Fallback to mouse click
+          console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] JavaScript click didn't work, trying mouse click...`);
           await page.mouse.click(roiParentInfo.clickX, roiParentInfo.clickY);
           await delay(500);
         }
         
-        console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ✅ Attempted to click ROI% element for ${sectionName}`);
+        console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ✅ Clicked ROI% element for ${sectionName}`);
         
-        // Wait for dropdown to open
-        console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] Waiting for ROI% dropdown to open...`);
-        let dropdownOpened = false;
-        for (let i = 0; i < 20; i++) {
+        // Wait for dropdown to be ready (same as handleTpSlGrvt)
+        console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] Waiting for ROI% dropdown to be ready...`);
+        let dropdownReady = false;
+        for (let i = 0; i < 15; i++) {
           const checkResult = await page.evaluate(() => {
             const listboxes = Array.from(document.querySelectorAll('[role="listbox"]'));
             const menus = Array.from(document.querySelectorAll('[role="menu"]'));
-            const expandedElements = Array.from(document.querySelectorAll('[aria-expanded="true"]'));
-            const allDropdowns = [...listboxes, ...menus, ...expandedElements];
+            const allDropdowns = [...listboxes, ...menus];
             
             for (const menu of allDropdowns) {
               const style = window.getComputedStyle(menu);
               if (style.display !== 'none' && style.visibility !== 'hidden') {
                 const rect = menu.getBoundingClientRect();
                 if (rect.width > 0 && rect.height > 0) {
-                  return { open: true };
+                  return { ready: true };
                 }
               }
             }
-            return { open: false };
+            return { ready: false };
           });
           
-          if (checkResult.open) {
-            dropdownOpened = true;
-            console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ✅ ROI% dropdown opened`);
+          if (checkResult.ready) {
+            dropdownReady = true;
             break;
           }
           await delay(200);
         }
         
-        if (!dropdownOpened) {
-          console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ⚠️  ROI% dropdown did not open after clicking. Trying keyboard approach...`);
-          
-          // Try focusing and using keyboard to open dropdown
-          const focusResult = await page.evaluate((sectionName) => {
-            const allElements = Array.from(document.querySelectorAll('*'));
-            let tpslModal = null;
-            
-            for (const el of allElements) {
-              const text = (el.textContent || '').trim();
-              if (text === 'TP/SL' && el.offsetParent !== null) {
-                let parent = el.parentElement;
-                for (let i = 0; i < 10 && parent; i++) {
-                  const style = window.getComputedStyle(parent);
-                  if (style.display !== 'none' && style.visibility !== 'hidden' &&
-                    parent.offsetWidth > 0 && parent.offsetHeight > 0) {
-                    const parentText = (parent.textContent || '').toLowerCase();
-                    if (parentText.includes('take profit') && parentText.includes('stop loss')) {
-                      tpslModal = parent;
-                      break;
-                    }
-                  }
-                  parent = parent.parentElement;
-                }
-                if (tpslModal) break;
-              }
-            }
-            
-            if (!tpslModal) return false;
-            
-            const sectionNameLower = sectionName.toLowerCase();
-            let sectionElement = null;
-            const modalElements = Array.from(tpslModal.querySelectorAll('*'));
-            for (const el of modalElements) {
-              const text = (el.textContent || '').trim();
-              if (text.toLowerCase() === sectionNameLower && el.offsetParent !== null) {
-                sectionElement = el;
-                break;
-              }
-            }
-            
-            if (!sectionElement) return false;
-            
-            let sectionParent = sectionElement.parentElement;
-            if (!sectionParent) return false;
-            
-            const allDescendants = Array.from(sectionParent.querySelectorAll('*'));
-            for (const el of allDescendants) {
-              const text = (el.textContent || '').trim();
-              if (text === 'ROI%' && el.offsetParent !== null) {
-                let clickable = el;
-                let parent = el.parentElement;
-                for (let i = 0; i < 5 && parent; i++) {
-                  const tag = parent.tagName.toLowerCase();
-                  if (tag === 'button' || tag === 'select' || 
-                      (tag === 'div' && (parent.getAttribute('role') === 'button' || parent.onclick !== null))) {
-                    clickable = parent;
-                    break;
-                  }
-                  parent = parent.parentElement;
-                }
-                
-                if (clickable.focus) {
-                  clickable.focus();
-                  return true;
-                }
-                break;
-              }
-            }
-            return false;
-          }, sectionName);
-          
-          if (focusResult) {
-            console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] Focused ROI% element, trying Space to open dropdown...`);
-            await page.keyboard.press('Space');
-            await delay(500);
-            
-            // Check again if dropdown opened
-            const checkAgain = await page.evaluate(() => {
-              const listboxes = Array.from(document.querySelectorAll('[role="listbox"]'));
-              const menus = Array.from(document.querySelectorAll('[role="menu"]'));
-              const expanded = Array.from(document.querySelectorAll('[aria-expanded="true"]'));
-              return listboxes.length > 0 || menus.length > 0 || expanded.length > 0;
-            });
-            
-            if (checkAgain) {
-              dropdownOpened = true;
-              console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ✅ ROI% dropdown opened with Space key`);
-            }
-          }
+        if (!dropdownReady) {
+          console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ⚠️  ROI% dropdown not detected as ready, proceeding anyway...`);
+        } else {
+          console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ✅ ROI% dropdown is ready`);
         }
         
-        // If dropdown is open, try to click P&L option directly first
-        if (dropdownOpened) {
-          console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] Dropdown is open, trying to click P&L option directly...`);
-          const pnlClicked = await page.evaluate(() => {
+        await delay(300);
+        
+        // Focus the combobox input first, then use keyboard navigation
+        // This ensures the dropdown is focused and keyboard events work
+        console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] Focusing combobox input for keyboard navigation...`);
+        const comboboxFocused = await page.evaluate((sectionName) => {
+          const allElements = Array.from(document.querySelectorAll('*'));
+          let tpslModal = null;
+          
+          for (const el of allElements) {
+            const text = (el.textContent || '').trim();
+            if (text === 'TP/SL' && el.offsetParent !== null) {
+              let parent = el.parentElement;
+              for (let i = 0; i < 10 && parent; i++) {
+                const style = window.getComputedStyle(parent);
+                if (style.display !== 'none' && style.visibility !== 'hidden' &&
+                  parent.offsetWidth > 0 && parent.offsetHeight > 0) {
+                  const parentText = (parent.textContent || '').toLowerCase();
+                  if (parentText.includes('take profit') && parentText.includes('stop loss')) {
+                    tpslModal = parent;
+                    break;
+                  }
+                }
+                parent = parent.parentElement;
+              }
+              if (tpslModal) break;
+            }
+          }
+          
+          if (!tpslModal) return false;
+          
+          const sectionNameLower = sectionName.toLowerCase();
+          let sectionElement = null;
+          const modalElements = Array.from(tpslModal.querySelectorAll('*'));
+          for (const el of modalElements) {
+            const text = (el.textContent || '').trim();
+            if (text.toLowerCase() === sectionNameLower && el.offsetParent !== null) {
+              sectionElement = el;
+              break;
+            }
+          }
+          
+          if (!sectionElement) return false;
+          
+          let sectionParent = sectionElement.parentElement;
+          if (!sectionParent) return false;
+          
+          // Find the combobox input in this section
+          const comboboxInput = sectionParent.querySelector('input[role="combobox"]');
+          if (comboboxInput) {
+            comboboxInput.focus();
+            comboboxInput.click();
+            return true;
+          }
+          return false;
+        }, sectionName);
+        
+        if (comboboxFocused) {
+          console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ✅ Focused combobox input`);
+          await delay(300);
+        } else {
+          console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ⚠️  Could not focus combobox input, proceeding with keyboard navigation anyway...`);
+        }
+        
+        // Try to open dropdown with Space if not already open
+        if (!dropdownReady) {
+          console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] Dropdown not detected, trying Space key to open...`);
+          await page.keyboard.press('Space');
+          await delay(500);
+          
+          // Check again if dropdown opened
+          const checkAgain = await page.evaluate(() => {
             const listboxes = Array.from(document.querySelectorAll('[role="listbox"]'));
             const menus = Array.from(document.querySelectorAll('[role="menu"]'));
             const allDropdowns = [...listboxes, ...menus];
             
-            for (const dropdown of allDropdowns) {
-              const style = window.getComputedStyle(dropdown);
+            for (const menu of allDropdowns) {
+              const style = window.getComputedStyle(menu);
               if (style.display !== 'none' && style.visibility !== 'hidden') {
-                const rect = dropdown.getBoundingClientRect();
+                const rect = menu.getBoundingClientRect();
                 if (rect.width > 0 && rect.height > 0) {
-                  // Find all options in this dropdown
-                  const options = Array.from(dropdown.querySelectorAll('[role="option"], li, div, button, span'));
-                  for (const option of options) {
-                    const text = (option.textContent || '').trim();
-                    // Match P&L (could be "P&L" or "P&amp;L" in HTML)
-                    if (text === 'P&L' || text === 'P&amp;L' || text.includes('P&L')) {
-                      const optionStyle = window.getComputedStyle(option);
-                      if (optionStyle.display !== 'none' && optionStyle.visibility !== 'hidden') {
-                        const optionRect = option.getBoundingClientRect();
-                        if (optionRect.width > 0 && optionRect.height > 0) {
-                          // Try to click it
-                          if (option.click) {
-                            option.click();
-                            return true;
-                          } else if (option.dispatchEvent) {
-                            const clickEvent = new MouseEvent('click', {
-                              bubbles: true,
-                              cancelable: true,
-                              view: window
-                            });
-                            option.dispatchEvent(clickEvent);
-                            return true;
-                          }
-                        }
-                      }
-                    }
-                  }
+                  return { ready: true };
                 }
               }
             }
-            return false;
+            return { ready: false };
           });
           
-          if (pnlClicked) {
-            console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ✅ Clicked P&L option directly in dropdown`);
-            await delay(500);
-          } else {
-            console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] P&L option not found directly, using keyboard navigation...`);
-            // Since ROI% is the default, we need to press ArrowDown once to get to P&L
-            console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ROI% is default, pressing ArrowDown once to select P&L...`);
-            await page.keyboard.press('ArrowDown');
-            await delay(500);
+          if (checkAgain.ready) {
+            console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ✅ Dropdown opened with Space key`);
+            dropdownReady = true;
           }
-        } else {
-          // Dropdown not open, use keyboard navigation
-          // Since ROI% is the default, we need to press ArrowDown once to get to P&L
-          console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] Dropdown not detected as open, using keyboard navigation (ArrowDown once to go from ROI% to P&L)...`);
-          await page.keyboard.press('ArrowDown');
-          await delay(500);
         }
         
         // Since ROI% is the default, we need to navigate to P&L
         // Try to click P&L option directly if dropdown is open, otherwise use keyboard navigation
-        if (dropdownOpened) {
+        if (dropdownReady) {
           console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] Dropdown is open, trying to click P&L option directly (ROI% is default)...`);
           const pnlClicked = await page.evaluate(() => {
             const listboxes = Array.from(document.querySelectorAll('[role="listbox"]'));
@@ -2731,13 +2643,13 @@ export async function fillPriceSideAndSubmitGrvt(page, price, { side, orderType,
     console.log(`[${exchange.name}] [QUICK-FILL] ✅ Quantity still filled: "${sizeCheck}"`);
   }
   
-  // 3. Check if TP/SL modal is still open, then refill P&L inputs, wait for trigger price update, and fill limit prices
+  // 3. Check if TP/SL modal is still open, close it, click Advanced again, then refill P&L inputs, wait for trigger price update, and fill limit prices
   if (orderType === "limit" && price) {
-    console.log(`[${exchange.name}] [QUICK-FILL] Step 3: Handling TP/SL (refill P&L inputs, wait for trigger price update, fill limit prices, update side, confirm)...`);
+    console.log(`[${exchange.name}] [QUICK-FILL] Step 3: Handling TP/SL (close modal, reopen with Advanced, refill P&L inputs, wait for trigger price update, fill limit prices, update side, confirm)...`);
     
-    // Check if TP/SL modal is still open (it should be from prefill)
-    let modalOpen = false;
-    modalOpen = await page.evaluate(() => {
+    // Step 3.0: Close TP/SL modal if it's open (after price refill)
+    console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] Step 3.0: Closing TP/SL modal after price refill...`);
+    let modalOpen = await page.evaluate(() => {
       const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"]'));
       for (const modal of modals) {
         const style = window.getComputedStyle(modal);
@@ -2753,10 +2665,146 @@ export async function fillPriceSideAndSubmitGrvt(page, price, { side, orderType,
     });
     
     if (modalOpen) {
-      console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ✅ TP/SL modal is still open from prefill`);
+      console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] TP/SL modal is open, closing it...`);
+      // Try to close modal with Escape key first
+      await page.keyboard.press('Escape');
+      await delay(500);
       
-      // Step 3a: Refill TP and SL P&L inputs (after price was refilled, this will cause GRVT to automatically recalculate trigger prices)
-      console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] Step 3a: Refilling TP and SL P&L inputs (after price refill)...`);
+      // Verify modal is closed
+      modalOpen = await page.evaluate(() => {
+        const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"]'));
+        for (const modal of modals) {
+          const style = window.getComputedStyle(modal);
+          if (style.display !== 'none' && style.visibility !== 'hidden' &&
+            modal.offsetWidth > 0 && modal.offsetHeight > 0) {
+            const modalText = (modal.textContent || '').toLowerCase();
+            if (modalText.includes('tp/sl') || modalText.includes('take profit') || modalText.includes('stop loss')) {
+              return true;
+            }
+          }
+        }
+        return false;
+      });
+      
+      if (modalOpen) {
+        // Try to find and click close button
+        const closeClicked = await page.evaluate(() => {
+          const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"]'));
+          for (const modal of modals) {
+            const style = window.getComputedStyle(modal);
+            if (style.display !== 'none' && style.visibility !== 'hidden' &&
+              modal.offsetWidth > 0 && modal.offsetHeight > 0) {
+              const modalText = (modal.textContent || '').toLowerCase();
+              if (modalText.includes('tp/sl') || modalText.includes('take profit') || modalText.includes('stop loss')) {
+                // Look for close button (X button or close button)
+                const buttons = Array.from(modal.querySelectorAll('button, [role="button"]'));
+                for (const btn of buttons) {
+                  const text = (btn.textContent || '').trim().toLowerCase();
+                  const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
+                  if (text === '×' || text === 'x' || text === 'close' || ariaLabel.includes('close')) {
+                    if (btn.offsetParent !== null) {
+                      btn.click();
+                      return true;
+                    }
+                  }
+                }
+              }
+            }
+          }
+          return false;
+        });
+        
+        if (closeClicked) {
+          await delay(500);
+        }
+      } else {
+        console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ✅ TP/SL modal closed with Escape`);
+      }
+    } else {
+      console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] TP/SL modal was already closed`);
+    }
+    
+    // Step 3.1: Click Advanced button again to reopen TP/SL modal
+    console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] Step 3.1: Clicking Advanced button to reopen TP/SL modal...`);
+    const createOrderPanel = await page.$('[data-sentry-element="CreateOrderPanel"]');
+    let advancedElement = null;
+    
+    if (createOrderPanel) {
+      const panelLabels = await createOrderPanel.$$('label');
+      for (const label of panelLabels) {
+        const labelText = await page.evaluate((el) => el.textContent?.trim().toLowerCase() || '', label);
+        if ((labelText.includes('tp') && labelText.includes('sl')) ||
+          (labelText.includes('take profit') && labelText.includes('stop loss'))) {
+          const checkbox = await label.$('input[type="checkbox"]');
+          if (checkbox) {
+            const advancedHandle = await page.evaluateHandle((checkbox) => {
+              let parentContainer = checkbox.parentElement;
+              for (let i = 0; i < 5 && parentContainer; i++) {
+                const allElements = Array.from(parentContainer.querySelectorAll('*'));
+                for (const el of allElements) {
+                  if (el.offsetParent === null) continue;
+                  const text = (el.textContent || '').trim();
+                  if (text.toLowerCase() === 'advanced' || text.toLowerCase().includes('advanced')) {
+                    return el;
+                  }
+                }
+                parentContainer = parentContainer.parentElement;
+              }
+              return null;
+            }, checkbox);
+            
+            if (advancedHandle && advancedHandle.asElement()) {
+              advancedElement = advancedHandle.asElement();
+              break;
+            }
+          }
+        }
+      }
+    }
+    
+    if (advancedElement) {
+      await advancedElement.click();
+      await delay(500);
+      console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ✅ Clicked Advanced button`);
+    } else {
+      console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  Could not find Advanced button`);
+      return { success: false, error: 'Advanced button not found after price refill' };
+    }
+    
+    // Wait for modal to open
+    console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] Waiting for TP/SL modal to open...`);
+    modalOpen = false;
+    for (let i = 0; i < 10; i++) {
+      modalOpen = await page.evaluate(() => {
+        const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"]'));
+        for (const modal of modals) {
+          const style = window.getComputedStyle(modal);
+          if (style.display !== 'none' && style.visibility !== 'hidden' &&
+            modal.offsetWidth > 0 && modal.offsetHeight > 0) {
+            const modalText = (modal.textContent || '').toLowerCase();
+            if (modalText.includes('tp/sl') || modalText.includes('take profit') || modalText.includes('stop loss')) {
+              return true;
+            }
+          }
+        }
+        return false;
+      });
+      
+      if (modalOpen) {
+        console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ✅ TP/SL modal opened`);
+        await delay(500);
+        break;
+      }
+      await delay(300);
+    }
+    
+    if (!modalOpen) {
+      console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  TP/SL modal did not open after clicking Advanced button`);
+      return { success: false, error: 'TP/SL modal did not open after Advanced button click' };
+    }
+    
+    // Step 3a: Refill TP and SL P&L inputs (after price was refilled, this will cause GRVT to automatically recalculate trigger prices)
+    console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] Step 3a: Refilling TP and SL P&L inputs (after price refill and modal reopen)...`);
       
       const takeProfitPercent = process.env.TAKE_PROFIT || '';
       const stopLossPercent = process.env.STOP_LOSS || '';
@@ -2817,167 +2865,32 @@ export async function fillPriceSideAndSubmitGrvt(page, price, { side, orderType,
       if (!tpSlResult.success) {
         console.log(`[${exchange.name}] [QUICK-FILL] ⚠️  TP/SL handling failed: ${tpSlResult.error || 'unknown error'}, continuing anyway...`);
       } else {
-        console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ✅ TP/SL completed (price refilled, P&L inputs refilled, trigger prices auto-calculated, limit prices filled, side updated, confirmed)`);
+        console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ✅ TP/SL completed (price refilled, modal closed and reopened, P&L inputs refilled, trigger prices auto-calculated, limit prices filled, side updated, confirmed)`);
       }
       await delay(500);
-    } else {
-      console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  TP/SL modal is not open. Attempting to reopen...`);
       
-      // Fallback: Try to reopen if modal closed somehow
-      const createOrderPanel = await page.$('[data-sentry-element="CreateOrderPanel"]');
-      let advancedElement = null;
-      
-      if (createOrderPanel) {
-        const panelLabels = await createOrderPanel.$$('label');
-        for (const label of panelLabels) {
-          const labelText = await page.evaluate((el) => el.textContent?.trim().toLowerCase() || '', label);
-          if ((labelText.includes('tp') && labelText.includes('sl')) ||
-            (labelText.includes('take profit') && labelText.includes('stop loss'))) {
-            const checkbox = await label.$('input[type="checkbox"]');
-            if (checkbox) {
-              const advancedHandle = await page.evaluateHandle((checkbox) => {
-                let parentContainer = checkbox.parentElement;
-                for (let i = 0; i < 5 && parentContainer; i++) {
-                  const allElements = Array.from(parentContainer.querySelectorAll('*'));
-                  for (const el of allElements) {
-                    if (el.offsetParent === null) continue;
-                    const text = (el.textContent || '').trim();
-                    if (text.toLowerCase() === 'advanced' || text.toLowerCase().includes('advanced')) {
-                      return el;
-                    }
-                  }
-                  parentContainer = parentContainer.parentElement;
-                }
-                return null;
-              }, checkbox);
-              
-              if (advancedHandle && advancedHandle.asElement()) {
-                advancedElement = advancedHandle.asElement();
-                break;
-              }
-            }
-          }
-        }
-      }
-      
-      if (advancedElement) {
-        await advancedElement.click();
-        await delay(500);
-        
-        // Wait for modal to open
-        for (let i = 0; i < 10; i++) {
-          modalOpen = await page.evaluate(() => {
-            const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"]'));
-            for (const modal of modals) {
-              const style = window.getComputedStyle(modal);
-              if (style.display !== 'none' && style.visibility !== 'hidden' &&
-                modal.offsetWidth > 0 && modal.offsetHeight > 0) {
-                const modalText = (modal.textContent || '').toLowerCase();
-                if (modalText.includes('tp/sl') || modalText.includes('take profit') || modalText.includes('stop loss')) {
-                  return true;
-                }
-              }
-            }
-            return false;
-          });
-          
-          if (modalOpen) {
-            console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ✅ TP/SL modal reopened`);
-            await delay(500);
-            
-            // Step 3a: Refill TP and SL P&L inputs (after price was refilled, this will cause GRVT to automatically recalculate trigger prices)
-            console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] Step 3a: Refilling TP and SL P&L inputs (after price refill)...`);
-            
-            const takeProfitPercent = process.env.TAKE_PROFIT || '';
-            const stopLossPercent = process.env.STOP_LOSS || '';
-            
-            if (takeProfitPercent || stopLossPercent) {
-              const takeProfitNum = parseFloat(takeProfitPercent);
-              const stopLossNum = parseFloat(stopLossPercent);
-              
-              const takeProfitValue = (takeProfitNum / 10).toString();
-              const stopLossValue = (stopLossNum / 10).toString();
-              
-              // Refill Take profit P&L input
-              if (!isNaN(takeProfitNum) && takeProfitValue) {
-                console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] Refilling Take profit P&L input with ${takeProfitValue}...`);
-                const tpPnlFilled = await checkAndFillPnlInputs(page, exchange, 'Take profit', takeProfitValue);
-                if (!tpPnlFilled) {
-                  console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  Failed to refill Take profit P&L input`);
-                }
-                await delay(300);
-              }
-              
-              // Refill Stop loss P&L input
-              if (!isNaN(stopLossNum) && stopLossValue) {
-                console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] Refilling Stop loss P&L input with ${stopLossValue}...`);
-                const slPnlFilled = await checkAndFillPnlInputs(page, exchange, 'Stop loss', stopLossValue);
-                if (!slPnlFilled) {
-                  console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  Failed to refill Stop loss P&L input`);
-                }
-                await delay(300);
-              }
-              
-              // Wait for GRVT to automatically recalculate trigger prices based on P&L values
-              console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] Waiting for GRVT to recalculate trigger prices...`);
-              await delay(800);
-              
-              // Step 3b: Read the automatically calculated trigger prices and fill them into limit price inputs
-              console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] Step 3b: Reading trigger prices and filling into limit price inputs...`);
-              
-              // Read and fill TP limit price
-              const tpLimitFilled = await readTriggerPriceAndFillLimitPrice(page, exchange, 'Take profit');
-              if (!tpLimitFilled) {
-                console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  Failed to fill TP limit price`);
-              }
-              await delay(300);
-              
-              // Read and fill SL limit price
-              const slLimitFilled = await readTriggerPriceAndFillLimitPrice(page, exchange, 'Stop loss');
-              if (!slLimitFilled) {
-                console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  Failed to fill SL limit price`);
-              }
-              await delay(300);
-            }
-            
-            // Step 3c: Use handleTpSlGrvt to update side and confirm
-            console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] Step 3b: Updating side and confirming TP/SL...`);
-            const tpSlResult = await handleTpSlGrvt(page, exchange, price, side);
-            if (!tpSlResult.success) {
-              console.log(`[${exchange.name}] [QUICK-FILL] ⚠️  TP/SL handling failed: ${tpSlResult.error || 'unknown error'}, continuing anyway...`);
-            } else {
-              console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ✅ TP/SL completed (price refilled, P&L inputs refilled, trigger prices auto-calculated, limit prices filled, side updated, confirmed)`);
-            }
-            await delay(500);
-            break;
-          }
+      // Check if price and quantity are still filled after TP/SL
+      if (priceInput) {
+        const priceAfterTpSl = await page.evaluate((el) => el.value || '', priceInput);
+        const priceAfterTpSlNum = parseFloat(priceAfterTpSl.replace(/,/g, ''));
+        const expectedPriceNum = parseFloat(String(price));
+        const priceTolerance = 0.1;
+        if (!priceAfterTpSl || priceAfterTpSl.trim() === '' || Math.abs(priceAfterTpSlNum - expectedPriceNum) >= priceTolerance) {
+          console.log(`[${exchange.name}] [QUICK-FILL] Price was cleared after TP/SL, refilling...`);
+          await clearAndFillInputGrvt(priceInput, price, 'Price');
           await delay(300);
         }
       }
-    }
-    
-    // Check if price and quantity are still filled after TP/SL
-    if (orderType === "limit" && priceInput) {
-      const priceAfterTpSl = await page.evaluate((el) => el.value || '', priceInput);
-      const priceAfterTpSlNum = parseFloat(priceAfterTpSl.replace(/,/g, ''));
-      const expectedPriceNum = parseFloat(String(price));
-      const priceTolerance = 0.1;
-      if (!priceAfterTpSl || priceAfterTpSl.trim() === '' || Math.abs(priceAfterTpSlNum - expectedPriceNum) >= priceTolerance) {
-        console.log(`[${exchange.name}] [QUICK-FILL] Price was cleared after TP/SL, refilling...`);
-        await clearAndFillInputGrvt(priceInput, price, 'Price');
+      
+      const sizeAfterTpSl = await page.evaluate((el) => el.value || '', sizeInput);
+      const sizeAfterTpSlNum = parseFloat(sizeAfterTpSl.replace(/,/g, ''));
+      const expectedSizeNumAfterTpSl = parseFloat(String(grvtSize));
+      if (!sizeAfterTpSl || sizeAfterTpSl.trim() === '' || Math.abs(sizeAfterTpSlNum - expectedSizeNumAfterTpSl) >= 0.0001) {
+        console.log(`[${exchange.name}] [QUICK-FILL] Quantity was cleared after TP/SL, refilling...`);
+        await clearAndFillInputGrvt(sizeInput, grvtSize, 'Quantity');
         await delay(300);
       }
     }
-    
-    const sizeAfterTpSl = await page.evaluate((el) => el.value || '', sizeInput);
-    const sizeAfterTpSlNum = parseFloat(sizeAfterTpSl.replace(/,/g, ''));
-    const expectedSizeNum = parseFloat(String(grvtSize));
-    if (!sizeAfterTpSl || sizeAfterTpSl.trim() === '' || Math.abs(sizeAfterTpSlNum - expectedSizeNum) >= 0.0001) {
-      console.log(`[${exchange.name}] [QUICK-FILL] Quantity was cleared after TP/SL, refilling...`);
-      await clearAndFillInputGrvt(sizeInput, grvtSize, 'Quantity');
-      await delay(300);
-    }
-  }
   
   // 4. Select Buy or Sell (side)
   console.log(`[${exchange.name}] [QUICK-FILL] Step 4: Selecting ${side.toUpperCase()}...`);

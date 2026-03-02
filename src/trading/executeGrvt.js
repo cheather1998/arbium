@@ -689,29 +689,107 @@ export async function handleTpSlGrvt(page, exchange, price = null, side = 'buy')
           return { success: false, step: 3, message: `Could not find parent of "${sectionName}" element` };
         }
 
-        // Step 4: Inside sectionParent, find element with text "ROI%" and click on it directly
+        // Step 4: Find ROI% element - look for React Select control structure
+        // Strategy: Find ROI% text, then walk up to find the React Select control container
+        // The control container will have: ROI% text + input[role="combobox"] as children/descendants
         const allDescendants = Array.from(sectionParent.querySelectorAll('*'));
-        let roiElement = null;
+        let roiTextElement = null;
         
+        // First, find the ROI% text element
         for (const el of allDescendants) {
           const text = (el.textContent || '').trim();
-          // Match exact "ROI%" text
           if (text === 'ROI%' && el.offsetParent !== null) {
-            roiElement = el;
+            roiTextElement = el;
             break;
           }
         }
-
-        if (!roiElement) {
+        
+        if (!roiTextElement) {
           return { 
             success: false, 
             step: 4, 
-            message: `Could not find "ROI%" element inside "${sectionName}" parent`
+            message: `Could not find "ROI%" text element inside "${sectionName}" parent`
           };
         }
+        
+        // Walk up from ROI% text to find the React Select control container
+        // The control container should contain both ROI% text AND an input[role="combobox"]
+        let roiClickableElement = null;
+        let current = roiTextElement.parentElement;
+        
+        for (let i = 0; i < 15 && current; i++) {
+          // Check if this element contains both ROI% text and a combobox input
+          const hasRoiText = (current.textContent || '').includes('ROI%');
+          const hasCombobox = current.querySelector('input[role="combobox"]') !== null;
+          const hasAriaHaspopup = current.querySelector('[aria-haspopup="true"]') !== null;
+          
+          // Also check if this element itself is the combobox input
+          const isCombobox = current.tagName.toLowerCase() === 'input' && 
+                            current.getAttribute('role') === 'combobox';
+          
+          // Check if this is a div that looks like a select control container
+          const isDiv = current.tagName.toLowerCase() === 'div';
+          const style = window.getComputedStyle(current);
+          const isVisible = style.display !== 'none' && style.visibility !== 'hidden';
+          
+          // If it has both ROI% text and combobox input, or is the combobox itself, it's likely the control
+          if ((hasRoiText && (hasCombobox || hasAriaHaspopup)) || isCombobox) {
+            if (isVisible && current.offsetParent !== null) {
+              roiClickableElement = current;
+              break;
+            }
+          }
+          
+          // Also check for dropdown indicator (arrow icon) - if parent contains it, it's likely the control
+          const hasDropdownIndicator = current.querySelector('svg') !== null || 
+                                      current.querySelector('[aria-hidden="true"]') !== null;
+          if (hasRoiText && hasDropdownIndicator && isDiv && isVisible) {
+            roiClickableElement = current;
+            break;
+          }
+          
+          current = current.parentElement;
+        }
+        
+        // If still not found, try to find the combobox input directly
+        if (!roiClickableElement) {
+          const comboboxInput = sectionParent.querySelector('input[role="combobox"][aria-haspopup="true"]');
+          if (comboboxInput) {
+            // Check if it's near the ROI% text (same parent structure)
+            let checkParent = comboboxInput.parentElement;
+            for (let i = 0; i < 5 && checkParent; i++) {
+              if ((checkParent.textContent || '').includes('ROI%')) {
+                roiClickableElement = comboboxInput;
+                break;
+              }
+              checkParent = checkParent.parentElement;
+            }
+          }
+        }
+        
+        // Fallback: use the ROI% text element's parent that contains the combobox
+        if (!roiClickableElement) {
+          let parent = roiTextElement.parentElement;
+          for (let i = 0; i < 10 && parent; i++) {
+            const hasCombobox = parent.querySelector('input[role="combobox"]') !== null;
+            if (hasCombobox) {
+              const style = window.getComputedStyle(parent);
+              if (style.display !== 'none' && style.visibility !== 'hidden' && parent.offsetParent !== null) {
+                roiClickableElement = parent;
+                break;
+              }
+            }
+            parent = parent.parentElement;
+          }
+        }
+        
+        // Final fallback: use ROI% text element itself
+        if (!roiClickableElement) {
+          roiClickableElement = roiTextElement;
+        }
 
-        // Get the ROI% element's bounding rect for clicking
-        const rect = roiElement.getBoundingClientRect();
+        // Get the clickable element's bounding rect for clicking
+        const rect = roiClickableElement.getBoundingClientRect();
         
         // DEBUG: Find all inputs (not labels) with empty or whitespace placeholder and className containing "text"
         const allInputsInModal = Array.from(tpslModal.querySelectorAll('input'));
@@ -735,6 +813,9 @@ export async function handleTpSlGrvt(page, exchange, price = null, side = 'buy')
           success: true,
           clickX: rect.x + rect.width / 2,
           clickY: rect.y + rect.height / 2,
+          roiElementText: (roiClickableElement.textContent || '').trim().substring(0, 20),
+          clickableTag: roiClickableElement.tagName,
+          clickableRole: roiClickableElement.getAttribute('role') || 'none',
           debugInfo: {
             emptyPlaceholderInputsCount: emptyPlaceholderInputs.length,
             emptyPlaceholderInputs: emptyPlaceholderInputs
@@ -764,6 +845,7 @@ export async function handleTpSlGrvt(page, exchange, price = null, side = 'buy')
 
       console.log(`[${exchange.name}] [ROI% FINDING] ✅ Successfully found ROI% element`);
       console.log(`[${exchange.name}] 🔍 [ROI% ELEMENT] Found ROI% element for ${sectionName} at coordinates (${roiParentInfo.clickX}, ${roiParentInfo.clickY})`);
+      console.log(`[${exchange.name}] [ROI% ELEMENT] Element: ${roiParentInfo.clickableTag}, role: ${roiParentInfo.clickableRole}, text: "${roiParentInfo.roiElementText}"`);
       
       // Log debug info about inputs with empty placeholders (from browser context)
       if (roiParentInfo.debugInfo) {
@@ -774,23 +856,141 @@ export async function handleTpSlGrvt(page, exchange, price = null, side = 'buy')
       }
 
       try {
-        // Phase 1: Click on ROI% element, then press ArrowDown twice and Enter
+        // Phase 1: Click on ROI% element - try JavaScript click first
         console.log(`[${exchange.name}] 🔧 [PHASE 1] Clicking on ROI% element for ${sectionName}...`);
-        await page.mouse.click(roiParentInfo.clickX, roiParentInfo.clickY);
-        await delay(300);
-        console.log(`[${exchange.name}] ✅ Clicked ROI% element for ${sectionName}`);
         
-        // Press ArrowDown twice, then press Enter to select P&L
-        console.log(`[${exchange.name}] ⌨️  Pressing ArrowDown x2 for ${sectionName} ROI%...`);
-        await page.keyboard.press('ArrowDown');
-        await delay(300);
-        await page.keyboard.press('ArrowDown');
-        await delay(300);
+        // Try JavaScript click first on the React Select control or combobox input
+        const jsClickWorked = await page.evaluate((sectionName) => {
+          const allElements = Array.from(document.querySelectorAll('*'));
+          let tpslModal = null;
+          
+          for (const el of allElements) {
+            const text = (el.textContent || '').trim();
+            if (text === 'TP/SL' && el.offsetParent !== null) {
+              let parent = el.parentElement;
+              for (let i = 0; i < 10 && parent; i++) {
+                const style = window.getComputedStyle(parent);
+                if (style.display !== 'none' && style.visibility !== 'hidden' &&
+                  parent.offsetWidth > 0 && parent.offsetHeight > 0) {
+                  const parentText = (parent.textContent || '').toLowerCase();
+                  if (parentText.includes('take profit') && parentText.includes('stop loss')) {
+                    tpslModal = parent;
+                    break;
+                  }
+                }
+                parent = parent.parentElement;
+              }
+              if (tpslModal) break;
+            }
+          }
+          
+          if (!tpslModal) return false;
+          
+          const sectionNameLower = sectionName.toLowerCase();
+          let sectionElement = null;
+          const modalElements = Array.from(tpslModal.querySelectorAll('*'));
+          for (const el of modalElements) {
+            const text = (el.textContent || '').trim();
+            if (text.toLowerCase() === sectionNameLower && el.offsetParent !== null) {
+              sectionElement = el;
+              break;
+            }
+          }
+          
+          if (!sectionElement) return false;
+          
+          let sectionParent = sectionElement.parentElement;
+          if (!sectionParent) return false;
+          
+          // Strategy: Find ROI% text, then find the React Select control container
+          const allDescendants = Array.from(sectionParent.querySelectorAll('*'));
+          let roiTextElement = null;
+          
+          for (const el of allDescendants) {
+            const text = (el.textContent || '').trim();
+            if (text === 'ROI%' && el.offsetParent !== null) {
+              roiTextElement = el;
+              break;
+            }
+          }
+          
+          if (!roiTextElement) return false;
+          
+          // Walk up to find the React Select control container
+          let current = roiTextElement.parentElement;
+          for (let i = 0; i < 15 && current; i++) {
+            const hasRoiText = (current.textContent || '').includes('ROI%');
+            const hasCombobox = current.querySelector('input[role="combobox"]') !== null;
+            const hasAriaHaspopup = current.querySelector('[aria-haspopup="true"]') !== null;
+            const isCombobox = current.tagName.toLowerCase() === 'input' && 
+                              current.getAttribute('role') === 'combobox';
+            
+            const style = window.getComputedStyle(current);
+            const isVisible = style.display !== 'none' && style.visibility !== 'hidden';
+            
+            if ((hasRoiText && (hasCombobox || hasAriaHaspopup)) || isCombobox) {
+              if (isVisible && current.offsetParent !== null) {
+                if (current.click) {
+                  current.click();
+                  return true;
+                }
+              }
+            }
+            
+            current = current.parentElement;
+          }
+          
+          // Fallback: Find and click the combobox input directly
+          const comboboxInput = sectionParent.querySelector('input[role="combobox"][aria-haspopup="true"]');
+          if (comboboxInput) {
+            let checkParent = comboboxInput.parentElement;
+            for (let i = 0; i < 5 && checkParent; i++) {
+              if ((checkParent.textContent || '').includes('ROI%')) {
+                if (comboboxInput.click) {
+                  comboboxInput.click();
+                  return true;
+                }
+                break;
+              }
+              checkParent = checkParent.parentElement;
+            }
+          }
+          
+          // Final fallback: click parent of ROI% text that contains combobox
+          let parent = roiTextElement.parentElement;
+          for (let i = 0; i < 10 && parent; i++) {
+            const hasCombobox = parent.querySelector('input[role="combobox"]') !== null;
+            if (hasCombobox) {
+              const style = window.getComputedStyle(parent);
+              if (style.display !== 'none' && style.visibility !== 'hidden' && parent.offsetParent !== null) {
+                if (parent.click) {
+                  parent.click();
+                  return true;
+                }
+              }
+            }
+            parent = parent.parentElement;
+          }
+          
+          return false;
+        }, sectionName);
+        
+        if (jsClickWorked) {
+          console.log(`[${exchange.name}] ✅ JavaScript click executed on ROI% element`);
+          await delay(500);
+        } else {
+          // Fallback to mouse click
+          console.log(`[${exchange.name}] JavaScript click didn't work, trying mouse click...`);
+          await page.mouse.click(roiParentInfo.clickX, roiParentInfo.clickY);
+          await delay(500);
+        }
+        
+        console.log(`[${exchange.name}] ✅ Clicked ROI% element for ${sectionName}`);
         
         // Wait for dropdown to be ready
         console.log(`[${exchange.name}] ⏳ Waiting for ROI% dropdown to be ready...`);
         let dropdownReady = false;
-        for (let i = 0; i < 10; i++) {
+        for (let i = 0; i < 15; i++) {
           const checkResult = await page.evaluate(() => {
             const listboxes = Array.from(document.querySelectorAll('[role="listbox"]'));
             const menus = Array.from(document.querySelectorAll('[role="menu"]'));
@@ -816,15 +1016,172 @@ export async function handleTpSlGrvt(page, exchange, price = null, side = 'buy')
         }
         
         if (!dropdownReady) {
-          console.log(`[${exchange.name}] ⚠️  ROI% dropdown not ready, proceeding anyway...`);
+          console.log(`[${exchange.name}] ⚠️  ROI% dropdown not detected as ready, proceeding anyway...`);
+        } else {
+          console.log(`[${exchange.name}] ✅ ROI% dropdown is ready`);
         }
         
-        await delay(200);
+        await delay(300);
         
-        // Press Enter to select P&L option
-        console.log(`[${exchange.name}] ⌨️  Pressing Enter to select P&L option...`);
-        await page.keyboard.press('Enter');
-        await delay(500);
+        // Focus the combobox input first, then use keyboard navigation
+        console.log(`[${exchange.name}] Focusing combobox input for keyboard navigation...`);
+        const comboboxFocused = await page.evaluate((sectionName) => {
+          const allElements = Array.from(document.querySelectorAll('*'));
+          let tpslModal = null;
+          
+          for (const el of allElements) {
+            const text = (el.textContent || '').trim();
+            if (text === 'TP/SL' && el.offsetParent !== null) {
+              let parent = el.parentElement;
+              for (let i = 0; i < 10 && parent; i++) {
+                const style = window.getComputedStyle(parent);
+                if (style.display !== 'none' && style.visibility !== 'hidden' &&
+                  parent.offsetWidth > 0 && parent.offsetHeight > 0) {
+                  const parentText = (parent.textContent || '').toLowerCase();
+                  if (parentText.includes('take profit') && parentText.includes('stop loss')) {
+                    tpslModal = parent;
+                    break;
+                  }
+                }
+                parent = parent.parentElement;
+              }
+              if (tpslModal) break;
+            }
+          }
+          
+          if (!tpslModal) return false;
+          
+          const sectionNameLower = sectionName.toLowerCase();
+          let sectionElement = null;
+          const modalElements = Array.from(tpslModal.querySelectorAll('*'));
+          for (const el of modalElements) {
+            const text = (el.textContent || '').trim();
+            if (text.toLowerCase() === sectionNameLower && el.offsetParent !== null) {
+              sectionElement = el;
+              break;
+            }
+          }
+          
+          if (!sectionElement) return false;
+          
+          let sectionParent = sectionElement.parentElement;
+          if (!sectionParent) return false;
+          
+          const comboboxInput = sectionParent.querySelector('input[role="combobox"]');
+          if (comboboxInput) {
+            comboboxInput.focus();
+            comboboxInput.click();
+            return true;
+          }
+          return false;
+        }, sectionName);
+        
+        if (comboboxFocused) {
+          console.log(`[${exchange.name}] ✅ Focused combobox input`);
+          await delay(300);
+        } else {
+          console.log(`[${exchange.name}] ⚠️  Could not focus combobox input, proceeding with keyboard navigation anyway...`);
+        }
+        
+        // Try to open dropdown with Space if not already open
+        if (!dropdownReady) {
+          console.log(`[${exchange.name}] Dropdown not detected, trying Space key to open...`);
+          await page.keyboard.press('Space');
+          await delay(500);
+          
+          // Check again if dropdown opened
+          const checkAgain = await page.evaluate(() => {
+            const listboxes = Array.from(document.querySelectorAll('[role="listbox"]'));
+            const menus = Array.from(document.querySelectorAll('[role="menu"]'));
+            const allDropdowns = [...listboxes, ...menus];
+            
+            for (const menu of allDropdowns) {
+              const style = window.getComputedStyle(menu);
+              if (style.display !== 'none' && style.visibility !== 'hidden') {
+                const rect = menu.getBoundingClientRect();
+                if (rect.width > 0 && rect.height > 0) {
+                  return { ready: true };
+                }
+              }
+            }
+            return { ready: false };
+          });
+          
+          if (checkAgain.ready) {
+            console.log(`[${exchange.name}] ✅ Dropdown opened with Space key`);
+            dropdownReady = true;
+          }
+        }
+        
+        // Since ROI% is the default, we need to navigate to P&L
+        // Try to click P&L option directly if dropdown is open, otherwise use keyboard navigation
+        if (dropdownReady) {
+          console.log(`[${exchange.name}] Dropdown is open, trying to click P&L option directly (ROI% is default)...`);
+          const pnlClicked = await page.evaluate(() => {
+            const listboxes = Array.from(document.querySelectorAll('[role="listbox"]'));
+            const menus = Array.from(document.querySelectorAll('[role="menu"]'));
+            const allDropdowns = [...listboxes, ...menus];
+            
+            for (const dropdown of allDropdowns) {
+              const style = window.getComputedStyle(dropdown);
+              if (style.display !== 'none' && style.visibility !== 'hidden') {
+                const rect = dropdown.getBoundingClientRect();
+                if (rect.width > 0 && rect.height > 0) {
+                  const options = Array.from(dropdown.querySelectorAll('[role="option"], li, div, button, span'));
+                  for (const option of options) {
+                    const text = (option.textContent || '').trim();
+                    if (text === 'P&L' || text === 'P&amp;L') {
+                      const optionStyle = window.getComputedStyle(option);
+                      if (optionStyle.display !== 'none' && optionStyle.visibility !== 'hidden') {
+                        const optionRect = option.getBoundingClientRect();
+                        if (optionRect.width > 0 && optionRect.height > 0) {
+                          if (option.click) {
+                            option.click();
+                            return true;
+                          } else if (option.dispatchEvent) {
+                            const clickEvent = new MouseEvent('click', {
+                              bubbles: true,
+                              cancelable: true,
+                              view: window
+                            });
+                            option.dispatchEvent(clickEvent);
+                            return true;
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            return false;
+          }, sectionName);
+          
+          if (pnlClicked) {
+            console.log(`[${exchange.name}] ✅ Clicked P&L option directly in dropdown`);
+            await delay(500);
+          } else {
+            // Couldn't click directly, use keyboard navigation
+            // Since ROI% is default, press ArrowDown once to get to P&L
+            console.log(`[${exchange.name}] Could not click P&L directly, navigating with ArrowDown (ROI% is default, so ArrowDown once to P&L)...`);
+            await page.keyboard.press('ArrowDown');
+            await delay(500);
+            // Press Enter to select P&L
+            console.log(`[${exchange.name}] Pressing Enter to select P&L...`);
+            await page.keyboard.press('Enter');
+            await delay(500);
+          }
+        } else {
+          // Dropdown not detected as open, but try keyboard navigation anyway
+          // Since ROI% is default, press ArrowDown once to get to P&L
+          console.log(`[${exchange.name}] Dropdown not detected, using keyboard navigation (ArrowDown once from ROI% to P&L)...`);
+          await page.keyboard.press('ArrowDown');
+          await delay(500);
+          // Press Enter to select P&L
+          console.log(`[${exchange.name}] Pressing Enter to select P&L...`);
+          await page.keyboard.press('Enter');
+          await delay(500);
+        }
         
         // Wait for ROI% dropdown to close and P&L to be selected
         console.log(`[${exchange.name}] ⏳ Waiting for ROI% dropdown to close and P&L to be selected...`);
