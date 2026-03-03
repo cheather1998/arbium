@@ -296,13 +296,18 @@ async function waitForClosingThreshold(exchangeAccounts, threshold, cycleCount) 
 
 /**
  * Helper function to check prices and wait until closing spread threshold is met
- * Closes positions when (price_difference - opening_threshold) >= closingSpread
+ * Calculates closing threshold as: opening_threshold - closingSpread
+ * Closes positions when price_difference <= closing_threshold (allows negative values)
  * Returns price comparison result when threshold is satisfied
  */
 async function waitForClosingSpreadThreshold(exchangeAccounts, openingThreshold, closingSpread, cycleCount) {
   const startTime = Date.now();
   const maxWaitTime = 15 * 60 * 1000; // 15 minutes in milliseconds
   let attemptCount = 0;
+  
+  // Calculate closing threshold: difference between opening threshold and closing spread
+  // This can be negative, which is allowed
+  const closingThreshold = openingThreshold - closingSpread;
   
   while (!isShuttingDown) {
     attemptCount++;
@@ -325,9 +330,6 @@ async function waitForClosingSpreadThreshold(exchangeAccounts, openingThreshold,
     // Use actual price difference (highest - lowest), which is always positive
     const priceDiff = priceComparison.comparison.priceDiff; // Already positive (highest - lowest)
     
-    // Calculate spread: (price_difference - opening_threshold)
-    const spread = openingThreshold- priceDiff;
-    
     const remainingTime = Math.max(0, maxWaitTime - elapsedTime);
     const remainingMinutes = Math.floor(remainingTime / 60000);
     const remainingSeconds = Math.floor((remainingTime % 60000) / 1000);
@@ -337,18 +339,18 @@ async function waitForClosingSpreadThreshold(exchangeAccounts, openingThreshold,
     console.log(`   Lowest: ${priceComparison.lowest.exchange} at $${priceComparison.lowest.price.toLocaleString()}`);
     console.log(`   Current price difference: $${priceDiff.toLocaleString()}`);
     console.log(`   Opening threshold (saved): $${openingThreshold.toLocaleString()}`);
-    console.log(`   Spread (price_diff - opening_threshold): $${spread.toLocaleString()}`);
-    console.log(`   Closing spread threshold: $${closingSpread.toLocaleString()}`);
+    console.log(`   Closing spread: $${closingSpread.toLocaleString()}`);
+    console.log(`   Calculated closing threshold (opening_threshold - closing_spread): $${closingThreshold.toLocaleString()}`);
     console.log(`   Time remaining: ${remainingMinutes}m ${remainingSeconds}s`);
     
-    // Check if spread >= closingSpread
-    const thresholdMet = spread >= closingSpread;
+    // Check if price_difference <= closing_threshold (allows negative threshold)
+    const thresholdMet = priceDiff <= closingThreshold;
     
     if (thresholdMet) {
-      console.log(`\n✅ [CYCLE ${cycleCount}] Spread ($${spread.toLocaleString()}) >= closing spread threshold ($${closingSpread.toLocaleString()}). Proceeding to close positions.`);
+      console.log(`\n✅ [CYCLE ${cycleCount}] Price difference ($${priceDiff.toLocaleString()}) <= closing threshold ($${closingThreshold.toLocaleString()}). Proceeding to close positions.`);
       return priceComparison;
     } else {
-      console.log(`\n⏳ [CYCLE ${cycleCount}] Spread ($${spread.toLocaleString()}) < closing spread threshold ($${closingSpread.toLocaleString()}). Waiting 2 seconds and checking again...`);
+      console.log(`\n⏳ [CYCLE ${cycleCount}] Price difference ($${priceDiff.toLocaleString()}) > closing threshold ($${closingThreshold.toLocaleString()}). Waiting 2 seconds and checking again...`);
       await delay(2000);
     }
   }
@@ -1530,10 +1532,12 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
         let closingPriceCheck = null;
         
         if (savedOpeningThreshold !== null) {
+          const calculatedClosingThreshold = savedOpeningThreshold - TRADE_CONFIG.closingSpread;
           console.log(`\n[CYCLE ${cycleCount}] Step 1: Checking closing spread threshold before closing positions...`);
           console.log(`   Saved opening threshold: $${savedOpeningThreshold.toLocaleString()}`);
-          console.log(`   Closing spread threshold: $${TRADE_CONFIG.closingSpread.toLocaleString()}`);
-          console.log(`   Will close when: (price_difference - opening_threshold) >= closing_spread`);
+          console.log(`   Closing spread: $${TRADE_CONFIG.closingSpread.toLocaleString()}`);
+          console.log(`   Calculated closing threshold (opening_threshold - closing_spread): $${calculatedClosingThreshold.toLocaleString()}`);
+          console.log(`   Will close when: price_difference <= closing_threshold (${calculatedClosingThreshold >= 0 ? 'positive' : 'negative'} threshold allowed)`);
           
           closingPriceCheck = await waitForClosingSpreadThreshold(
             exchangeAccounts,
@@ -2184,9 +2188,9 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
       const hasGrvt = buyIsGrvt || sellIsGrvt;
       
       if (hasGrvt) {
-        console.log(`[CYCLE ${cycleCount}] ⏳ GRVT detected - waiting longer for orders to be fully placed and processed (GRVT is slower than Kraken)...`);
-        await delay(7000); // Wait 7 seconds for GRVT orders to potentially fill
-        console.log(`[CYCLE ${cycleCount}] ✅ Waited for GRVT order processing, now checking positions...`);
+        console.log(`[CYCLE ${cycleCount}] ⏳ GRVT detected - waiting 2 minutes for positions to open (GRVT is slower than Kraken)...`);
+        await delay(120000); // Wait 2 minutes (120 seconds) for GRVT positions to open
+        console.log(`[CYCLE ${cycleCount}] ✅ Waited 2 minutes for GRVT position processing, now checking positions...`);
       } else {
         console.log(`[CYCLE ${cycleCount}] ⏳ Waiting for orders to be fully processed before checking positions...`);
         await delay(3000); // Wait 3 seconds for orders to potentially fill
