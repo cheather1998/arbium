@@ -656,16 +656,31 @@ async function setupTpSlGrvtPrefill(page, exchange) {
     }
     
     // Step 2: Find and click "Advanced" button
+    // Wait a bit longer for UI to update after checkbox click
     console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] Step 2: Finding and clicking Advanced button...`);
-    const advancedElement = await page.evaluateHandle((checkbox) => {
+    await delay(800); // Give UI time to render Advanced button
+    
+    let advancedElement = null;
+    let advancedEl = null;
+    
+    // Strategy 1: Search from checkbox parent tree (original approach)
+    console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] Strategy 1: Searching from checkbox parent tree...`);
+    const advancedHandle1 = await page.evaluateHandle((checkbox) => {
       let parentContainer = checkbox.parentElement;
-      for (let i = 0; i < 5 && parentContainer; i++) {
+      for (let i = 0; i < 8 && parentContainer; i++) {
         const allElements = Array.from(parentContainer.querySelectorAll('*'));
         for (const el of allElements) {
           if (el.offsetParent === null) continue;
           const text = (el.textContent || '').trim();
           if (text.toLowerCase() === 'advanced' || text.toLowerCase().includes('advanced')) {
-            return el;
+            // Check if it's clickable (button, link, or has click handler)
+            const tagName = el.tagName.toLowerCase();
+            const role = el.getAttribute('role');
+            if (tagName === 'button' || tagName === 'a' || role === 'button' || 
+                el.onclick || el.getAttribute('onclick') || 
+                window.getComputedStyle(el).cursor === 'pointer') {
+              return el;
+            }
           }
         }
         parentContainer = parentContainer.parentElement;
@@ -673,13 +688,123 @@ async function setupTpSlGrvtPrefill(page, exchange) {
       return null;
     }, checkboxElement);
     
-    if (advancedElement && advancedElement.asElement()) {
-      const advancedEl = advancedElement.asElement();
-      await advancedEl.click();
-      console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ✅ Clicked Advanced button`);
-      await delay(500);
+    if (advancedHandle1 && advancedHandle1.asElement()) {
+      advancedEl = advancedHandle1.asElement();
+      console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ✅ Found Advanced button via Strategy 1`);
     } else {
-      console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ⚠️  Could not find Advanced button`);
+      // Strategy 2: Search within CreateOrderPanel
+      console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] Strategy 2: Searching within CreateOrderPanel...`);
+      if (createOrderPanel) {
+        const advancedHandle2 = await page.evaluateHandle((panel) => {
+          const allElements = Array.from(panel.querySelectorAll('*'));
+          for (const el of allElements) {
+            if (el.offsetParent === null) continue;
+            const text = (el.textContent || '').trim();
+            if (text.toLowerCase() === 'advanced' || text.toLowerCase().includes('advanced')) {
+              const tagName = el.tagName.toLowerCase();
+              const role = el.getAttribute('role');
+              if (tagName === 'button' || tagName === 'a' || role === 'button' || 
+                  el.onclick || el.getAttribute('onclick') || 
+                  window.getComputedStyle(el).cursor === 'pointer') {
+                return el;
+              }
+            }
+          }
+          return null;
+        }, createOrderPanel);
+        
+        if (advancedHandle2 && advancedHandle2.asElement()) {
+          advancedEl = advancedHandle2.asElement();
+          console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ✅ Found Advanced button via Strategy 2`);
+        }
+      }
+    }
+    
+    // Strategy 3: Broader search for any button with "Advanced" text
+    if (!advancedEl) {
+      console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] Strategy 3: Broader search for Advanced button...`);
+      const advancedHandle3 = await page.evaluateHandle(() => {
+        const buttons = Array.from(document.querySelectorAll('button, [role="button"], a, div[class*="button"], span[class*="button"]'));
+        for (const btn of buttons) {
+          if (btn.offsetParent === null) continue;
+          const text = (btn.textContent || '').trim();
+          if (text.toLowerCase() === 'advanced' || text.toLowerCase().includes('advanced')) {
+            // Make sure it's visible and clickable
+            const style = window.getComputedStyle(btn);
+            if (style.display !== 'none' && style.visibility !== 'hidden' && 
+                btn.offsetWidth > 0 && btn.offsetHeight > 0) {
+              return btn;
+            }
+          }
+        }
+        return null;
+      });
+      
+      if (advancedHandle3 && advancedHandle3.asElement()) {
+        advancedEl = advancedHandle3.asElement();
+        console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ✅ Found Advanced button via Strategy 3`);
+      }
+    }
+    
+    // Try to click the Advanced button with multiple methods
+    if (advancedEl) {
+      let clicked = false;
+      
+      // Method 1: Direct Puppeteer click
+      try {
+        await advancedEl.click();
+        clicked = true;
+        console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ✅ Clicked Advanced button (method 1: direct click)`);
+      } catch (error) {
+        console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ⚠️  Direct click failed: ${error.message}, trying JavaScript click...`);
+      }
+      
+      // Method 2: JavaScript click
+      if (!clicked) {
+        try {
+          await advancedEl.evaluate((el) => {
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            el.click();
+          });
+          clicked = true;
+          console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ✅ Clicked Advanced button (method 2: JavaScript click)`);
+        } catch (error) {
+          console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ⚠️  JavaScript click failed: ${error.message}, trying event dispatch...`);
+        }
+      }
+      
+      // Method 3: Event dispatch
+      if (!clicked) {
+        try {
+          await advancedEl.evaluate((el) => {
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            const rect = el.getBoundingClientRect();
+            const x = rect.left + rect.width / 2;
+            const y = rect.top + rect.height / 2;
+            
+            const mouseDown = new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y });
+            const mouseUp = new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y });
+            const click = new MouseEvent('click', { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y });
+            
+            el.dispatchEvent(mouseDown);
+            el.dispatchEvent(mouseUp);
+            el.dispatchEvent(click);
+          });
+          clicked = true;
+          console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ✅ Clicked Advanced button (method 3: event dispatch)`);
+        } catch (error) {
+          console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ⚠️  Event dispatch failed: ${error.message}`);
+        }
+      }
+      
+      if (clicked) {
+        await delay(500);
+      } else {
+        console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ⚠️  All click methods failed for Advanced button`);
+        return { success: false, error: 'Advanced button found but could not be clicked' };
+      }
+    } else {
+      console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ⚠️  Could not find Advanced button with any strategy`);
       return { success: false, error: 'Advanced button not found' };
     }
     
@@ -2726,9 +2851,13 @@ export async function fillPriceSideAndSubmitGrvt(page, price, { side, orderType,
     
     // Step 3.1: Click Advanced button again to reopen TP/SL modal
     console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] Step 3.1: Clicking Advanced button to reopen TP/SL modal...`);
-    const createOrderPanel = await page.$('[data-sentry-element="CreateOrderPanel"]');
-    let advancedElement = null;
+    await delay(800); // Give UI time to update after modal close
     
+    const createOrderPanel = await page.$('[data-sentry-element="CreateOrderPanel"]');
+    let advancedEl = null;
+    
+    // Strategy 1: Search from checkbox parent tree
+    console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] Strategy 1: Searching from checkbox parent tree...`);
     if (createOrderPanel) {
       const panelLabels = await createOrderPanel.$$('label');
       for (const label of panelLabels) {
@@ -2737,15 +2866,21 @@ export async function fillPriceSideAndSubmitGrvt(page, price, { side, orderType,
           (labelText.includes('take profit') && labelText.includes('stop loss'))) {
           const checkbox = await label.$('input[type="checkbox"]');
           if (checkbox) {
-            const advancedHandle = await page.evaluateHandle((checkbox) => {
+            const advancedHandle1 = await page.evaluateHandle((checkbox) => {
               let parentContainer = checkbox.parentElement;
-              for (let i = 0; i < 5 && parentContainer; i++) {
+              for (let i = 0; i < 8 && parentContainer; i++) {
                 const allElements = Array.from(parentContainer.querySelectorAll('*'));
                 for (const el of allElements) {
                   if (el.offsetParent === null) continue;
                   const text = (el.textContent || '').trim();
                   if (text.toLowerCase() === 'advanced' || text.toLowerCase().includes('advanced')) {
-                    return el;
+                    const tagName = el.tagName.toLowerCase();
+                    const role = el.getAttribute('role');
+                    if (tagName === 'button' || tagName === 'a' || role === 'button' || 
+                        el.onclick || el.getAttribute('onclick') || 
+                        window.getComputedStyle(el).cursor === 'pointer') {
+                      return el;
+                    }
                   }
                 }
                 parentContainer = parentContainer.parentElement;
@@ -2753,8 +2888,9 @@ export async function fillPriceSideAndSubmitGrvt(page, price, { side, orderType,
               return null;
             }, checkbox);
             
-            if (advancedHandle && advancedHandle.asElement()) {
-              advancedElement = advancedHandle.asElement();
+            if (advancedHandle1 && advancedHandle1.asElement()) {
+              advancedEl = advancedHandle1.asElement();
+              console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ✅ Found Advanced button via Strategy 1`);
               break;
             }
           }
@@ -2762,12 +2898,117 @@ export async function fillPriceSideAndSubmitGrvt(page, price, { side, orderType,
       }
     }
     
-    if (advancedElement) {
-      await advancedElement.click();
-      await delay(500);
-      console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ✅ Clicked Advanced button`);
+    // Strategy 2: Search within CreateOrderPanel
+    if (!advancedEl && createOrderPanel) {
+      console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] Strategy 2: Searching within CreateOrderPanel...`);
+      const advancedHandle2 = await page.evaluateHandle((panel) => {
+        const allElements = Array.from(panel.querySelectorAll('*'));
+        for (const el of allElements) {
+          if (el.offsetParent === null) continue;
+          const text = (el.textContent || '').trim();
+          if (text.toLowerCase() === 'advanced' || text.toLowerCase().includes('advanced')) {
+            const tagName = el.tagName.toLowerCase();
+            const role = el.getAttribute('role');
+            if (tagName === 'button' || tagName === 'a' || role === 'button' || 
+                el.onclick || el.getAttribute('onclick') || 
+                window.getComputedStyle(el).cursor === 'pointer') {
+              return el;
+            }
+          }
+        }
+        return null;
+      }, createOrderPanel);
+      
+      if (advancedHandle2 && advancedHandle2.asElement()) {
+        advancedEl = advancedHandle2.asElement();
+        console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ✅ Found Advanced button via Strategy 2`);
+      }
+    }
+    
+    // Strategy 3: Broader search for any button with "Advanced" text
+    if (!advancedEl) {
+      console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] Strategy 3: Broader search for Advanced button...`);
+      const advancedHandle3 = await page.evaluateHandle(() => {
+        const buttons = Array.from(document.querySelectorAll('button, [role="button"], a, div[class*="button"], span[class*="button"]'));
+        for (const btn of buttons) {
+          if (btn.offsetParent === null) continue;
+          const text = (btn.textContent || '').trim();
+          if (text.toLowerCase() === 'advanced' || text.toLowerCase().includes('advanced')) {
+            const style = window.getComputedStyle(btn);
+            if (style.display !== 'none' && style.visibility !== 'hidden' && 
+                btn.offsetWidth > 0 && btn.offsetHeight > 0) {
+              return btn;
+            }
+          }
+        }
+        return null;
+      });
+      
+      if (advancedHandle3 && advancedHandle3.asElement()) {
+        advancedEl = advancedHandle3.asElement();
+        console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ✅ Found Advanced button via Strategy 3`);
+      }
+    }
+    
+    // Try to click the Advanced button with multiple methods
+    if (advancedEl) {
+      let clicked = false;
+      
+      // Method 1: Direct Puppeteer click
+      try {
+        await advancedEl.click();
+        clicked = true;
+        console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ✅ Clicked Advanced button (method 1: direct click)`);
+      } catch (error) {
+        console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  Direct click failed: ${error.message}, trying JavaScript click...`);
+      }
+      
+      // Method 2: JavaScript click
+      if (!clicked) {
+        try {
+          await advancedEl.evaluate((el) => {
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            el.click();
+          });
+          clicked = true;
+          console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ✅ Clicked Advanced button (method 2: JavaScript click)`);
+        } catch (error) {
+          console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  JavaScript click failed: ${error.message}, trying event dispatch...`);
+        }
+      }
+      
+      // Method 3: Event dispatch
+      if (!clicked) {
+        try {
+          await advancedEl.evaluate((el) => {
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            const rect = el.getBoundingClientRect();
+            const x = rect.left + rect.width / 2;
+            const y = rect.top + rect.height / 2;
+            
+            const mouseDown = new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y });
+            const mouseUp = new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y });
+            const click = new MouseEvent('click', { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y });
+            
+            el.dispatchEvent(mouseDown);
+            el.dispatchEvent(mouseUp);
+            el.dispatchEvent(click);
+          });
+          clicked = true;
+          console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ✅ Clicked Advanced button (method 3: event dispatch)`);
+        } catch (error) {
+          console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  Event dispatch failed: ${error.message}`);
+        }
+      }
+      
+      if (clicked) {
+        await delay(500);
+      } else {
+        console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  All click methods failed for Advanced button`);
+        return { success: false, error: 'Advanced button found but could not be clicked' };
+      }
     } else {
-      console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  Could not find Advanced button`);
+      console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  Could not find Advanced button with any strategy`);
       return { success: false, error: 'Advanced button not found after price refill' };
     }
     
