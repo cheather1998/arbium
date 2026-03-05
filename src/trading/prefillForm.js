@@ -2413,18 +2413,95 @@ async function checkAndFillPnlInputs(page, exchange, sectionName, pnlValue) {
     if (pnlInputElement) {
       const pnlValueStr = String(pnlValue);
       
-      // Use JavaScript to set value directly (more reliable across platforms, especially Mac)
+      // Detect platform - on Mac, prefer keyboard typing for better React handler triggering
+      const platform = await page.evaluate(() => navigator.platform || navigator.userAgentData?.platform || '');
+      const isMac = platform.toLowerCase().includes('mac');
+      const modifierKey = isMac ? 'Meta' : 'Control';
+      
+      // On Mac, use keyboard typing as primary method (more reliable for React handlers)
+      // On other platforms, try JavaScript first, then keyboard
+      let useKeyboardFirst = isMac;
+      
+      if (useKeyboardFirst) {
+        // Method 1: Keyboard typing (primary for Mac)
+        console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] Using keyboard typing for ${sectionName} P&L input (Mac detected)...`);
+        await pnlInputElement.focus();
+        await delay(200);
+        
+        // Clear existing value
+        await page.keyboard.down(modifierKey);
+        await page.keyboard.press('KeyA');
+        await page.keyboard.up(modifierKey);
+        await delay(100);
+        await page.keyboard.press('Backspace');
+        await delay(100);
+        
+        // Type the value
+        await pnlInputElement.type(pnlValueStr, { delay: 50 });
+        await delay(300);
+        
+        // Trigger blur to ensure React handlers process the change
+        await pnlInputElement.evaluate((el) => {
+          el.blur();
+          el.focus();
+        });
+        await delay(200);
+        
+        // Verify the value was set
+        const updatedValue = await page.evaluate((el) => el.value || '', pnlInputElement);
+        const updatedNum = parseFloat(updatedValue.replace(/,/g, ''));
+        const expectedNum = parseFloat(pnlValueStr);
+        const tolerance = 0.01;
+        
+        if (updatedValue && !isNaN(updatedNum) && Math.abs(updatedNum - expectedNum) < tolerance) {
+          console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ✅ Filled ${sectionName} P&L input with ${updatedValue} (keyboard, expected: ${pnlValueStr})`);
+          return true;
+        } else {
+          console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  Keyboard typing failed (${updatedValue}), trying JavaScript method...`);
+          // Fall through to JavaScript method
+        }
+      }
+      
+      // Method 2: JavaScript with comprehensive event triggering
+      console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] Using JavaScript method for ${sectionName} P&L input...`);
       const valueSet = await pnlInputElement.evaluate((el, value) => {
         el.focus();
+        
+        // Clear existing value
         el.value = '';
+        el.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+        
+        // Set new value
         el.value = value;
-        // Trigger input events to ensure React/form handlers are notified
-        el.dispatchEvent(new Event('input', { bubbles: true }));
-        el.dispatchEvent(new Event('change', { bubbles: true }));
+        
+        // Trigger comprehensive events for React
+        const inputEvent = new Event('input', { bubbles: true, cancelable: true });
+        Object.defineProperty(inputEvent, 'target', { value: el, enumerable: true });
+        el.dispatchEvent(inputEvent);
+        
+        const changeEvent = new Event('change', { bubbles: true, cancelable: true });
+        Object.defineProperty(changeEvent, 'target', { value: el, enumerable: true });
+        el.dispatchEvent(changeEvent);
+        
+        // Also trigger React's synthetic events if possible
+        const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+        if (nativeInputValueSetter) {
+          nativeInputValueSetter.call(el, value);
+          const reactEvent = new Event('input', { bubbles: true });
+          el.dispatchEvent(reactEvent);
+        }
+        
         return el.value;
       }, pnlValueStr);
       
       await delay(300);
+      
+      // Trigger blur and refocus to ensure handlers process
+      await pnlInputElement.evaluate((el) => {
+        el.blur();
+        setTimeout(() => el.focus(), 50);
+      });
+      await delay(200);
       
       // Verify the value was set
       const updatedValue = await page.evaluate((el) => el.value || '', pnlInputElement);
@@ -2433,39 +2510,11 @@ async function checkAndFillPnlInputs(page, exchange, sectionName, pnlValue) {
       const tolerance = 0.01;
       
       if (updatedValue && !isNaN(updatedNum) && Math.abs(updatedNum - expectedNum) < tolerance) {
-        console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ✅ Filled ${sectionName} P&L input with ${updatedValue} (expected: ${pnlValueStr})`);
+        console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ✅ Filled ${sectionName} P&L input with ${updatedValue} (JavaScript, expected: ${pnlValueStr})`);
         return true;
       } else {
-        // Fallback to keyboard input if JavaScript didn't work
-        console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  JavaScript set value failed (${updatedValue}), trying keyboard input...`);
-        await pnlInputElement.focus();
-        await delay(200);
-        
-        // Detect platform and use appropriate modifier key
-        const platform = await page.evaluate(() => navigator.platform || navigator.userAgentData?.platform || '');
-        const isMac = platform.toLowerCase().includes('mac');
-        const modifierKey = isMac ? 'Meta' : 'Control';
-        
-        await page.keyboard.down(modifierKey);
-        await page.keyboard.press('KeyA');
-        await page.keyboard.up(modifierKey);
-        await delay(100);
-        await page.keyboard.press('Backspace');
-        await delay(100);
-        await pnlInputElement.type(pnlValueStr, { delay: 50 });
-        await delay(300);
-        
-        // Verify again
-        const finalValue = await page.evaluate((el) => el.value || '', pnlInputElement);
-        const finalNum = parseFloat(finalValue.replace(/,/g, ''));
-        
-        if (finalValue && !isNaN(finalNum) && Math.abs(finalNum - expectedNum) < tolerance) {
-          console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ✅ Filled ${sectionName} P&L input with ${finalValue} (keyboard fallback, expected: ${pnlValueStr})`);
-          return true;
-        } else {
-          console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  P&L input fill verification failed. Expected: ${pnlValueStr}, Got: ${finalValue}`);
-          return false;
-        }
+        console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  Both methods failed. Expected: ${pnlValueStr}, Got: ${updatedValue}`);
+        return false;
       }
     } else {
       console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  Could not find P&L input element for ${sectionName}`);
@@ -3474,8 +3523,91 @@ export async function fillPriceSideAndSubmitGrvt(page, price, { side, orderType,
           const tpPnlFilled = await checkAndFillPnlInputs(page, exchange, 'Take profit', takeProfitValue);
           if (!tpPnlFilled) {
             console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  Failed to refill Take profit P&L input`);
+          } else {
+            // Verify the value is still there after a short wait (ensures React processed it)
+            await delay(500);
+            const verifyTp = await page.evaluate((sectionName) => {
+              // Find the P&L input and check its value
+              const allElements = Array.from(document.querySelectorAll('*'));
+              let tpslModal = null;
+              
+              for (const el of allElements) {
+                const text = (el.textContent || '').trim();
+                if (text === 'TP/SL' && el.offsetParent !== null) {
+                  let parent = el.parentElement;
+                  for (let i = 0; i < 10 && parent; i++) {
+                    const style = window.getComputedStyle(parent);
+                    if (style.display !== 'none' && style.visibility !== 'hidden' &&
+                      parent.offsetWidth > 0 && parent.offsetHeight > 0) {
+                      const parentText = (parent.textContent || '').toLowerCase();
+                      if (parentText.includes('take profit') && parentText.includes('stop loss')) {
+                        tpslModal = parent;
+                        break;
+                      }
+                    }
+                    parent = parent.parentElement;
+                  }
+                  if (tpslModal) break;
+                }
+              }
+              
+              if (!tpslModal) return { found: false };
+              
+              const sectionNameLower = sectionName.toLowerCase();
+              let sectionElement = null;
+              const modalElements = Array.from(tpslModal.querySelectorAll('*'));
+              for (const el of modalElements) {
+                const text = (el.textContent || '').trim();
+                if (text.toLowerCase() === sectionNameLower && el.offsetParent !== null) {
+                  sectionElement = el;
+                  break;
+                }
+              }
+              
+              if (!sectionElement) return { found: false };
+              
+              let sectionParent = sectionElement.parentElement;
+              const otherSectionName = sectionNameLower.includes('profit') ? 'stop loss' : 'take profit';
+              
+              for (let i = 0; i < 10 && sectionParent; i++) {
+                const allDescendants = Array.from(sectionParent.querySelectorAll('*'));
+                let hasOtherSection = false;
+                for (const el of allDescendants) {
+                  const text = (el.textContent || '').trim();
+                  if (text.toLowerCase() === otherSectionName && el.offsetParent !== null) {
+                    hasOtherSection = true;
+                    break;
+                  }
+                }
+                if (!hasOtherSection) break;
+                sectionParent = sectionParent.parentElement;
+                if (!sectionParent) break;
+              }
+              
+              if (!sectionParent) sectionParent = sectionElement.parentElement;
+              
+              const allInputsInSection = Array.from(sectionParent.querySelectorAll('input'));
+              for (const input of allInputsInSection) {
+                if (input.tagName !== 'INPUT') continue;
+                const placeholder = (input.getAttribute('placeholder') || '').trim();
+                const className = (input.className || '').toLowerCase();
+                if ((placeholder === '' || placeholder === ' ') && className.includes('text')) {
+                  if (input.offsetParent !== null && !input.disabled && !input.readOnly) {
+                    return { found: true, value: input.value || '' };
+                  }
+                }
+              }
+              
+              return { found: false };
+            }, 'Take profit');
+            
+            if (verifyTp.found) {
+              console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ✅ Verified Take profit P&L input value: ${verifyTp.value}`);
+            } else {
+              console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  Could not verify Take profit P&L input value`);
+            }
           }
-          await delay(300);
+          await delay(500); // Additional wait after filling
         }
         
         // Refill Stop loss P&L input
@@ -3484,13 +3616,96 @@ export async function fillPriceSideAndSubmitGrvt(page, price, { side, orderType,
           const slPnlFilled = await checkAndFillPnlInputs(page, exchange, 'Stop loss', stopLossValue);
           if (!slPnlFilled) {
             console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  Failed to refill Stop loss P&L input`);
+          } else {
+            // Verify the value is still there after a short wait
+            await delay(500);
+            const verifySl = await page.evaluate((sectionName) => {
+              // Same verification logic as above
+              const allElements = Array.from(document.querySelectorAll('*'));
+              let tpslModal = null;
+              
+              for (const el of allElements) {
+                const text = (el.textContent || '').trim();
+                if (text === 'TP/SL' && el.offsetParent !== null) {
+                  let parent = el.parentElement;
+                  for (let i = 0; i < 10 && parent; i++) {
+                    const style = window.getComputedStyle(parent);
+                    if (style.display !== 'none' && style.visibility !== 'hidden' &&
+                      parent.offsetWidth > 0 && parent.offsetHeight > 0) {
+                      const parentText = (parent.textContent || '').toLowerCase();
+                      if (parentText.includes('take profit') && parentText.includes('stop loss')) {
+                        tpslModal = parent;
+                        break;
+                      }
+                    }
+                    parent = parent.parentElement;
+                  }
+                  if (tpslModal) break;
+                }
+              }
+              
+              if (!tpslModal) return { found: false };
+              
+              const sectionNameLower = sectionName.toLowerCase();
+              let sectionElement = null;
+              const modalElements = Array.from(tpslModal.querySelectorAll('*'));
+              for (const el of modalElements) {
+                const text = (el.textContent || '').trim();
+                if (text.toLowerCase() === sectionNameLower && el.offsetParent !== null) {
+                  sectionElement = el;
+                  break;
+                }
+              }
+              
+              if (!sectionElement) return { found: false };
+              
+              let sectionParent = sectionElement.parentElement;
+              const otherSectionName = sectionNameLower.includes('profit') ? 'stop loss' : 'take profit';
+              
+              for (let i = 0; i < 10 && sectionParent; i++) {
+                const allDescendants = Array.from(sectionParent.querySelectorAll('*'));
+                let hasOtherSection = false;
+                for (const el of allDescendants) {
+                  const text = (el.textContent || '').trim();
+                  if (text.toLowerCase() === otherSectionName && el.offsetParent !== null) {
+                    hasOtherSection = true;
+                    break;
+                  }
+                }
+                if (!hasOtherSection) break;
+                sectionParent = sectionParent.parentElement;
+                if (!sectionParent) break;
+              }
+              
+              if (!sectionParent) sectionParent = sectionElement.parentElement;
+              
+              const allInputsInSection = Array.from(sectionParent.querySelectorAll('input'));
+              for (const input of allInputsInSection) {
+                if (input.tagName !== 'INPUT') continue;
+                const placeholder = (input.getAttribute('placeholder') || '').trim();
+                const className = (input.className || '').toLowerCase();
+                if ((placeholder === '' || placeholder === ' ') && className.includes('text')) {
+                  if (input.offsetParent !== null && !input.disabled && !input.readOnly) {
+                    return { found: true, value: input.value || '' };
+                  }
+                }
+              }
+              
+              return { found: false };
+            }, 'Stop loss');
+            
+            if (verifySl.found) {
+              console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ✅ Verified Stop loss P&L input value: ${verifySl.value}`);
+            } else {
+              console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  Could not verify Stop loss P&L input value`);
+            }
           }
-          await delay(300);
+          await delay(500); // Additional wait after filling
         }
         
         // Wait for GRVT to automatically recalculate trigger prices based on new price and P&L values
         console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] Waiting for GRVT to recalculate trigger prices (based on new price and P&L values)...`);
-        await delay(2000); // Increased wait time for GRVT to recalculate
+        await delay(3000); // Increased wait time for GRVT to recalculate (especially on Mac)
         
         // Step 3b: Read the automatically calculated trigger prices and fill them into limit price inputs
         // Wait and retry until trigger prices are calculated (they should be different from entry price)
