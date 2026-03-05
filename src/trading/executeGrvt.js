@@ -1627,14 +1627,19 @@ export async function handleTpSlGrvt(page, exchange, price = null, side = 'buy')
             }
             
             if (inputElement) {
+              // Detect platform and use appropriate modifier key
+              const platform = await page.evaluate(() => navigator.platform || navigator.userAgentData?.platform || '');
+              const isMac = platform.toLowerCase().includes('mac');
+              const modifierKey = isMac ? 'Meta' : 'Control';
+              
               // Focus the input
               await inputElement.focus();
               await delay(200);
               
-              // Select all existing text
-              await page.keyboard.down('Control');
+              // Select all existing text (use platform-appropriate modifier key)
+              await page.keyboard.down(modifierKey);
               await page.keyboard.press('KeyA');
-              await page.keyboard.up('Control');
+              await page.keyboard.up(modifierKey);
               await delay(100);
               
               // Clear existing value
@@ -1645,7 +1650,17 @@ export async function handleTpSlGrvt(page, exchange, price = null, side = 'buy')
               await inputElement.type(takeProfitValue, { delay: 50 }); // 50ms delay between characters
               await delay(200);
               
-              console.log(`[${exchange.name}] ✅ Typed into first input: ${takeProfitValue}`);
+              // Verify the value was set correctly
+              const verifyValue = await page.evaluate((el) => el.value || '', inputElement);
+              const verifyNum = parseFloat(verifyValue.replace(/,/g, ''));
+              const expectedNum = parseFloat(takeProfitValue);
+              const tolerance = 0.01;
+              
+              if (verifyValue && !isNaN(verifyNum) && Math.abs(verifyNum - expectedNum) < tolerance) {
+                console.log(`[${exchange.name}] ✅ Typed into first input: ${verifyValue} (expected: ${takeProfitValue})`);
+              } else {
+                console.log(`[${exchange.name}] ⚠️  First input verification failed. Expected: ${takeProfitValue}, Got: ${verifyValue}`);
+              }
             } else {
               console.log(`[${exchange.name}] ⚠️  Could not find first input element to type into`);
             }
@@ -1705,14 +1720,19 @@ export async function handleTpSlGrvt(page, exchange, price = null, side = 'buy')
             }
             
             if (inputElement) {
+              // Detect platform and use appropriate modifier key
+              const platform = await page.evaluate(() => navigator.platform || navigator.userAgentData?.platform || '');
+              const isMac = platform.toLowerCase().includes('mac');
+              const modifierKey = isMac ? 'Meta' : 'Control';
+              
               // Focus the input
               await inputElement.focus();
               await delay(200);
               
-              // Select all existing text
-              await page.keyboard.down('Control');
+              // Select all existing text (use platform-appropriate modifier key)
+              await page.keyboard.down(modifierKey);
               await page.keyboard.press('KeyA');
-              await page.keyboard.up('Control');
+              await page.keyboard.up(modifierKey);
               await delay(100);
               
               // Clear existing value
@@ -1723,7 +1743,17 @@ export async function handleTpSlGrvt(page, exchange, price = null, side = 'buy')
               await inputElement.type(stopLossValue, { delay: 50 }); // 50ms delay between characters
               await delay(200);
               
-              console.log(`[${exchange.name}] ✅ Typed into second input: ${stopLossValue}`);
+              // Verify the value was set correctly
+              const verifyValue = await page.evaluate((el) => el.value || '', inputElement);
+              const verifyNum = parseFloat(verifyValue.replace(/,/g, ''));
+              const expectedNum = parseFloat(stopLossValue);
+              const tolerance = 0.01;
+              
+              if (verifyValue && !isNaN(verifyNum) && Math.abs(verifyNum - expectedNum) < tolerance) {
+                console.log(`[${exchange.name}] ✅ Typed into second input: ${verifyValue} (expected: ${stopLossValue})`);
+              } else {
+                console.log(`[${exchange.name}] ⚠️  Second input verification failed. Expected: ${stopLossValue}, Got: ${verifyValue}`);
+              }
             } else {
               console.log(`[${exchange.name}] ⚠️  Could not find second input element to type into`);
             }
