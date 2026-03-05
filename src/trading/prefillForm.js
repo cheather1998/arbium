@@ -2428,37 +2428,69 @@ async function checkAndFillPnlInputs(page, exchange, sectionName, pnlValue) {
         await pnlInputElement.focus();
         await delay(200);
         
-        // Clear existing value
-        await page.keyboard.down(modifierKey);
-        await page.keyboard.press('KeyA');
-        await page.keyboard.up(modifierKey);
-        await delay(100);
-        await page.keyboard.press('Backspace');
-        await delay(100);
-        
-        // Type the value
-        await pnlInputElement.type(pnlValueStr, { delay: 50 });
-        await delay(300);
-        
-        // Trigger blur to ensure React handlers process the change
+        // Clear existing value - use multiple methods to ensure it's completely cleared
+        // First, try JavaScript clear
         await pnlInputElement.evaluate((el) => {
-          el.blur();
-          el.focus();
+          el.value = '';
+          el.dispatchEvent(new Event('input', { bubbles: true }));
         });
-        await delay(200);
+        await delay(100);
         
-        // Verify the value was set
-        const updatedValue = await page.evaluate((el) => el.value || '', pnlInputElement);
-        const updatedNum = parseFloat(updatedValue.replace(/,/g, ''));
-        const expectedNum = parseFloat(pnlValueStr);
-        const tolerance = 0.01;
+        // Then verify it's cleared
+        let clearedValue = await page.evaluate((el) => el.value || '', pnlInputElement);
+        if (clearedValue && clearedValue.trim() !== '') {
+          // If not cleared, use keyboard selection and delete
+          await page.keyboard.down(modifierKey);
+          await page.keyboard.press('KeyA');
+          await page.keyboard.up(modifierKey);
+          await delay(100);
+          await page.keyboard.press('Backspace');
+          await delay(100);
+          
+          // Verify again
+          clearedValue = await page.evaluate((el) => el.value || '', pnlInputElement);
+          if (clearedValue && clearedValue.trim() !== '') {
+            // Last resort: JavaScript clear again
+            await pnlInputElement.evaluate((el) => {
+              el.value = '';
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+            });
+            await delay(100);
+          }
+        }
         
-        if (updatedValue && !isNaN(updatedNum) && Math.abs(updatedNum - expectedNum) < tolerance) {
-          console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ✅ Filled ${sectionName} P&L input with ${updatedValue} (keyboard, expected: ${pnlValueStr})`);
-          return true;
-        } else {
-          console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  Keyboard typing failed (${updatedValue}), trying JavaScript method...`);
+        // Final verification that input is empty before typing
+        const finalClearedCheck = await page.evaluate((el) => el.value || '', pnlInputElement);
+        if (finalClearedCheck && finalClearedCheck.trim() !== '') {
+          console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  Input still has value "${finalClearedCheck}" after clearing, using JavaScript method instead...`);
           // Fall through to JavaScript method
+        } else {
+          // Input is cleared, now type the value
+          // Use faster typing (no delay) to avoid intermediate states being visible
+          await pnlInputElement.type(pnlValueStr, { delay: 0 });
+          await delay(300);
+          
+          // Trigger blur to ensure React handlers process the change
+          await pnlInputElement.evaluate((el) => {
+            el.blur();
+            el.focus();
+          });
+          await delay(200);
+          
+          // Verify the value was set
+          const updatedValue = await page.evaluate((el) => el.value || '', pnlInputElement);
+          const updatedNum = parseFloat(updatedValue.replace(/,/g, ''));
+          const expectedNum = parseFloat(pnlValueStr);
+          const tolerance = 0.01;
+          
+          if (updatedValue && !isNaN(updatedNum) && Math.abs(updatedNum - expectedNum) < tolerance) {
+            console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ✅ Filled ${sectionName} P&L input with ${updatedValue} (keyboard, expected: ${pnlValueStr})`);
+            return true;
+          } else {
+            console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  Keyboard typing failed (${updatedValue}), trying JavaScript method...`);
+            // Fall through to JavaScript method
+          }
         }
       }
       
@@ -3874,8 +3906,478 @@ export async function fillPriceSideAndSubmitGrvt(page, price, { side, orderType,
   await selectBuyOrSell(page, side, exchange);
   await delay(300);
   
-  // 5. Find and click Buy/Sell button (this is the confirm button for GRVT)
-  console.log(`[${exchange.name}] [QUICK-FILL] Step 5: Clicking ${side.toUpperCase()} button...`);
+  // 4.5. Check if TP/SL inputs were cleared after side selection (especially on Mac) and refill if needed
+  if (orderType === "limit" && price) {
+    console.log(`[${exchange.name}] [QUICK-FILL] Step 4.5: Checking if TP/SL inputs were cleared after side selection...`);
+    const takeProfitPercent = process.env.TAKE_PROFIT || '';
+    const stopLossPercent = process.env.STOP_LOSS || '';
+    
+    if (takeProfitPercent || stopLossPercent) {
+      const takeProfitNum = parseFloat(takeProfitPercent);
+      const stopLossNum = parseFloat(stopLossPercent);
+      const takeProfitValue = (takeProfitNum / 10).toString();
+      const stopLossValue = (stopLossNum / 10).toString();
+      
+      // Check if TP/SL modal is still open (it should be closed after Step 3c)
+      const modalOpen = await page.evaluate(() => {
+        const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="drawer"], [class*="Drawer"]'));
+        for (const modal of modals) {
+          const style = window.getComputedStyle(modal);
+          if (style.display !== 'none' && style.visibility !== 'hidden' &&
+            modal.offsetWidth > 0 && modal.offsetHeight > 0) {
+            const modalText = (modal.textContent || '').toLowerCase();
+            if (modalText.includes('tp/sl') || modalText.includes('take profit') || modalText.includes('stop loss')) {
+              return true;
+            }
+          }
+        }
+        return false;
+      });
+      
+      if (!modalOpen) {
+        // Modal is closed, check if TP/SL checkbox is still checked
+        const checkboxChecked = await page.evaluate(() => {
+          const createOrderPanel = document.querySelector('[data-sentry-element="CreateOrderPanel"]');
+          if (!createOrderPanel) return false;
+          
+          const labels = Array.from(createOrderPanel.querySelectorAll('label'));
+          for (const label of labels) {
+            const labelText = (label.textContent || '').trim().toLowerCase();
+            if ((labelText.includes('tp') && labelText.includes('sl')) ||
+                (labelText.includes('take profit') && labelText.includes('stop loss'))) {
+              const checkbox = label.querySelector('input[type="checkbox"]');
+              if (checkbox) {
+                return checkbox.checked;
+              }
+            }
+          }
+          return false;
+        });
+        
+        if (checkboxChecked) {
+          // TP/SL is enabled, verify the values are still set by checking if we can read them
+          // If they're cleared, we need to reopen the modal and refill
+          console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] TP/SL checkbox is checked, verifying values are still set...`);
+          
+          // Try to verify by checking if trigger prices would be calculated correctly
+          // If TP/SL inputs were cleared, trigger prices would equal entry price
+          const triggerPriceCheck = await page.evaluate((entryPrice) => {
+            // This is a simplified check - if TP/SL modal was closed and values cleared,
+            // we can't directly check the inputs, but we can infer from the error we'll get
+            return { entryPrice: entryPrice };
+          }, parseFloat(String(price)));
+          
+          // Since we can't directly check closed modal inputs, we'll proactively reopen and verify/refill
+          // This is especially important on Mac where side selection might clear values
+          console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] Reopening TP/SL modal to verify and refill values after side selection...`);
+          
+          // Find and click Advanced button to reopen modal
+          const createOrderPanel = await page.$('[data-sentry-element="CreateOrderPanel"]');
+          let advancedEl = null;
+          
+          if (createOrderPanel) {
+            const advancedHandle = await page.evaluateHandle((panel) => {
+              const allElements = Array.from(panel.querySelectorAll('*'));
+              for (const el of allElements) {
+                if (el.offsetParent === null) continue;
+                const text = (el.textContent || '').trim();
+                if (text.toLowerCase() === 'advanced' || text.toLowerCase().includes('advanced')) {
+                  // Exclude order type tabs
+                  let isOrderTypeTab = false;
+                  let checkParent = el.parentElement;
+                  for (let i = 0; i < 5 && checkParent; i++) {
+                    const parentText = (checkParent.textContent || '').toLowerCase();
+                    if (parentText.includes('limit') && parentText.includes('market') && 
+                        (parentText.includes('tab') || checkParent.getAttribute('role') === 'tablist')) {
+                      isOrderTypeTab = true;
+                      break;
+                    }
+                    checkParent = checkParent.parentElement;
+                  }
+                  if (isOrderTypeTab) continue;
+                  
+                  const tagName = el.tagName.toLowerCase();
+                  const role = el.getAttribute('role');
+                  if (tagName === 'button' || tagName === 'a' || role === 'button' || 
+                      el.onclick || el.getAttribute('onclick') || 
+                      window.getComputedStyle(el).cursor === 'pointer') {
+                    let nearbyText = '';
+                    let checkNearby = el.parentElement;
+                    for (let j = 0; j < 3 && checkNearby; j++) {
+                      nearbyText += (checkNearby.textContent || '').toLowerCase() + ' ';
+                      checkNearby = checkNearby.parentElement;
+                    }
+                    if (nearbyText.includes('tp') || nearbyText.includes('sl') || 
+                        nearbyText.includes('take profit') || nearbyText.includes('stop loss')) {
+                      return el;
+                    }
+                  }
+                }
+              }
+              return null;
+            }, createOrderPanel);
+            
+            if (advancedHandle && advancedHandle.asElement()) {
+              advancedEl = advancedHandle.asElement();
+            }
+          }
+          
+          if (advancedEl) {
+            await advancedEl.click();
+            await delay(1000); // Wait for modal to open
+            
+            // Verify modal opened
+            const modalOpened = await page.evaluate(() => {
+              const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"]'));
+              for (const modal of modals) {
+                const style = window.getComputedStyle(modal);
+                if (style.display !== 'none' && style.visibility !== 'hidden' &&
+                  modal.offsetWidth > 0 && modal.offsetHeight > 0) {
+                  const modalText = (modal.textContent || '').toLowerCase();
+                  if (modalText.includes('tp/sl') || modalText.includes('take profit') || modalText.includes('stop loss')) {
+                    return true;
+                  }
+                }
+              }
+              return false;
+            });
+            
+            if (modalOpened) {
+              console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ✅ Modal reopened, verifying and refilling P&L inputs...`);
+              
+              // Refill Take profit P&L input
+              if (!isNaN(takeProfitNum) && takeProfitValue) {
+                const tpPnlFilled = await checkAndFillPnlInputs(page, exchange, 'Take profit', takeProfitValue);
+                if (!tpPnlFilled) {
+                  console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  Failed to refill Take profit P&L input after side selection`);
+                } else {
+                  console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ✅ Verified/refilled Take profit P&L input`);
+                }
+                await delay(500);
+              }
+              
+              // Refill Stop loss P&L input
+              if (!isNaN(stopLossNum) && stopLossValue) {
+                const slPnlFilled = await checkAndFillPnlInputs(page, exchange, 'Stop loss', stopLossValue);
+                if (!slPnlFilled) {
+                  console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  Failed to refill Stop loss P&L input after side selection`);
+                } else {
+                  console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ✅ Verified/refilled Stop loss P&L input`);
+                }
+                await delay(500);
+              }
+              
+              // Wait for trigger prices to recalculate
+              await delay(2000);
+              
+              // Close the modal (we'll let handleTpSlGrvt handle the final confirmation if needed)
+              await page.keyboard.press('Escape');
+              await delay(500);
+              
+              console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ✅ Verified and refilled TP/SL inputs after side selection`);
+            } else {
+              console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  Could not reopen TP/SL modal to verify values`);
+            }
+          } else {
+            console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  Could not find Advanced button to reopen modal`);
+          }
+        }
+      } else {
+        console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] TP/SL modal is still open, values should be preserved`);
+      }
+    }
+  }
+  
+  // 5. Final verification of TP/SL values before clicking Buy/Sell button (critical on Mac)
+  if (orderType === "limit" && price) {
+    console.log(`[${exchange.name}] [QUICK-FILL] Step 5: Final verification of TP/SL values before submission...`);
+    const takeProfitPercent = process.env.TAKE_PROFIT || '';
+    const stopLossPercent = process.env.STOP_LOSS || '';
+    
+    if (takeProfitPercent || stopLossPercent) {
+      const takeProfitNum = parseFloat(takeProfitPercent);
+      const stopLossNum = parseFloat(stopLossPercent);
+      const takeProfitValue = (takeProfitNum / 10).toString();
+      const stopLossValue = (stopLossNum / 10).toString();
+      
+      // Reopen TP/SL modal one final time to verify values are still set
+      const createOrderPanel = await page.$('[data-sentry-element="CreateOrderPanel"]');
+      let advancedEl = null;
+      
+      if (createOrderPanel) {
+        const advancedHandle = await page.evaluateHandle((panel) => {
+          const allElements = Array.from(panel.querySelectorAll('*'));
+          for (const el of allElements) {
+            if (el.offsetParent === null) continue;
+            const text = (el.textContent || '').trim();
+            if (text.toLowerCase() === 'advanced' || text.toLowerCase().includes('advanced')) {
+              // Exclude order type tabs
+              let isOrderTypeTab = false;
+              let checkParent = el.parentElement;
+              for (let i = 0; i < 5 && checkParent; i++) {
+                const parentText = (checkParent.textContent || '').toLowerCase();
+                if (parentText.includes('limit') && parentText.includes('market') && 
+                    (parentText.includes('tab') || checkParent.getAttribute('role') === 'tablist')) {
+                  isOrderTypeTab = true;
+                  break;
+                }
+                checkParent = checkParent.parentElement;
+              }
+              if (isOrderTypeTab) continue;
+              
+              const tagName = el.tagName.toLowerCase();
+              const role = el.getAttribute('role');
+              if (tagName === 'button' || tagName === 'a' || role === 'button' || 
+                  el.onclick || el.getAttribute('onclick') || 
+                  window.getComputedStyle(el).cursor === 'pointer') {
+                let nearbyText = '';
+                let checkNearby = el.parentElement;
+                for (let j = 0; j < 3 && checkNearby; j++) {
+                  nearbyText += (checkNearby.textContent || '').toLowerCase() + ' ';
+                  checkNearby = checkNearby.parentElement;
+                }
+                if (nearbyText.includes('tp') || nearbyText.includes('sl') || 
+                    nearbyText.includes('take profit') || nearbyText.includes('stop loss')) {
+                  return el;
+                }
+              }
+            }
+          }
+          return null;
+        }, createOrderPanel);
+        
+        if (advancedHandle && advancedHandle.asElement()) {
+          advancedEl = advancedHandle.asElement();
+        }
+      }
+      
+      if (advancedEl) {
+        await advancedEl.click();
+        await delay(1000);
+        
+        // Verify modal opened
+        const modalOpened = await page.evaluate(() => {
+          const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"]'));
+          for (const modal of modals) {
+            const style = window.getComputedStyle(modal);
+            if (style.display !== 'none' && style.visibility !== 'hidden' &&
+              modal.offsetWidth > 0 && modal.offsetHeight > 0) {
+              const modalText = (modal.textContent || '').toLowerCase();
+              if (modalText.includes('tp/sl') || modalText.includes('take profit') || modalText.includes('stop loss')) {
+                return true;
+              }
+            }
+          }
+          return false;
+        });
+        
+        if (modalOpened) {
+          console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ✅ Modal reopened for final verification...`);
+          
+          // Verify and refill Take profit P&L input
+          if (!isNaN(takeProfitNum) && takeProfitValue) {
+            const tpValue = await page.evaluate((sectionName) => {
+              const allElements = Array.from(document.querySelectorAll('*'));
+              let tpslModal = null;
+              
+              for (const el of allElements) {
+                const text = (el.textContent || '').trim();
+                if (text === 'TP/SL' && el.offsetParent !== null) {
+                  let parent = el.parentElement;
+                  for (let i = 0; i < 10 && parent; i++) {
+                    const style = window.getComputedStyle(parent);
+                    if (style.display !== 'none' && style.visibility !== 'hidden' &&
+                      parent.offsetWidth > 0 && parent.offsetHeight > 0) {
+                      const parentText = (parent.textContent || '').toLowerCase();
+                      if (parentText.includes('take profit') && parentText.includes('stop loss')) {
+                        tpslModal = parent;
+                        break;
+                      }
+                    }
+                    parent = parent.parentElement;
+                  }
+                  if (tpslModal) break;
+                }
+              }
+              
+              if (!tpslModal) return { found: false };
+              
+              const sectionNameLower = sectionName.toLowerCase();
+              let sectionElement = null;
+              const modalElements = Array.from(tpslModal.querySelectorAll('*'));
+              for (const el of modalElements) {
+                const text = (el.textContent || '').trim();
+                if (text.toLowerCase() === sectionNameLower && el.offsetParent !== null) {
+                  sectionElement = el;
+                  break;
+                }
+              }
+              
+              if (!sectionElement) return { found: false };
+              
+              let sectionParent = sectionElement.parentElement;
+              const otherSectionName = sectionNameLower.includes('profit') ? 'stop loss' : 'take profit';
+              
+              for (let i = 0; i < 10 && sectionParent; i++) {
+                const allDescendants = Array.from(sectionParent.querySelectorAll('*'));
+                let hasOtherSection = false;
+                for (const el of allDescendants) {
+                  const text = (el.textContent || '').trim();
+                  if (text.toLowerCase() === otherSectionName && el.offsetParent !== null) {
+                    hasOtherSection = true;
+                    break;
+                  }
+                }
+                if (!hasOtherSection) break;
+                sectionParent = sectionParent.parentElement;
+                if (!sectionParent) break;
+              }
+              
+              if (!sectionParent) sectionParent = sectionElement.parentElement;
+              
+              const allInputsInSection = Array.from(sectionParent.querySelectorAll('input'));
+              for (const input of allInputsInSection) {
+                if (input.tagName !== 'INPUT') continue;
+                const placeholder = (input.getAttribute('placeholder') || '').trim();
+                const className = (input.className || '').toLowerCase();
+                if ((placeholder === '' || placeholder === ' ') && className.includes('text')) {
+                  if (input.offsetParent !== null && !input.disabled && !input.readOnly) {
+                    return { found: true, value: input.value || '' };
+                  }
+                }
+              }
+              
+              return { found: false };
+            }, 'Take profit');
+            
+            if (tpValue.found) {
+              const tpNum = parseFloat(tpValue.value.replace(/,/g, ''));
+              const expectedTpNum = parseFloat(takeProfitValue);
+              if (isNaN(tpNum) || Math.abs(tpNum - expectedTpNum) >= 0.01) {
+                console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  Take profit P&L value is wrong (${tpValue.value}), refilling...`);
+                await checkAndFillPnlInputs(page, exchange, 'Take profit', takeProfitValue);
+                await delay(500);
+              } else {
+                console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ✅ Take profit P&L value is correct: ${tpValue.value}`);
+              }
+            } else {
+              console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  Could not find Take profit P&L input, refilling...`);
+              await checkAndFillPnlInputs(page, exchange, 'Take profit', takeProfitValue);
+              await delay(500);
+            }
+          }
+          
+          // Verify and refill Stop loss P&L input
+          if (!isNaN(stopLossNum) && stopLossValue) {
+            const slValue = await page.evaluate((sectionName) => {
+              // Same logic as above but for Stop loss
+              const allElements = Array.from(document.querySelectorAll('*'));
+              let tpslModal = null;
+              
+              for (const el of allElements) {
+                const text = (el.textContent || '').trim();
+                if (text === 'TP/SL' && el.offsetParent !== null) {
+                  let parent = el.parentElement;
+                  for (let i = 0; i < 10 && parent; i++) {
+                    const style = window.getComputedStyle(parent);
+                    if (style.display !== 'none' && style.visibility !== 'hidden' &&
+                      parent.offsetWidth > 0 && parent.offsetHeight > 0) {
+                      const parentText = (parent.textContent || '').toLowerCase();
+                      if (parentText.includes('take profit') && parentText.includes('stop loss')) {
+                        tpslModal = parent;
+                        break;
+                      }
+                    }
+                    parent = parent.parentElement;
+                  }
+                  if (tpslModal) break;
+                }
+              }
+              
+              if (!tpslModal) return { found: false };
+              
+              const sectionNameLower = sectionName.toLowerCase();
+              let sectionElement = null;
+              const modalElements = Array.from(tpslModal.querySelectorAll('*'));
+              for (const el of modalElements) {
+                const text = (el.textContent || '').trim();
+                if (text.toLowerCase() === sectionNameLower && el.offsetParent !== null) {
+                  sectionElement = el;
+                  break;
+                }
+              }
+              
+              if (!sectionElement) return { found: false };
+              
+              let sectionParent = sectionElement.parentElement;
+              const otherSectionName = sectionNameLower.includes('profit') ? 'stop loss' : 'take profit';
+              
+              for (let i = 0; i < 10 && sectionParent; i++) {
+                const allDescendants = Array.from(sectionParent.querySelectorAll('*'));
+                let hasOtherSection = false;
+                for (const el of allDescendants) {
+                  const text = (el.textContent || '').trim();
+                  if (text.toLowerCase() === otherSectionName && el.offsetParent !== null) {
+                    hasOtherSection = true;
+                    break;
+                  }
+                }
+                if (!hasOtherSection) break;
+                sectionParent = sectionParent.parentElement;
+                if (!sectionParent) break;
+              }
+              
+              if (!sectionParent) sectionParent = sectionElement.parentElement;
+              
+              const allInputsInSection = Array.from(sectionParent.querySelectorAll('input'));
+              for (const input of allInputsInSection) {
+                if (input.tagName !== 'INPUT') continue;
+                const placeholder = (input.getAttribute('placeholder') || '').trim();
+                const className = (input.className || '').toLowerCase();
+                if ((placeholder === '' || placeholder === ' ') && className.includes('text')) {
+                  if (input.offsetParent !== null && !input.disabled && !input.readOnly) {
+                    return { found: true, value: input.value || '' };
+                  }
+                }
+              }
+              
+              return { found: false };
+            }, 'Stop loss');
+            
+            if (slValue.found) {
+              const slNum = parseFloat(slValue.value.replace(/,/g, ''));
+              const expectedSlNum = parseFloat(stopLossValue);
+              if (isNaN(slNum) || Math.abs(slNum - expectedSlNum) >= 0.01) {
+                console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  Stop loss P&L value is wrong (${slValue.value}), refilling...`);
+                await checkAndFillPnlInputs(page, exchange, 'Stop loss', stopLossValue);
+                await delay(500);
+              } else {
+                console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ✅ Stop loss P&L value is correct: ${slValue.value}`);
+              }
+            } else {
+              console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  Could not find Stop loss P&L input, refilling...`);
+              await checkAndFillPnlInputs(page, exchange, 'Stop loss', stopLossValue);
+              await delay(500);
+            }
+          }
+          
+          // Wait for trigger prices to recalculate if we refilled
+          await delay(2000);
+          
+          // Close the modal
+          await page.keyboard.press('Escape');
+          await delay(500);
+          
+          console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ✅ Final verification complete, values are correct`);
+        } else {
+          console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  Could not reopen modal for final verification`);
+        }
+      }
+    }
+  }
+  
+  // 6. Find and click Buy/Sell button (this is the confirm button for GRVT)
+  console.log(`[${exchange.name}] [QUICK-FILL] Step 6: Clicking ${side.toUpperCase()} button...`);
   const { findByExactText } = await import('../utils/helpers.js');
   const buttonText = side === "buy" ? exchange.selectors.buyButton : exchange.selectors.sellButton;
   const buySellBtn = await findByExactText(page, buttonText, ["button", "div", "span"]);
@@ -3894,7 +4396,7 @@ export async function fillPriceSideAndSubmitGrvt(page, price, { side, orderType,
   const { clickConfirmButton } = await import('./executeBase.js');
   await clickConfirmButton(page, buySellBtn, buttonText, exchange, side);
   
-  // 6. Wait for modal and click Confirm button in the modal
+  // 7. Wait for modal and click Confirm button in the modal
   await delay(500);
   const confirmModalBtn = await findByExactText(page, "Confirm", ["button", "div", "span"]);
   

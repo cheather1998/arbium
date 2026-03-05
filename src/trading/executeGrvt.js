@@ -1636,18 +1636,46 @@ export async function handleTpSlGrvt(page, exchange, price = null, side = 'buy')
               await inputElement.focus();
               await delay(200);
               
-              // Select all existing text (use platform-appropriate modifier key)
-              await page.keyboard.down(modifierKey);
-              await page.keyboard.press('KeyA');
-              await page.keyboard.up(modifierKey);
+              // Clear existing value - use multiple methods to ensure it's completely cleared
+              // First, try JavaScript clear
+              await inputElement.evaluate((el) => {
+                el.value = '';
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+              });
               await delay(100);
               
-              // Clear existing value
-              await page.keyboard.press('Backspace');
-              await delay(100);
+              // Then verify it's cleared
+              let clearedValue = await page.evaluate((el) => el.value || '', inputElement);
+              if (clearedValue && clearedValue.trim() !== '') {
+                // If not cleared, use keyboard selection and delete
+                await page.keyboard.down(modifierKey);
+                await page.keyboard.press('KeyA');
+                await page.keyboard.up(modifierKey);
+                await delay(100);
+                await page.keyboard.press('Backspace');
+                await delay(100);
+                
+                // Verify again
+                clearedValue = await page.evaluate((el) => el.value || '', inputElement);
+                if (clearedValue && clearedValue.trim() !== '') {
+                  // Last resort: JavaScript clear again
+                  await inputElement.evaluate((el) => {
+                    el.value = '';
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                  });
+                  await delay(100);
+                }
+              }
               
-              // Type the value character by character using inputElement.type()
-              await inputElement.type(takeProfitValue, { delay: 50 }); // 50ms delay between characters
+              // Final verification that input is empty before typing
+              const finalClearedCheck = await page.evaluate((el) => el.value || '', inputElement);
+              if (finalClearedCheck && finalClearedCheck.trim() !== '') {
+                console.log(`[${exchange.name}] ⚠️  Input still has value "${finalClearedCheck}" after clearing, will type anyway...`);
+              }
+              
+              // Type the value - use faster typing (no delay) to avoid intermediate states
+              await inputElement.type(takeProfitValue, { delay: 0 });
               await delay(200);
               
               // Verify the value was set correctly
@@ -1729,18 +1757,46 @@ export async function handleTpSlGrvt(page, exchange, price = null, side = 'buy')
               await inputElement.focus();
               await delay(200);
               
-              // Select all existing text (use platform-appropriate modifier key)
-              await page.keyboard.down(modifierKey);
-              await page.keyboard.press('KeyA');
-              await page.keyboard.up(modifierKey);
+              // Clear existing value - use multiple methods to ensure it's completely cleared
+              // First, try JavaScript clear
+              await inputElement.evaluate((el) => {
+                el.value = '';
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+              });
               await delay(100);
               
-              // Clear existing value
-              await page.keyboard.press('Backspace');
-              await delay(100);
+              // Then verify it's cleared
+              let clearedValue = await page.evaluate((el) => el.value || '', inputElement);
+              if (clearedValue && clearedValue.trim() !== '') {
+                // If not cleared, use keyboard selection and delete
+                await page.keyboard.down(modifierKey);
+                await page.keyboard.press('KeyA');
+                await page.keyboard.up(modifierKey);
+                await delay(100);
+                await page.keyboard.press('Backspace');
+                await delay(100);
+                
+                // Verify again
+                clearedValue = await page.evaluate((el) => el.value || '', inputElement);
+                if (clearedValue && clearedValue.trim() !== '') {
+                  // Last resort: JavaScript clear again
+                  await inputElement.evaluate((el) => {
+                    el.value = '';
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                  });
+                  await delay(100);
+                }
+              }
               
-              // Type the value character by character using inputElement.type()
-              await inputElement.type(stopLossValue, { delay: 50 }); // 50ms delay between characters
+              // Final verification that input is empty before typing
+              const finalClearedCheck = await page.evaluate((el) => el.value || '', inputElement);
+              if (finalClearedCheck && finalClearedCheck.trim() !== '') {
+                console.log(`[${exchange.name}] ⚠️  Input still has value "${finalClearedCheck}" after clearing, will type anyway...`);
+              }
+              
+              // Type the value - use faster typing (no delay) to avoid intermediate states
+              await inputElement.type(stopLossValue, { delay: 0 });
               await delay(200);
               
               // Verify the value was set correctly
