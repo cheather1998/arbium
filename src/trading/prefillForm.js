@@ -2034,17 +2034,46 @@ async function setupTpSlGrvtPrefill(page, exchange) {
         }
         
         if (inputElement) {
-          await inputElement.focus();
+          // Use JavaScript to set value directly (more reliable across platforms)
+          const valueSet = await inputElement.evaluate((el, value) => {
+            el.focus();
+            el.value = '';
+            el.value = value;
+            // Trigger input events to ensure React/form handlers are notified
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            return el.value;
+          }, takeProfitValue);
+          
           await delay(200);
-          await page.keyboard.down('Control');
-          await page.keyboard.press('KeyA');
-          await page.keyboard.up('Control');
-          await delay(100);
-          await page.keyboard.press('Backspace');
-          await delay(100);
-          await inputElement.type(takeProfitValue, { delay: 50 });
-          await delay(200);
-          console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ✅ Filled first input for ${sectionName}: ${takeProfitValue}`);
+          
+          // Verify the value was set correctly
+          const verifyValue = await page.evaluate((el) => el.value || '', inputElement);
+          if (verifyValue === takeProfitValue || parseFloat(verifyValue) === parseFloat(takeProfitValue)) {
+            console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ✅ Filled first input for ${sectionName}: ${verifyValue}`);
+          } else {
+            // Fallback to keyboard input if JavaScript didn't work
+            console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ⚠️  JavaScript set value failed (${verifyValue}), trying keyboard input...`);
+            await inputElement.focus();
+            await delay(200);
+            // Detect platform and use appropriate modifier key
+            const platform = await page.evaluate(() => navigator.platform || navigator.userAgentData?.platform || '');
+            const isMac = platform.toLowerCase().includes('mac');
+            const modifierKey = isMac ? 'Meta' : 'Control';
+            
+            await page.keyboard.down(modifierKey);
+            await page.keyboard.press('KeyA');
+            await page.keyboard.up(modifierKey);
+            await delay(100);
+            await page.keyboard.press('Backspace');
+            await delay(100);
+            await inputElement.type(takeProfitValue, { delay: 50 });
+            await delay(200);
+            
+            // Verify again
+            const finalValue = await page.evaluate((el) => el.value || '', inputElement);
+            console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ✅ Filled first input for ${sectionName} (keyboard fallback): ${finalValue}`);
+          }
         }
       }
       
@@ -2090,17 +2119,46 @@ async function setupTpSlGrvtPrefill(page, exchange) {
         }
         
         if (inputElement) {
-          await inputElement.focus();
+          // Use JavaScript to set value directly (more reliable across platforms)
+          const valueSet = await inputElement.evaluate((el, value) => {
+            el.focus();
+            el.value = '';
+            el.value = value;
+            // Trigger input events to ensure React/form handlers are notified
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            return el.value;
+          }, stopLossValue);
+          
           await delay(200);
-          await page.keyboard.down('Control');
-          await page.keyboard.press('KeyA');
-          await page.keyboard.up('Control');
-          await delay(100);
-          await page.keyboard.press('Backspace');
-          await delay(100);
-          await inputElement.type(stopLossValue, { delay: 50 });
-          await delay(200);
-          console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ✅ Filled second input for ${sectionName}: ${stopLossValue}`);
+          
+          // Verify the value was set correctly
+          const verifyValue = await page.evaluate((el) => el.value || '', inputElement);
+          if (verifyValue === stopLossValue || parseFloat(verifyValue) === parseFloat(stopLossValue)) {
+            console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ✅ Filled second input for ${sectionName}: ${verifyValue}`);
+          } else {
+            // Fallback to keyboard input if JavaScript didn't work
+            console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ⚠️  JavaScript set value failed (${verifyValue}), trying keyboard input...`);
+            await inputElement.focus();
+            await delay(200);
+            // Detect platform and use appropriate modifier key
+            const platform = await page.evaluate(() => navigator.platform || navigator.userAgentData?.platform || '');
+            const isMac = platform.toLowerCase().includes('mac');
+            const modifierKey = isMac ? 'Meta' : 'Control';
+            
+            await page.keyboard.down(modifierKey);
+            await page.keyboard.press('KeyA');
+            await page.keyboard.up(modifierKey);
+            await delay(100);
+            await page.keyboard.press('Backspace');
+            await delay(100);
+            await inputElement.type(stopLossValue, { delay: 50 });
+            await delay(200);
+            
+            // Verify again
+            const finalValue = await page.evaluate((el) => el.value || '', inputElement);
+            console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ✅ Filled second input for ${sectionName} (keyboard fallback): ${finalValue}`);
+          }
         }
       }
       
@@ -2353,19 +2411,19 @@ async function checkAndFillPnlInputs(page, exchange, sectionName, pnlValue) {
         }
     
     if (pnlInputElement) {
-      // Focus and clear the input
-      await pnlInputElement.focus();
-      await delay(200);
-      await page.keyboard.down('Control');
-      await page.keyboard.press('KeyA');
-      await page.keyboard.up('Control');
-      await delay(100);
-      await page.keyboard.press('Backspace');
-      await delay(100);
-      
-      // Type the P&L value
       const pnlValueStr = String(pnlValue);
-      await pnlInputElement.type(pnlValueStr, { delay: 50 });
+      
+      // Use JavaScript to set value directly (more reliable across platforms, especially Mac)
+      const valueSet = await pnlInputElement.evaluate((el, value) => {
+        el.focus();
+        el.value = '';
+        el.value = value;
+        // Trigger input events to ensure React/form handlers are notified
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        return el.value;
+      }, pnlValueStr);
+      
       await delay(300);
       
       // Verify the value was set
@@ -2378,8 +2436,36 @@ async function checkAndFillPnlInputs(page, exchange, sectionName, pnlValue) {
         console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ✅ Filled ${sectionName} P&L input with ${updatedValue} (expected: ${pnlValueStr})`);
         return true;
       } else {
-        console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  P&L input fill verification failed. Expected: ${pnlValueStr}, Got: ${updatedValue}`);
-        return false;
+        // Fallback to keyboard input if JavaScript didn't work
+        console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  JavaScript set value failed (${updatedValue}), trying keyboard input...`);
+        await pnlInputElement.focus();
+        await delay(200);
+        
+        // Detect platform and use appropriate modifier key
+        const platform = await page.evaluate(() => navigator.platform || navigator.userAgentData?.platform || '');
+        const isMac = platform.toLowerCase().includes('mac');
+        const modifierKey = isMac ? 'Meta' : 'Control';
+        
+        await page.keyboard.down(modifierKey);
+        await page.keyboard.press('KeyA');
+        await page.keyboard.up(modifierKey);
+        await delay(100);
+        await page.keyboard.press('Backspace');
+        await delay(100);
+        await pnlInputElement.type(pnlValueStr, { delay: 50 });
+        await delay(300);
+        
+        // Verify again
+        const finalValue = await page.evaluate((el) => el.value || '', pnlInputElement);
+        const finalNum = parseFloat(finalValue.replace(/,/g, ''));
+        
+        if (finalValue && !isNaN(finalNum) && Math.abs(finalNum - expectedNum) < tolerance) {
+          console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ✅ Filled ${sectionName} P&L input with ${finalValue} (keyboard fallback, expected: ${pnlValueStr})`);
+          return true;
+        } else {
+          console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  P&L input fill verification failed. Expected: ${pnlValueStr}, Got: ${finalValue}`);
+          return false;
+        }
       }
     } else {
       console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  Could not find P&L input element for ${sectionName}`);
