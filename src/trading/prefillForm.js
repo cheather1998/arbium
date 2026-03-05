@@ -3490,10 +3490,120 @@ export async function fillPriceSideAndSubmitGrvt(page, price, { side, orderType,
         
         // Wait for GRVT to automatically recalculate trigger prices based on new price and P&L values
         console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] Waiting for GRVT to recalculate trigger prices (based on new price and P&L values)...`);
-        await delay(800);
+        await delay(2000); // Increased wait time for GRVT to recalculate
         
         // Step 3b: Read the automatically calculated trigger prices and fill them into limit price inputs
+        // Wait and retry until trigger prices are calculated (they should be different from entry price)
         console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] Step 3b: Reading trigger prices and filling into limit price inputs...`);
+        
+        const entryPriceNum = parseFloat(String(price));
+        let triggerPricesReady = false;
+        let retryCount = 0;
+        const maxRetries = 10;
+        
+        while (!triggerPricesReady && retryCount < maxRetries) {
+          // Try to read trigger prices
+          const tpTriggerInfo = await page.evaluate((sectionName, entryPrice) => {
+            const allElements = Array.from(document.querySelectorAll('*'));
+            let tpslModal = null;
+            
+            for (const el of allElements) {
+              const text = (el.textContent || '').trim();
+              if (text === 'TP/SL' && el.offsetParent !== null) {
+                let parent = el.parentElement;
+                for (let i = 0; i < 10 && parent; i++) {
+                  const style = window.getComputedStyle(parent);
+                  if (style.display !== 'none' && style.visibility !== 'hidden' &&
+                    parent.offsetWidth > 0 && parent.offsetHeight > 0) {
+                    const parentText = (parent.textContent || '').toLowerCase();
+                    if (parentText.includes('take profit') && parentText.includes('stop loss')) {
+                      tpslModal = parent;
+                      break;
+                    }
+                  }
+                  parent = parent.parentElement;
+                }
+                if (tpslModal) break;
+              }
+            }
+            
+            if (!tpslModal) return { success: false, message: 'TP/SL modal not found' };
+            
+            const sectionNameLower = sectionName.toLowerCase();
+            let sectionElement = null;
+            const modalElements = Array.from(tpslModal.querySelectorAll('*'));
+            for (const el of modalElements) {
+              const text = (el.textContent || '').trim();
+              if (text.toLowerCase() === sectionNameLower && el.offsetParent !== null) {
+                sectionElement = el;
+                break;
+              }
+            }
+            
+            if (!sectionElement) return { success: false, message: `Could not find "${sectionName}" section` };
+            
+            let sectionParent = sectionElement.parentElement;
+            const otherSectionName = sectionNameLower.includes('profit') ? 'stop loss' : 'take profit';
+            
+            for (let i = 0; i < 10 && sectionParent; i++) {
+              const allDescendants = Array.from(sectionParent.querySelectorAll('*'));
+              let hasOtherSection = false;
+              for (const el of allDescendants) {
+                const text = (el.textContent || '').trim();
+                if (text.toLowerCase() === otherSectionName && el.offsetParent !== null) {
+                  hasOtherSection = true;
+                  break;
+                }
+              }
+              if (!hasOtherSection) break;
+              sectionParent = sectionParent.parentElement;
+              if (!sectionParent) break;
+            }
+            
+            if (!sectionParent) sectionParent = sectionElement.parentElement;
+            
+            const allInputsInSection = Array.from(sectionParent.querySelectorAll('input'));
+            let triggerPriceValue = '';
+            
+            for (const input of allInputsInSection) {
+              if (input.tagName !== 'INPUT') continue;
+              const placeholder = (input.getAttribute('placeholder') || '').trim().toLowerCase();
+              if (placeholder.includes('trigger price')) {
+                triggerPriceValue = input.value || '';
+                break;
+              }
+            }
+            
+            if (!triggerPriceValue) {
+              return { success: false, message: `Could not find Trigger price value in "${sectionName}" section` };
+            }
+            
+            const triggerPriceNum = parseFloat(triggerPriceValue.replace(/,/g, ''));
+            const isDifferent = !isNaN(triggerPriceNum) && !isNaN(entryPrice) && Math.abs(triggerPriceNum - entryPrice) > 0.01;
+            
+            return {
+              success: true,
+              triggerPriceValue: triggerPriceValue,
+              triggerPriceNum: triggerPriceNum,
+              isDifferent: isDifferent
+            };
+          }, 'Take profit', entryPriceNum);
+          
+          if (tpTriggerInfo && tpTriggerInfo.success && tpTriggerInfo.isDifferent) {
+            triggerPricesReady = true;
+            console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ✅ Trigger prices are ready (TP: ${tpTriggerInfo.triggerPriceValue}, different from entry: ${entryPriceNum})`);
+          } else {
+            retryCount++;
+            if (retryCount < maxRetries) {
+              console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⏳ Trigger prices not ready yet (attempt ${retryCount}/${maxRetries}), waiting...`);
+              await delay(500);
+            }
+          }
+        }
+        
+        if (!triggerPricesReady) {
+          console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  Trigger prices did not recalculate after ${maxRetries} attempts, proceeding anyway...`);
+        }
         
         // Read and fill TP limit price
         const tpLimitFilled = await readTriggerPriceAndFillLimitPrice(page, exchange, 'Take profit');
