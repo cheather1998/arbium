@@ -638,8 +638,34 @@ async function setupTpSlGrvtPrefill(page, exchange) {
             checkboxElement = checkbox;
             const isChecked = await page.evaluate((el) => el.checked, checkbox);
             if (!isChecked) {
-              await checkbox.click();
-              console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ✅ Clicked TP/SL checkbox`);
+              // Try multiple click methods to ensure checkbox is checked
+              try {
+                await checkbox.click();
+                await delay(200);
+                // Verify checkbox is now checked
+                const isCheckedAfter = await page.evaluate((el) => el.checked, checkbox);
+                if (!isCheckedAfter) {
+                  // Try JavaScript click as fallback
+                  await checkbox.evaluate((el) => el.click());
+                  await delay(200);
+                  const isCheckedAfter2 = await page.evaluate((el) => el.checked, checkbox);
+                  if (!isCheckedAfter2) {
+                    console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ⚠️  Checkbox click did not register, trying label click...`);
+                    await label.click();
+                    await delay(200);
+                  }
+                }
+                console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ✅ Clicked TP/SL checkbox`);
+              } catch (error) {
+                console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ⚠️  Error clicking checkbox: ${error.message}, trying label click...`);
+                try {
+                  await label.click();
+                  await delay(200);
+                  console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ✅ Clicked TP/SL checkbox via label`);
+                } catch (labelError) {
+                  console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ⚠️  Label click also failed: ${labelError.message}`);
+                }
+              }
               await delay(500);
             } else {
               console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ✅ TP/SL checkbox already checked`);
@@ -663,8 +689,8 @@ async function setupTpSlGrvtPrefill(page, exchange) {
     let advancedElement = null;
     let advancedEl = null;
     
-    // Strategy 1: Search from checkbox parent tree (original approach)
-    console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] Strategy 1: Searching from checkbox parent tree...`);
+    // Strategy 1: Search from checkbox parent tree, but EXCLUDE order type tabs
+    console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] Strategy 1: Searching from checkbox parent tree (excluding order type tabs)...`);
     const advancedHandle1 = await page.evaluateHandle((checkbox) => {
       let parentContainer = checkbox.parentElement;
       for (let i = 0; i < 8 && parentContainer; i++) {
@@ -673,13 +699,46 @@ async function setupTpSlGrvtPrefill(page, exchange) {
           if (el.offsetParent === null) continue;
           const text = (el.textContent || '').trim();
           if (text.toLowerCase() === 'advanced' || text.toLowerCase().includes('advanced')) {
+            // EXCLUDE order type tabs - check if this is in a tab context (Limit/Market/Advanced tabs)
+            let isOrderTypeTab = false;
+            let checkParent = el.parentElement;
+            let depth = 0;
+            while (checkParent && depth < 5) {
+              const parentText = (checkParent.textContent || '').toLowerCase();
+              // If we find "limit" or "market" nearby, this is likely an order type tab
+              if (parentText.includes('limit') && parentText.includes('market') && 
+                  (parentText.includes('tab') || checkParent.getAttribute('role') === 'tablist' || 
+                   checkParent.classList.toString().toLowerCase().includes('tab'))) {
+                isOrderTypeTab = true;
+                break;
+              }
+              checkParent = checkParent.parentElement;
+              depth++;
+            }
+            
+            // Skip if this is an order type tab
+            if (isOrderTypeTab) {
+              continue;
+            }
+            
             // Check if it's clickable (button, link, or has click handler)
             const tagName = el.tagName.toLowerCase();
             const role = el.getAttribute('role');
             if (tagName === 'button' || tagName === 'a' || role === 'button' || 
                 el.onclick || el.getAttribute('onclick') || 
                 window.getComputedStyle(el).cursor === 'pointer') {
-              return el;
+              // Additional check: make sure it's near the TP/SL checkbox context
+              // Look for TP/SL related text in nearby elements
+              let nearbyText = '';
+              let checkNearby = el.parentElement;
+              for (let j = 0; j < 3 && checkNearby; j++) {
+                nearbyText += (checkNearby.textContent || '').toLowerCase() + ' ';
+                checkNearby = checkNearby.parentElement;
+              }
+              if (nearbyText.includes('tp') || nearbyText.includes('sl') || 
+                  nearbyText.includes('take profit') || nearbyText.includes('stop loss')) {
+                return el;
+              }
             }
           }
         }
@@ -692,12 +751,29 @@ async function setupTpSlGrvtPrefill(page, exchange) {
       advancedEl = advancedHandle1.asElement();
       console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ✅ Found Advanced button via Strategy 1`);
     } else {
-      // Strategy 2: Search within CreateOrderPanel
-      console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] Strategy 2: Searching within CreateOrderPanel...`);
+      // Strategy 2: Search within CreateOrderPanel, but EXCLUDE order type tabs
+      console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] Strategy 2: Searching within CreateOrderPanel (excluding order type tabs)...`);
       if (createOrderPanel) {
         const advancedHandle2 = await page.evaluateHandle((panel) => {
+          // First, identify and exclude order type tab areas
+          const tabLists = Array.from(panel.querySelectorAll('[role="tablist"], [class*="tab"], [class*="Tab"]'));
+          const tabAreas = new Set();
+          for (const tabList of tabLists) {
+            const tabText = (tabList.textContent || '').toLowerCase();
+            if (tabText.includes('limit') && tabText.includes('market') && tabText.includes('advanced')) {
+              // This is the order type tab area - exclude it
+              const allTabs = tabList.querySelectorAll('*');
+              for (const tab of allTabs) {
+                tabAreas.add(tab);
+              }
+            }
+          }
+          
           const allElements = Array.from(panel.querySelectorAll('*'));
           for (const el of allElements) {
+            // Skip if in order type tab area
+            if (tabAreas.has(el)) continue;
+            
             if (el.offsetParent === null) continue;
             const text = (el.textContent || '').trim();
             if (text.toLowerCase() === 'advanced' || text.toLowerCase().includes('advanced')) {
@@ -706,7 +782,17 @@ async function setupTpSlGrvtPrefill(page, exchange) {
               if (tagName === 'button' || tagName === 'a' || role === 'button' || 
                   el.onclick || el.getAttribute('onclick') || 
                   window.getComputedStyle(el).cursor === 'pointer') {
-                return el;
+                // Make sure it's in TP/SL context - check nearby text
+                let nearbyText = '';
+                let checkNearby = el.parentElement;
+                for (let j = 0; j < 5 && checkNearby; j++) {
+                  nearbyText += (checkNearby.textContent || '').toLowerCase() + ' ';
+                  checkNearby = checkNearby.parentElement;
+                }
+                if (nearbyText.includes('tp') || nearbyText.includes('sl') || 
+                    nearbyText.includes('take profit') || nearbyText.includes('stop loss')) {
+                  return el;
+                }
               }
             }
           }
@@ -720,12 +806,28 @@ async function setupTpSlGrvtPrefill(page, exchange) {
       }
     }
     
-    // Strategy 3: Broader search for any button with "Advanced" text
+    // Strategy 3: Broader search for any button with "Advanced" text, but EXCLUDE order type tabs
     if (!advancedEl) {
-      console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] Strategy 3: Broader search for Advanced button...`);
+      console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] Strategy 3: Broader search for Advanced button (excluding order type tabs)...`);
       const advancedHandle3 = await page.evaluateHandle(() => {
+        // First, identify order type tab areas to exclude
+        const tabLists = Array.from(document.querySelectorAll('[role="tablist"], [class*="tab"], [class*="Tab"]'));
+        const tabAreas = new Set();
+        for (const tabList of tabLists) {
+          const tabText = (tabList.textContent || '').toLowerCase();
+          if (tabText.includes('limit') && tabText.includes('market') && tabText.includes('advanced')) {
+            const allTabs = tabList.querySelectorAll('*');
+            for (const tab of allTabs) {
+              tabAreas.add(tab);
+            }
+          }
+        }
+        
         const buttons = Array.from(document.querySelectorAll('button, [role="button"], a, div[class*="button"], span[class*="button"]'));
         for (const btn of buttons) {
+          // Skip if in order type tab area
+          if (tabAreas.has(btn)) continue;
+          
           if (btn.offsetParent === null) continue;
           const text = (btn.textContent || '').trim();
           if (text.toLowerCase() === 'advanced' || text.toLowerCase().includes('advanced')) {
@@ -733,7 +835,17 @@ async function setupTpSlGrvtPrefill(page, exchange) {
             const style = window.getComputedStyle(btn);
             if (style.display !== 'none' && style.visibility !== 'hidden' && 
                 btn.offsetWidth > 0 && btn.offsetHeight > 0) {
-              return btn;
+              // Make sure it's in TP/SL context
+              let nearbyText = '';
+              let checkNearby = btn.parentElement;
+              for (let j = 0; j < 5 && checkNearby; j++) {
+                nearbyText += (checkNearby.textContent || '').toLowerCase() + ' ';
+                checkNearby = checkNearby.parentElement;
+              }
+              if (nearbyText.includes('tp') || nearbyText.includes('sl') || 
+                  nearbyText.includes('take profit') || nearbyText.includes('stop loss')) {
+                return btn;
+              }
             }
           }
         }
@@ -746,35 +858,38 @@ async function setupTpSlGrvtPrefill(page, exchange) {
       }
     }
     
-    // Try to click the Advanced button with multiple methods
+    // Try to click the Advanced button with multiple methods and retries
     if (advancedEl) {
       let clicked = false;
+      const maxClickAttempts = 3;
       
-      // Method 1: Direct Puppeteer click
-      try {
-        await advancedEl.click();
-        clicked = true;
-        console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ✅ Clicked Advanced button (method 1: direct click)`);
-      } catch (error) {
-        console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ⚠️  Direct click failed: ${error.message}, trying JavaScript click...`);
-      }
-      
-      // Method 2: JavaScript click
-      if (!clicked) {
+      for (let attempt = 1; attempt <= maxClickAttempts; attempt++) {
+        console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] Attempting to click Advanced button (attempt ${attempt}/${maxClickAttempts})...`);
+        
+        // Method 1: Direct Puppeteer click
+        try {
+          await advancedEl.click({ delay: 100 });
+          clicked = true;
+          console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ✅ Clicked Advanced button (method 1: direct click, attempt ${attempt})`);
+          break;
+        } catch (error) {
+          console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ⚠️  Direct click failed (attempt ${attempt}): ${error.message}, trying JavaScript click...`);
+        }
+        
+        // Method 2: JavaScript click
         try {
           await advancedEl.evaluate((el) => {
             el.scrollIntoView({ behavior: 'smooth', block: 'center' });
             el.click();
           });
           clicked = true;
-          console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ✅ Clicked Advanced button (method 2: JavaScript click)`);
+          console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ✅ Clicked Advanced button (method 2: JavaScript click, attempt ${attempt})`);
+          break;
         } catch (error) {
-          console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ⚠️  JavaScript click failed: ${error.message}, trying event dispatch...`);
+          console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ⚠️  JavaScript click failed (attempt ${attempt}): ${error.message}, trying event dispatch...`);
         }
-      }
-      
-      // Method 3: Event dispatch
-      if (!clicked) {
+        
+        // Method 3: Event dispatch
         try {
           await advancedEl.evaluate((el) => {
             el.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -791,52 +906,113 @@ async function setupTpSlGrvtPrefill(page, exchange) {
             el.dispatchEvent(click);
           });
           clicked = true;
-          console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ✅ Clicked Advanced button (method 3: event dispatch)`);
+          console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ✅ Clicked Advanced button (method 3: event dispatch, attempt ${attempt})`);
+          break;
         } catch (error) {
-          console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ⚠️  Event dispatch failed: ${error.message}`);
+          console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ⚠️  Event dispatch failed (attempt ${attempt}): ${error.message}`);
+        }
+        
+        // Wait before retry
+        if (attempt < maxClickAttempts) {
+          await delay(500);
         }
       }
       
-      if (clicked) {
-        await delay(500);
-      } else {
-        console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ⚠️  All click methods failed for Advanced button`);
+      if (!clicked) {
+        console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ⚠️  All click methods failed for Advanced button after ${maxClickAttempts} attempts`);
         return { success: false, error: 'Advanced button found but could not be clicked' };
       }
+      
+      // Wait longer after clicking (MacBook may need more time)
+      await delay(1000);
     } else {
       console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ⚠️  Could not find Advanced button with any strategy`);
       return { success: false, error: 'Advanced button not found' };
     }
     
-    // Step 3: Wait for TP/SL modal to open
+    // Step 3: Wait for TP/SL modal to open with improved detection
     console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] Step 3: Waiting for TP/SL modal to open...`);
     let modalOpened = false;
-    for (let i = 0; i < 10; i++) {
+    const maxWaitAttempts = 20; // Increased from 10 to 20 (6 seconds total)
+    
+    for (let i = 0; i < maxWaitAttempts; i++) {
       modalOpened = await page.evaluate(() => {
-        const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"]'));
+        // Strategy 1: Look for modal by role/class
+        const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="drawer"], [class*="Drawer"]'));
         for (const modal of modals) {
           const style = window.getComputedStyle(modal);
           if (style.display !== 'none' && style.visibility !== 'hidden' &&
             modal.offsetWidth > 0 && modal.offsetHeight > 0) {
             const modalText = (modal.textContent || '').toLowerCase();
-            if (modalText.includes('tp/sl') || modalText.includes('take profit') || modalText.includes('stop loss')) {
+            if (modalText.includes('tp/sl') || modalText.includes('take profit') || modalText.includes('stop loss') ||
+                modalText.includes('roi%') || modalText.includes('p&l')) {
               return true;
             }
           }
         }
+        
+        // Strategy 2: Look for TP/SL input fields directly (more reliable)
+        const allInputs = Array.from(document.querySelectorAll('input, textarea'));
+        let hasTakeProfitInput = false;
+        let hasStopLossInput = false;
+        
+        for (const input of allInputs) {
+          if (input.offsetParent === null) continue;
+          const placeholder = (input.placeholder || '').toLowerCase();
+          const label = (input.getAttribute('aria-label') || '').toLowerCase();
+          const parentText = (input.parentElement?.textContent || '').toLowerCase();
+          
+          if (placeholder.includes('take profit') || label.includes('take profit') || 
+              parentText.includes('take profit')) {
+            hasTakeProfitInput = true;
+          }
+          if (placeholder.includes('stop loss') || label.includes('stop loss') || 
+              parentText.includes('stop loss')) {
+            hasStopLossInput = true;
+          }
+        }
+        
+        if (hasTakeProfitInput && hasStopLossInput) {
+          return true;
+        }
+        
+        // Strategy 3: Look for "Confirm" button that's typically in TP/SL modal
+        const buttons = Array.from(document.querySelectorAll('button'));
+        for (const btn of buttons) {
+          if (btn.offsetParent === null) continue;
+          const btnText = (btn.textContent || '').trim().toLowerCase();
+          if (btnText === 'confirm') {
+            // Check if this Confirm button is in a modal context
+            let parent = btn.parentElement;
+            let depth = 0;
+            while (parent && depth < 10) {
+              const parentText = (parent.textContent || '').toLowerCase();
+              if (parentText.includes('tp/sl') || parentText.includes('take profit') || 
+                  parentText.includes('stop loss')) {
+                return true;
+              }
+              parent = parent.parentElement;
+              depth++;
+            }
+          }
+        }
+        
         return false;
       });
       
       if (modalOpened) {
-        console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ✅ TP/SL modal opened`);
+        console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ✅ TP/SL modal opened (detected on attempt ${i + 1})`);
         await delay(500);
         break;
       }
-      await delay(300);
+      
+      if (i < maxWaitAttempts - 1) {
+        await delay(300);
+      }
     }
     
     if (!modalOpened) {
-      console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ⚠️  TP/SL modal did not open`);
+      console.log(`[${exchange.name}] [PRE-FILL] [TP/SL] ⚠️  TP/SL modal did not open after ${maxWaitAttempts} attempts`);
       return { success: false, error: 'TP/SL modal did not open' };
     }
     
@@ -2856,8 +3032,8 @@ export async function fillPriceSideAndSubmitGrvt(page, price, { side, orderType,
     const createOrderPanel = await page.$('[data-sentry-element="CreateOrderPanel"]');
     let advancedEl = null;
     
-    // Strategy 1: Search from checkbox parent tree
-    console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] Strategy 1: Searching from checkbox parent tree...`);
+    // Strategy 1: Search from checkbox parent tree, but EXCLUDE order type tabs
+    console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] Strategy 1: Searching from checkbox parent tree (excluding order type tabs)...`);
     if (createOrderPanel) {
       const panelLabels = await createOrderPanel.$$('label');
       for (const label of panelLabels) {
@@ -2874,12 +3050,44 @@ export async function fillPriceSideAndSubmitGrvt(page, price, { side, orderType,
                   if (el.offsetParent === null) continue;
                   const text = (el.textContent || '').trim();
                   if (text.toLowerCase() === 'advanced' || text.toLowerCase().includes('advanced')) {
+                    // EXCLUDE order type tabs - check if this is in a tab context (Limit/Market/Advanced tabs)
+                    let isOrderTypeTab = false;
+                    let checkParent = el.parentElement;
+                    let depth = 0;
+                    while (checkParent && depth < 5) {
+                      const parentText = (checkParent.textContent || '').toLowerCase();
+                      // If we find "limit" or "market" nearby, this is likely an order type tab
+                      if (parentText.includes('limit') && parentText.includes('market') && 
+                          (parentText.includes('tab') || checkParent.getAttribute('role') === 'tablist' || 
+                           checkParent.classList.toString().toLowerCase().includes('tab'))) {
+                        isOrderTypeTab = true;
+                        break;
+                      }
+                      checkParent = checkParent.parentElement;
+                      depth++;
+                    }
+                    
+                    // Skip if this is an order type tab
+                    if (isOrderTypeTab) {
+                      continue;
+                    }
+                    
                     const tagName = el.tagName.toLowerCase();
                     const role = el.getAttribute('role');
                     if (tagName === 'button' || tagName === 'a' || role === 'button' || 
                         el.onclick || el.getAttribute('onclick') || 
                         window.getComputedStyle(el).cursor === 'pointer') {
-                      return el;
+                      // Additional check: make sure it's near the TP/SL checkbox context
+                      let nearbyText = '';
+                      let checkNearby = el.parentElement;
+                      for (let j = 0; j < 3 && checkNearby; j++) {
+                        nearbyText += (checkNearby.textContent || '').toLowerCase() + ' ';
+                        checkNearby = checkNearby.parentElement;
+                      }
+                      if (nearbyText.includes('tp') || nearbyText.includes('sl') || 
+                          nearbyText.includes('take profit') || nearbyText.includes('stop loss')) {
+                        return el;
+                      }
                     }
                   }
                 }
@@ -2898,12 +3106,29 @@ export async function fillPriceSideAndSubmitGrvt(page, price, { side, orderType,
       }
     }
     
-    // Strategy 2: Search within CreateOrderPanel
+    // Strategy 2: Search within CreateOrderPanel, but EXCLUDE order type tabs
     if (!advancedEl && createOrderPanel) {
-      console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] Strategy 2: Searching within CreateOrderPanel...`);
+      console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] Strategy 2: Searching within CreateOrderPanel (excluding order type tabs)...`);
       const advancedHandle2 = await page.evaluateHandle((panel) => {
+        // First, identify and exclude order type tab areas
+        const tabLists = Array.from(panel.querySelectorAll('[role="tablist"], [class*="tab"], [class*="Tab"]'));
+        const tabAreas = new Set();
+        for (const tabList of tabLists) {
+          const tabText = (tabList.textContent || '').toLowerCase();
+          if (tabText.includes('limit') && tabText.includes('market') && tabText.includes('advanced')) {
+            // This is the order type tab area - exclude it
+            const allTabs = tabList.querySelectorAll('*');
+            for (const tab of allTabs) {
+              tabAreas.add(tab);
+            }
+          }
+        }
+        
         const allElements = Array.from(panel.querySelectorAll('*'));
         for (const el of allElements) {
+          // Skip if in order type tab area
+          if (tabAreas.has(el)) continue;
+          
           if (el.offsetParent === null) continue;
           const text = (el.textContent || '').trim();
           if (text.toLowerCase() === 'advanced' || text.toLowerCase().includes('advanced')) {
@@ -2912,7 +3137,17 @@ export async function fillPriceSideAndSubmitGrvt(page, price, { side, orderType,
             if (tagName === 'button' || tagName === 'a' || role === 'button' || 
                 el.onclick || el.getAttribute('onclick') || 
                 window.getComputedStyle(el).cursor === 'pointer') {
-              return el;
+              // Make sure it's in TP/SL context - check nearby text
+              let nearbyText = '';
+              let checkNearby = el.parentElement;
+              for (let j = 0; j < 5 && checkNearby; j++) {
+                nearbyText += (checkNearby.textContent || '').toLowerCase() + ' ';
+                checkNearby = checkNearby.parentElement;
+              }
+              if (nearbyText.includes('tp') || nearbyText.includes('sl') || 
+                  nearbyText.includes('take profit') || nearbyText.includes('stop loss')) {
+                return el;
+              }
             }
           }
         }
@@ -2925,19 +3160,45 @@ export async function fillPriceSideAndSubmitGrvt(page, price, { side, orderType,
       }
     }
     
-    // Strategy 3: Broader search for any button with "Advanced" text
+    // Strategy 3: Broader search for any button with "Advanced" text, but EXCLUDE order type tabs
     if (!advancedEl) {
-      console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] Strategy 3: Broader search for Advanced button...`);
+      console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] Strategy 3: Broader search for Advanced button (excluding order type tabs)...`);
       const advancedHandle3 = await page.evaluateHandle(() => {
+        // First, identify order type tab areas to exclude
+        const tabLists = Array.from(document.querySelectorAll('[role="tablist"], [class*="tab"], [class*="Tab"]'));
+        const tabAreas = new Set();
+        for (const tabList of tabLists) {
+          const tabText = (tabList.textContent || '').toLowerCase();
+          if (tabText.includes('limit') && tabText.includes('market') && tabText.includes('advanced')) {
+            const allTabs = tabList.querySelectorAll('*');
+            for (const tab of allTabs) {
+              tabAreas.add(tab);
+            }
+          }
+        }
+        
         const buttons = Array.from(document.querySelectorAll('button, [role="button"], a, div[class*="button"], span[class*="button"]'));
         for (const btn of buttons) {
+          // Skip if in order type tab area
+          if (tabAreas.has(btn)) continue;
+          
           if (btn.offsetParent === null) continue;
           const text = (btn.textContent || '').trim();
           if (text.toLowerCase() === 'advanced' || text.toLowerCase().includes('advanced')) {
             const style = window.getComputedStyle(btn);
             if (style.display !== 'none' && style.visibility !== 'hidden' && 
                 btn.offsetWidth > 0 && btn.offsetHeight > 0) {
-              return btn;
+              // Make sure it's in TP/SL context
+              let nearbyText = '';
+              let checkNearby = btn.parentElement;
+              for (let j = 0; j < 5 && checkNearby; j++) {
+                nearbyText += (checkNearby.textContent || '').toLowerCase() + ' ';
+                checkNearby = checkNearby.parentElement;
+              }
+              if (nearbyText.includes('tp') || nearbyText.includes('sl') || 
+                  nearbyText.includes('take profit') || nearbyText.includes('stop loss')) {
+                return btn;
+              }
             }
           }
         }
@@ -2950,35 +3211,38 @@ export async function fillPriceSideAndSubmitGrvt(page, price, { side, orderType,
       }
     }
     
-    // Try to click the Advanced button with multiple methods
+    // Try to click the Advanced button with multiple methods and retries
     if (advancedEl) {
       let clicked = false;
+      const maxClickAttempts = 3;
       
-      // Method 1: Direct Puppeteer click
-      try {
-        await advancedEl.click();
-        clicked = true;
-        console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ✅ Clicked Advanced button (method 1: direct click)`);
-      } catch (error) {
-        console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  Direct click failed: ${error.message}, trying JavaScript click...`);
-      }
-      
-      // Method 2: JavaScript click
-      if (!clicked) {
+      for (let attempt = 1; attempt <= maxClickAttempts; attempt++) {
+        console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] Attempting to click Advanced button (attempt ${attempt}/${maxClickAttempts})...`);
+        
+        // Method 1: Direct Puppeteer click
+        try {
+          await advancedEl.click({ delay: 100 });
+          clicked = true;
+          console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ✅ Clicked Advanced button (method 1: direct click, attempt ${attempt})`);
+          break;
+        } catch (error) {
+          console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  Direct click failed (attempt ${attempt}): ${error.message}, trying JavaScript click...`);
+        }
+        
+        // Method 2: JavaScript click
         try {
           await advancedEl.evaluate((el) => {
             el.scrollIntoView({ behavior: 'smooth', block: 'center' });
             el.click();
           });
           clicked = true;
-          console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ✅ Clicked Advanced button (method 2: JavaScript click)`);
+          console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ✅ Clicked Advanced button (method 2: JavaScript click, attempt ${attempt})`);
+          break;
         } catch (error) {
-          console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  JavaScript click failed: ${error.message}, trying event dispatch...`);
+          console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  JavaScript click failed (attempt ${attempt}): ${error.message}, trying event dispatch...`);
         }
-      }
-      
-      // Method 3: Event dispatch
-      if (!clicked) {
+        
+        // Method 3: Event dispatch
         try {
           await advancedEl.evaluate((el) => {
             el.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -2995,52 +3259,113 @@ export async function fillPriceSideAndSubmitGrvt(page, price, { side, orderType,
             el.dispatchEvent(click);
           });
           clicked = true;
-          console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ✅ Clicked Advanced button (method 3: event dispatch)`);
+          console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ✅ Clicked Advanced button (method 3: event dispatch, attempt ${attempt})`);
+          break;
         } catch (error) {
-          console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  Event dispatch failed: ${error.message}`);
+          console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  Event dispatch failed (attempt ${attempt}): ${error.message}`);
+        }
+        
+        // Wait before retry
+        if (attempt < maxClickAttempts) {
+          await delay(500);
         }
       }
       
-      if (clicked) {
-        await delay(500);
-      } else {
-        console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  All click methods failed for Advanced button`);
+      if (!clicked) {
+        console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  All click methods failed for Advanced button after ${maxClickAttempts} attempts`);
         return { success: false, error: 'Advanced button found but could not be clicked' };
       }
+      
+      // Wait longer after clicking (MacBook may need more time)
+      await delay(1000);
     } else {
       console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  Could not find Advanced button with any strategy`);
       return { success: false, error: 'Advanced button not found after price refill' };
     }
     
-    // Wait for modal to open
+    // Wait for modal to open with improved detection
     console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] Waiting for TP/SL modal to open...`);
     modalOpen = false;
-    for (let i = 0; i < 10; i++) {
+    const maxWaitAttempts = 20; // Increased from 10 to 20 (6 seconds total)
+    
+    for (let i = 0; i < maxWaitAttempts; i++) {
       modalOpen = await page.evaluate(() => {
-        const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"]'));
+        // Strategy 1: Look for modal by role/class
+        const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="drawer"], [class*="Drawer"]'));
         for (const modal of modals) {
           const style = window.getComputedStyle(modal);
           if (style.display !== 'none' && style.visibility !== 'hidden' &&
             modal.offsetWidth > 0 && modal.offsetHeight > 0) {
             const modalText = (modal.textContent || '').toLowerCase();
-            if (modalText.includes('tp/sl') || modalText.includes('take profit') || modalText.includes('stop loss')) {
+            if (modalText.includes('tp/sl') || modalText.includes('take profit') || modalText.includes('stop loss') ||
+                modalText.includes('roi%') || modalText.includes('p&l')) {
               return true;
             }
           }
         }
+        
+        // Strategy 2: Look for TP/SL input fields directly (more reliable)
+        const allInputs = Array.from(document.querySelectorAll('input, textarea'));
+        let hasTakeProfitInput = false;
+        let hasStopLossInput = false;
+        
+        for (const input of allInputs) {
+          if (input.offsetParent === null) continue;
+          const placeholder = (input.placeholder || '').toLowerCase();
+          const label = (input.getAttribute('aria-label') || '').toLowerCase();
+          const parentText = (input.parentElement?.textContent || '').toLowerCase();
+          
+          if (placeholder.includes('take profit') || label.includes('take profit') || 
+              parentText.includes('take profit')) {
+            hasTakeProfitInput = true;
+          }
+          if (placeholder.includes('stop loss') || label.includes('stop loss') || 
+              parentText.includes('stop loss')) {
+            hasStopLossInput = true;
+          }
+        }
+        
+        if (hasTakeProfitInput && hasStopLossInput) {
+          return true;
+        }
+        
+        // Strategy 3: Look for "Confirm" button that's typically in TP/SL modal
+        const buttons = Array.from(document.querySelectorAll('button'));
+        for (const btn of buttons) {
+          if (btn.offsetParent === null) continue;
+          const btnText = (btn.textContent || '').trim().toLowerCase();
+          if (btnText === 'confirm') {
+            // Check if this Confirm button is in a modal context
+            let parent = btn.parentElement;
+            let depth = 0;
+            while (parent && depth < 10) {
+              const parentText = (parent.textContent || '').toLowerCase();
+              if (parentText.includes('tp/sl') || parentText.includes('take profit') || 
+                  parentText.includes('stop loss')) {
+                return true;
+              }
+              parent = parent.parentElement;
+              depth++;
+            }
+          }
+        }
+        
         return false;
       });
       
       if (modalOpen) {
-        console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ✅ TP/SL modal opened`);
+        console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ✅ TP/SL modal opened (detected on attempt ${i + 1})`);
         await delay(500);
         break;
       }
-      await delay(300);
+      
+      if (i < maxWaitAttempts - 1) {
+        await delay(300);
+      }
     }
     
     if (!modalOpen) {
-      console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  TP/SL modal did not open after clicking Advanced button`);
+      console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  TP/SL modal did not open after ${maxWaitAttempts} attempts`);
       return { success: false, error: 'TP/SL modal did not open after Advanced button click' };
     }
     
