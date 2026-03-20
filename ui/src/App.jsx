@@ -5,6 +5,7 @@ import ConfigPanel from './components/ConfigPanel';
 import Dashboard from './components/Dashboard';
 import LogViewer from './components/LogViewer';
 import StatusBar from './components/StatusBar';
+import logoSvg from './assets/logo.svg';
 
 const api = window.electronAPI;
 
@@ -142,7 +143,7 @@ export default function App() {
     return (
       <div className="app-container">
         <header className="app-header">
-          <h1>Arbium</h1>
+          <img src={logoSvg} alt="Arbium" style={{ height: 22 }} />
         </header>
         <div style={{ flex: 1, overflowY: 'auto' }}>
           <Onboarding onComplete={() => { markOnboardingDone(); setSetupComplete(true); }} />
@@ -156,7 +157,7 @@ export default function App() {
   return (
     <div className="app-container">
       <header className="app-header">
-        <h1>Arbium</h1>
+        <img src={logoSvg} alt="Arbium" style={{ height: 22 }} />
       </header>
 
       <div className="app-body">
