@@ -11,7 +11,7 @@ import {
 } from './executeBase.js';
 import dotenv from 'dotenv';
 
-dotenv.config();
+dotenv.config({ path: process.env.DOTENV_CONFIG_PATH || ".env" });
 
 /**
  * GRVT specific trade execution logic

@@ -1,20 +1,65 @@
 {
   "name": "paradex-ui-bot",
   "version": "1.0.0",
-  "description": "Minimal Paradex trading bot",
-  "main": "paradex-bot.js",
+  "description": "Paradex Multi-Exchange Trading Bot",
+  "main": "electron/main.js",
   "type": "module",
   "scripts": {
     "bot": "node paradex-bot.js",
-    "bot:headless": "node paradex-bot.js --headless"
+    "bot:headless": "node paradex-bot.js --headless",
+    "dev:ui": "cd ui && npm run dev",
+    "electron:dev": "concurrently \"cd ui && npm run dev\" \"sleep 3 && electron .\"",
+    "build:ui": "cd ui && npm run build",
+    "electron:start": "npm run build:ui && electron .",
+    "dist": "npm run build:ui && electron-builder",
+    "postinstall": "cd ui && npm install"
   },
   "dependencies": {
     "dotenv": "^16.3.1",
     "express": "^5.2.1",
     "puppeteer": "^24.34.0",
     "puppeteer-extra": "^3.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2"
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "semver": "^7.6.3"
   },
-  "author": "",
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8",
+    "concurrently": "^9.1.0"
+  },
+  "build": {
+    "appId": "com.aylab.arbium",
+    "productName": "Arbium",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "electron/**/*",
+      "src/**/*",
+      "ui/dist/**/*",
+      "paradex-bot.js",
+      "package.json",
+      ".env"
+    ],
+    "mac": {
+      "target": "dmg",
+      "icon": "build/icon.icns"
+    },
+    "win": {
+      "target": "nsis",
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": false
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "Aylab-Company",
+      "repo": "paradex-ui-bot"
+    }
+  },
+  "author": "Aylab",
   "license": "MIT"
 }

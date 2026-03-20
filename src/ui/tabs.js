@@ -5,7 +5,7 @@ import { handleClosePositionsAndSetLeverage } from '../trading/positions.js';
 import { handleSetLeverage } from '../trading/leverage.js';
 
 // Ensure environment variables are loaded
-dotenv.config();
+dotenv.config({ path: process.env.DOTENV_CONFIG_PATH || ".env" });
 
 // Click on Orders tab for Extended Exchange
 async function clickOrdersTab(page, email, skipLeverage = false) {

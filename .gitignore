@@ -6,3 +6,8 @@ package-lock.json
 .env
 
 paradex-cookies-account*.json
+
+# Electron / UI build
+ui/dist/
+ui/node_modules/
+dist/

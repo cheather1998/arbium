@@ -4,7 +4,7 @@ import { delay } from '../utils/helpers.js';
 import { findByExactText } from '../utils/helpers.js';
 
 // Ensure environment variables are loaded
-dotenv.config();
+dotenv.config({ path: process.env.DOTENV_CONFIG_PATH || ".env" });
 
 
 /**

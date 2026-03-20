@@ -5,7 +5,7 @@ import { clickOrdersTab } from '../ui/tabs.js';
 import { handleSetLeverage } from '../trading/leverage.js';
 
 // Ensure environment variables are loaded
-dotenv.config();
+dotenv.config({ path: process.env.DOTENV_CONFIG_PATH || ".env" });
 
 // Extended Exchange pre/post-trade flow: cancel orders, positions, TP/SL, close positions, set leverage
 // This runs both BEFORE and AFTER trade execution for Extended Exchange

@@ -1,6 +1,7 @@
 import puppeteer from 'puppeteer-extra';
 import fs from 'fs';
 import path from 'path';
+import { execSync } from 'child_process';
 import EXCHANGE_CONFIGS from '../config/exchanges.js';
 import { delay, closeNotifyBarWrapperNotifications } from '../utils/helpers.js';
 import { loadCookies, hasExtendedExchangeCookies } from '../utils/cookies.js';
@@ -8,6 +9,54 @@ import { isLoggedIn, login } from '../auth/login.js';
 import { clickOrdersTab } from '../ui/tabs.js';
 import { startApiServer } from '../api/server.js';
 import { HEADLESS } from '../config/headless.js';
+
+/**
+ * Find a usable Chrome/Chromium executable on the system.
+ * Required when running inside packaged Electron (no bundled Puppeteer Chrome).
+ */
+function findSystemChrome() {
+  const candidates = [
+    // macOS
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    '/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary',
+    '/Applications/Chromium.app/Contents/MacOS/Chromium',
+    '/Applications/Brave Browser.app/Contents/MacOS/Brave Browser',
+    // Linux
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    // Windows
+    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  // Try `which` on unix
+  try {
+    const result = execSync('which google-chrome || which chromium || which chrome 2>/dev/null', { encoding: 'utf-8' }).trim();
+    if (result && fs.existsSync(result)) return result;
+  } catch { /* ignore */ }
+  return null;
+}
+
+// Determine if we need a system Chrome (packaged Electron mode)
+function getChromePath() {
+  // If ELECTRON_MODE is set, we're running inside Electron's packaged app
+  // Puppeteer's bundled Chrome won't be accessible inside the asar
+  if (process.env.ELECTRON_MODE === '1') {
+    const systemChrome = findSystemChrome();
+    if (systemChrome) {
+      console.log(`[Chrome] Using system Chrome: ${systemChrome}`);
+      return systemChrome;
+    }
+    console.warn('[Chrome] No system Chrome found! Puppeteer may fail to launch.');
+    return undefined;
+  }
+  // In dev/CLI mode, let Puppeteer use its own bundled Chrome
+  return undefined;
+}
 
 async function launchAccount(accountConfig, exchangeConfig) {
     const { email, cookiesPath, profileDir, apiPort } = accountConfig;
@@ -46,9 +95,31 @@ async function launchAccount(accountConfig, exchangeConfig) {
         }
       }
   
-      const browser = await puppeteer.launch({
+      // Kill any existing Chrome process using this profile directory
+      try {
+        const { execSync } = await import('child_process');
+        // Find and kill Chrome processes using this specific profile
+        const profileBase = path.basename(profileDir);
+        try {
+          execSync(`pkill -f "${profileBase}" 2>/dev/null`, { timeout: 3000 });
+          console.log(`[${email}] Killed stale Chrome process for profile ${profileBase}`);
+          await delay(1000);
+        } catch {
+          // No matching process found — that's fine
+        }
+        // Also remove the SingletonLock file that prevents reuse
+        const lockFile = path.join(profileDir, 'SingletonLock');
+        if (fs.existsSync(lockFile)) {
+          fs.unlinkSync(lockFile);
+          console.log(`[${email}] Removed stale SingletonLock`);
+        }
+      } catch {
+        // Ignore cleanup errors
+      }
+
+      const chromePath = getChromePath();
+      const launchOptions = {
         headless: HEADLESS,
-        // executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
         userDataDir: profileDir,
         args: [
           "--start-maximized",
@@ -58,8 +129,12 @@ async function launchAccount(accountConfig, exchangeConfig) {
           "--window-size=1920,1080",
         ],
         defaultViewport: HEADLESS ? { width: 1920, height: 1080 } : null,
-        protocolTimeout: 180000, // Increase protocol timeout to 180 seconds (default is 30s) - needed for complex DOM queries
-      });
+        protocolTimeout: 180000,
+      };
+      if (chromePath) {
+        launchOptions.executablePath = chromePath;
+      }
+      const browser = await puppeteer.launch(launchOptions);
   
       const page = await browser.newPage();
   

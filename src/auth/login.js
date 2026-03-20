@@ -294,22 +294,53 @@ async function isLoggedIn(page, exchangeConfig = null) {
         return true; // Return true to allow manual completion
       }
   
-      // Check if this exchange needs email login (only Paradex uses email login)
-      // Kraken and GRVT might use different authentication methods
+      // For Kraken and GRVT: wait for the user to log in manually in the browser window
+      if (exchange.name === 'Kraken' || exchange.name === 'GRVT') {
+        console.log(`[${email}] ${exchange.name} - checking if already logged in...`);
+        const alreadyLoggedIn = await isLoggedIn(page, exchange);
+        if (alreadyLoggedIn) {
+          console.log(`[${email}] ✅ ${exchange.name} - Already logged in`);
+          await saveCookies(page, cookiesPath, email);
+          return true;
+        }
+
+        console.log(`[${email}] ⚠️  ${exchange.name} - Not logged in. Please log in manually in the browser window...`);
+        console.log(`[${email}] Waiting up to 3 minutes for manual login...`);
+
+        // Poll for login success - wait up to 3 minutes (60 checks × 3s)
+        const maxWaitAttempts = 60;
+        for (let i = 0; i < maxWaitAttempts; i++) {
+          await delay(3000);
+          try {
+            const loggedIn = await isLoggedIn(page, exchange);
+            if (loggedIn) {
+              console.log(`[${email}] ✅ ${exchange.name} - Login detected!`);
+              await saveCookies(page, cookiesPath, email);
+              return true;
+            }
+          } catch (err) {
+            // Ignore transient errors during page transitions
+          }
+          if ((i + 1) % 10 === 0) {
+            console.log(`[${email}] Still waiting for ${exchange.name} login... (${(i + 1) * 3}s elapsed)`);
+          }
+        }
+
+        console.log(`[${email}] ⚠️  ${exchange.name} - Login not detected after 3 minutes. Browser stays open.`);
+        return false;
+      }
+
+      // For other non-Paradex exchanges, same wait logic
       if (exchange.name !== 'Paradex') {
         console.log(`[${email}] ${exchange.name} - checking if already logged in...`);
-        // For non-Paradex exchanges (Kraken, GRVT), check if already logged in
-        // They might use cookies or different auth methods
         const alreadyLoggedIn = await isLoggedIn(page, exchange);
         if (alreadyLoggedIn) {
           console.log(`[${email}] ✅ ${exchange.name} - Already logged in`);
           await saveCookies(page, cookiesPath, email);
           return true;
         } else {
-          console.log(`[${email}] ⚠️  ${exchange.name} - Not logged in, but no specific login flow implemented`);
-          console.log(`[${email}] Please log in manually in the browser window`);
-          // Keep browser open for manual login
-          return false; // Return false so browser stays open
+          console.log(`[${email}] ⚠️  ${exchange.name} - Not logged in, please log in manually`);
+          return false;
         }
       }
   

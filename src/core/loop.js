@@ -11,7 +11,7 @@ import { getCurrentUnrealizedPnL } from '../trading/positions.js';
 import { comparePricesFromExchanges } from '../trading/priceComparison.js';
 
 // Ensure environment variables are loaded
-dotenv.config();
+dotenv.config({ path: process.env.DOTENV_CONFIG_PATH || ".env" });
 
 // Trading configuration from environment variables
 const TRADE_CONFIG = {
