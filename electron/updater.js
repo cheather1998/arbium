@@ -1,8 +1,8 @@
 import https from 'https';
 import { gt, valid, coerce } from 'semver';
 
-const GITHUB_OWNER = 'Aylab-Company';
-const GITHUB_REPO = 'paradex-ui-bot';
+const GITHUB_OWNER = 'cheather1998';
+const GITHUB_REPO = 'arbium';
 const RELEASES_URL = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`;
 const RELEASES_PAGE = `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`;
 

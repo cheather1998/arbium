@@ -56,8 +56,8 @@
     },
     "publish": {
       "provider": "github",
-      "owner": "Aylab-Company",
-      "repo": "paradex-ui-bot"
+      "owner": "cheather1998",
+      "repo": "arbium"
     }
   },
   "author": "Aylab",
