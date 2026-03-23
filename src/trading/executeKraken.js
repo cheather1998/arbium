@@ -3,8 +3,6 @@ import { cancelKrakenOrders } from './orders.js';
 import { findByText, findByExactText } from '../utils/helpers.js';
 import {
   getCurrentMarketPrice,
-  getBestBidAsk,
-  getAggressivePrice,
   selectBuyOrSell,
   selectOrderType,
   findSizeAndPriceInputs,
@@ -13,7 +11,6 @@ import {
   clickConfirmButton,
   verifyOrderPlacement
 } from './executeBase.js';
-import { safeClick, safeType, safeClearAndType } from '../utils/safeActions.js';
 
 /**
  * Kraken specific trade execution logic
@@ -219,43 +216,49 @@ export async function setLeverageKraken(page, leverage, exchange) {
       const currentLeverage = parseFloat(currentValue);
       const min = parseFloat(sliderInput.min || '0');
       const max = parseFloat(sliderInput.max || '100');
-
+      const rect = sliderInput.getBoundingClientRect();
+      
       // Check if already set to target
       if (Math.abs(currentLeverage - targetLeverage) < 0.01) {
         return { success: true, wasChanged: false, message: `Leverage already set to ${targetLeverage}x`, alreadySet: true };
       }
-
-      // Set value directly via DOM (works when browser is minimized)
-      // Use native input value setter to bypass React's synthetic event system
-      const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-      nativeInputValueSetter.call(sliderInput, targetLeverage);
-      sliderInput.dispatchEvent(new Event('input', { bubbles: true }));
-      sliderInput.dispatchEvent(new Event('change', { bubbles: true }));
-
+      
+      // Calculate click position on slider track
+      const percentage = (targetLeverage - min) / (max - min);
+      const clickX = rect.left + (rect.width * percentage);
+      const clickY = rect.top + (rect.height / 2);
+      
       return {
         success: true,
-        alreadySet: false,
-        valueSet: true,
-        previousValue: currentLeverage,
-        newValue: targetLeverage
+        clickPosition: { x: clickX, y: clickY },
+        sliderInfo: {
+          min: min,
+          max: max,
+          currentValue: currentLeverage,
+          targetValue: targetLeverage
+        },
+        alreadySet: false
       };
     }, leverage);
-
+    
     if (!leverageSliderResult.success) {
       console.log(`[${exchange.name}] ✗ ${leverageSliderResult.error || 'Failed to find leverage slider'}`);
       return { success: false, error: leverageSliderResult.error };
     }
-
+    
     if (leverageSliderResult.alreadySet) {
       console.log(`[${exchange.name}] ✓ ${leverageSliderResult.message}`);
       return { success: true };
     }
-
-    // Verify the value was set via DOM-level approach
-    console.log(`[${exchange.name}] Step 3: Setting leverage to ${leverage}x via DOM value setter...`);
-    await delay(500);
-
+    
+    // Interact with slider using mouse
+    console.log(`[${exchange.name}] Step 3: Clicking slider at position to set leverage to ${leverage}x...`);
+    
     try {
+      // Method 1: Click on the slider track at target position
+      await page.mouse.click(leverageSliderResult.clickPosition.x, leverageSliderResult.clickPosition.y);
+      await delay(500);
+      
       // Verify the value was updated by checking the displayed value
       const verifyResult = await page.evaluate((targetLeverage) => {
         // Check displayed value in UI (e.g., "14.00x")
@@ -269,64 +272,109 @@ export async function setLeverageKraken(page, leverage, exchange) {
             }
           }
         }
-
+        
         // Also check input value
         const rangeInputs = Array.from(document.querySelectorAll('input[type="range"]'));
         for (const input of rangeInputs) {
-          const isVisible = (el => el.offsetParent !== null || (el.offsetWidth > 0 && el.offsetHeight > 0))(input);
+          const isVisible = input.offsetParent !== null && input.offsetWidth > 0 && input.offsetHeight > 0;
           if (isVisible) {
             const currentValue = parseFloat(input.value || '0');
             return { success: Math.abs(currentValue - targetLeverage) < 0.01, value: currentValue, expected: targetLeverage };
           }
         }
-
+        
         return { success: false, error: 'Could not verify leverage value' };
       }, leverage);
-
+      
       if (verifyResult.success) {
         console.log(`[${exchange.name}] ✓ Leverage set to ${leverage}x (verified: ${verifyResult.value}x)`);
         await delay(300);
         return { success: true };
       } else {
-        // Fallback: Try setting value again with additional React compatibility
-        console.log(`[${exchange.name}] DOM value setter didn't update UI, trying React-compatible approach...`);
-
-        const retryResult = await page.evaluate((targetLeverage) => {
+        // Method 2: Try dragging the slider handle
+        console.log(`[${exchange.name}] Click didn't update value, trying drag method...`);
+        
+        const dragInfo = await page.evaluate((targetLeverage) => {
           const rangeInputs = Array.from(document.querySelectorAll('input[type="range"]'));
           for (const input of rangeInputs) {
-            const isVisible = (el => el.offsetParent !== null || (el.offsetWidth > 0 && el.offsetHeight > 0))(input);
+            const isVisible = input.offsetParent !== null && input.offsetWidth > 0 && input.offsetHeight > 0;
             if (isVisible) {
-              // Try React's native setter approach
-              const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-              nativeInputValueSetter.call(input, targetLeverage);
-
-              // Dispatch multiple event types for React compatibility
-              input.dispatchEvent(new Event('input', { bubbles: true }));
-              input.dispatchEvent(new Event('change', { bubbles: true }));
-
-              // Also try dispatching a mouse event on the input to simulate interaction
-              input.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-              input.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
-              input.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-
-              const finalValue = parseFloat(input.value || '0');
-              return { success: Math.abs(finalValue - targetLeverage) < 0.01, value: finalValue };
+              const rect = input.getBoundingClientRect();
+              const min = parseFloat(input.min || '0');
+              const max = parseFloat(input.max || '100');
+              const currentValue = parseFloat(input.value || '0');
+              
+              // Calculate positions
+              const currentPercentage = (currentValue - min) / (max - min);
+              const targetPercentage = (targetLeverage - min) / (max - min);
+              
+              const startX = rect.left + (rect.width * currentPercentage);
+              const targetX = rect.left + (rect.width * targetPercentage);
+              const y = rect.top + (rect.height / 2);
+              
+              return {
+                success: true,
+                startX: startX,
+                targetX: targetX,
+                y: y
+              };
             }
           }
-          return { success: false, error: 'Could not find slider for retry' };
+          return { success: false, error: 'Could not find slider for dragging' };
         }, leverage);
-
-        if (retryResult.success) {
-          console.log(`[${exchange.name}] ✓ Leverage set to ${leverage}x via React-compatible approach (verified: ${retryResult.value}x)`);
-          await delay(300);
-          return { success: true };
+        
+        if (dragInfo.success) {
+          // Drag from current position to target position
+          await page.mouse.move(dragInfo.startX, dragInfo.y);
+          await delay(100);
+          await page.mouse.down();
+          await delay(100);
+          await page.mouse.move(dragInfo.targetX, dragInfo.y, { steps: 20 });
+          await delay(100);
+          await page.mouse.up();
+          await delay(500);
+          
+          // Verify again
+          const verifyResult2 = await page.evaluate((targetLeverage) => {
+            // Check displayed value
+            const allElements = Array.from(document.querySelectorAll('*'));
+            for (const el of allElements) {
+              const text = el.textContent?.trim() || '';
+              if (/^\d+(\.\d+)?x$/i.test(text)) {
+                const displayedValue = parseFloat(text.replace(/x/i, ''));
+                if (Math.abs(displayedValue - targetLeverage) < 0.01) {
+                  return { success: true, value: displayedValue, fromDisplay: true };
+                }
+              }
+            }
+            
+            // Check input value
+            const rangeInputs = Array.from(document.querySelectorAll('input[type="range"]'));
+            for (const input of rangeInputs) {
+              const isVisible = input.offsetParent !== null && input.offsetWidth > 0 && input.offsetHeight > 0;
+              if (isVisible) {
+                const currentValue = parseFloat(input.value || '0');
+                return { success: Math.abs(currentValue - targetLeverage) < 0.01, value: currentValue, expected: targetLeverage };
+              }
+            }
+            return { success: false, error: 'Could not verify after drag' };
+          }, leverage);
+          
+          if (verifyResult2.success) {
+            console.log(`[${exchange.name}] ✓ Leverage set to ${leverage}x via drag (verified: ${verifyResult2.value}x)`);
+            await delay(300);
+            return { success: true };
+          } else {
+            console.log(`[${exchange.name}] ✗ Drag method failed. Current: ${verifyResult2.value || 'unknown'}, Expected: ${leverage}`);
+            return { success: false, error: `Failed to set leverage. Current: ${verifyResult2.value || 'unknown'}, Expected: ${leverage}` };
+          }
         } else {
-          console.log(`[${exchange.name}] ✗ Failed to set leverage. Current: ${retryResult.value || 'unknown'}, Expected: ${leverage}`);
-          return { success: false, error: `Failed to set leverage. Current: ${retryResult.value || 'unknown'}, Expected: ${leverage}` };
+          console.log(`[${exchange.name}] ✗ ${dragInfo.error || 'Failed to drag slider'}`);
+          return { success: false, error: dragInfo.error || 'Failed to drag slider' };
         }
       }
     } catch (error) {
-      console.log(`[${exchange.name}] ✗ Error setting leverage: ${error.message}`);
+      console.log(`[${exchange.name}] ✗ Error interacting with slider: ${error.message}`);
       return { success: false, error: error.message };
     }
     
@@ -583,14 +631,14 @@ async function clickLimitOption(page, optionText, exchange) {
   if (optionBtn) {
     console.log(`[${exchange.name}] Found ${optionText} option, clicking...`);
     
-    // Use DOM-level click (works when browser is minimized)
+    // Try multiple click methods to ensure it works
     try {
       await optionBtn.evaluate((el) => el.scrollIntoView({ behavior: 'smooth', block: 'center' }));
       await delay(200);
-      await safeClick(page, optionBtn);
+      await optionBtn.click();
       console.log(`[${exchange.name}] Clicked ${optionText} option`);
     } catch (error1) {
-      console.log(`[${exchange.name}] safeClick failed: ${error1.message}, trying JavaScript click...`);
+      console.log(`[${exchange.name}] Direct click failed: ${error1.message}, trying JavaScript click...`);
       try {
         await optionBtn.evaluate((el) => {
           el.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -618,40 +666,25 @@ async function clickLimitOption(page, optionText, exchange) {
 export async function selectOrderTypeKraken(page, orderType, exchange) {
   console.log(`[${exchange.name}] Looking for order type dropdown (${orderType.toUpperCase()})...`);
   
-  // First, try a simple direct search for order type button (exclude TP/SL button)
+  // First, try a simple direct search for button with aria-haspopup="listbox"
   try {
-    // Use :not([aria-label="TP/SL"]) to avoid clicking the TP/SL dropdown instead
-    const dropdownButton = await page.$('button[aria-haspopup="listbox"]:not([aria-label="TP/SL"])');
+    const dropdownButton = await page.$('button[aria-haspopup="listbox"]');
     if (dropdownButton) {
-      // Verify it's the order type dropdown by checking its text content
-      const btnText = await page.evaluate(el => (el.textContent || '').trim().toLowerCase(), dropdownButton);
-      const isOrderTypeButton = btnText.includes('limit') || btnText.includes('market') || btnText.includes('stop');
-
-      if (!isOrderTypeButton) {
-        console.log(`[${exchange.name}] ⚠️  Found button but text "${btnText}" doesn't look like order type, skipping`);
-      } else {
-        console.log(`[${exchange.name}] ✅ Found order type dropdown button: "${btnText}"`);
-
-        // Click to open dropdown (DOM-level, works when minimized)
-        console.log(`[${exchange.name}] Clicking dropdown to open it...`);
-        await safeClick(page, dropdownButton);
-        await delay(800);
-
-        // Find and click Limit option
-        const optionText = orderType === 'limit' ? 'Limit' : 'Market';
-        const clicked = await clickLimitOption(page, optionText, exchange);
-        if (!clicked) {
-          // Close the dropdown if option not found
-          await page.keyboard.press('Escape');
-          await delay(200);
-        }
-        return true;
-      }
+      console.log(`[${exchange.name}] ✅ Found dropdown button using selector: button[aria-haspopup="listbox"]`);
+      const dropdownElement = dropdownButton;
+      
+      // Click to open dropdown
+      console.log(`[${exchange.name}] Clicking dropdown to open it...`);
+      await dropdownElement.click();
+      await delay(800);
+      
+      // Find and click Limit option
+      const optionText = orderType === 'limit' ? 'Limit' : 'Market';
+      await clickLimitOption(page, optionText, exchange);
+      return true;
     }
   } catch (error) {
     console.log(`[${exchange.name}] Direct selector search failed: ${error.message}`);
-    // Ensure any accidentally opened dropdown is closed
-    try { await page.keyboard.press('Escape'); } catch (e) {}
   }
   
   // Fallback: Find the dropdown button by its specific attributes (aria-haspopup="listbox", aria-label="Order type")
@@ -669,8 +702,8 @@ export async function selectOrderTypeKraken(page, orderType, exchange) {
       const ariaLabel = btn.getAttribute('aria-label');
       const text = (btn.textContent || '').trim();
       
-      // Look for button with aria-haspopup="listbox" (exclude TP/SL button)
-      if (ariaHaspopup === 'listbox' && ariaLabel !== 'TP/SL') {
+      // Look for button with aria-haspopup="listbox" (more lenient - don't require aria-label)
+      if (ariaHaspopup === 'listbox') {
         debugInfo.push(`Found button with aria-haspopup="listbox": aria-label="${ariaLabel}", text="${text}"`);
         return { 
           type: 'button', 
@@ -825,16 +858,16 @@ export async function selectOrderTypeKraken(page, orderType, exchange) {
       if (dropdownElement) {
         console.log(`[${exchange.name}] Clicking dropdown to open it...`);
         
-        // Use DOM-level click (works when browser is minimized)
+        // Try multiple methods to open dropdown
         try {
-          await safeClick(page, dropdownElement);
+          await dropdownElement.click();
         } catch (error) {
-          console.log(`[${exchange.name}] safeClick failed, trying JavaScript click...`);
+          console.log(`[${exchange.name}] Direct click failed, trying JavaScript click...`);
           await dropdownElement.evaluate((el) => el.click());
         }
-
+        
         await delay(800); // Wait longer for dropdown to fully open
-
+        
         // Verify dropdown opened
         const dropdownOpened = await page.evaluate(() => {
           const menus = Array.from(document.querySelectorAll('[role="menu"], [class*="menu"], [class*="dropdown"], [role="listbox"]'));
@@ -849,10 +882,10 @@ export async function selectOrderTypeKraken(page, orderType, exchange) {
           }
           return false;
         });
-
+        
         if (!dropdownOpened) {
           console.log(`[${exchange.name}] ⚠️  Dropdown didn't open, trying to click again...`);
-          await safeClick(page, dropdownElement);
+          await dropdownElement.click();
           await delay(800);
         }
         
@@ -967,15 +1000,15 @@ export async function selectOrderTypeKraken(page, orderType, exchange) {
         if (optionBtn) {
           console.log(`[${exchange.name}] Found ${optionText} option, clicking...`);
           
-          // Use DOM-level click (works when browser is minimized)
+          // Try multiple click methods to ensure it works
           try {
-            // Method 1: Scroll into view and safeClick
+            // Method 1: Scroll into view and click
             await optionBtn.evaluate((el) => el.scrollIntoView({ behavior: 'smooth', block: 'center' }));
             await delay(200);
-            await safeClick(page, optionBtn);
-            console.log(`[${exchange.name}] Clicked ${optionText} option (method 1: safeClick)`);
+            await optionBtn.click();
+            console.log(`[${exchange.name}] Clicked ${optionText} option (method 1: direct click)`);
           } catch (error1) {
-            console.log(`[${exchange.name}] safeClick failed: ${error1.message}, trying JavaScript click...`);
+            console.log(`[${exchange.name}] Direct click failed: ${error1.message}, trying JavaScript click...`);
             try {
               // Method 2: JavaScript click
               await optionBtn.evaluate((el) => {
@@ -985,7 +1018,7 @@ export async function selectOrderTypeKraken(page, orderType, exchange) {
               console.log(`[${exchange.name}] Clicked ${optionText} option (method 2: JavaScript click)`);
             } catch (error2) {
               console.log(`[${exchange.name}] JavaScript click failed: ${error2.message}, trying mousedown/up...`);
-              // Method 3: Mouse events (DOM-level, not coordinate-based)
+              // Method 3: Mouse events
               await optionBtn.evaluate((el) => {
                 el.scrollIntoView({ behavior: 'smooth', block: 'center' });
                 const mouseDown = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
@@ -1057,11 +1090,13 @@ export async function findKrakenInputs(page, orderType) {
   console.log(`[Kraken] Found ${inputs.length} input elements on page`);
   
   for (const input of inputs) {
-    // Use DOM-level visibility check (works when browser is minimized — boundingBox() returns null when minimized)
+    const rect = await input.boundingBox();
+    if (!rect) continue;
+    
     const isVisible = await page.evaluate((el) => {
-      return (el.offsetParent !== null || (el.offsetWidth > 0 && el.offsetHeight > 0)) && !el.disabled && !el.readOnly;
+      return el.offsetParent !== null && !el.disabled && !el.readOnly;
     }, input);
-
+    
     if (!isVisible) continue;
     
     const inputInfo = await page.evaluate((el) => {
@@ -1137,25 +1172,26 @@ export async function findKrakenInputs(page, orderType) {
   }
   
   // If not found by text, try position-based (for limit orders, price is usually above quantity)
-  // Uses DOM-level getBoundingClientRect inside page.evaluate (works when minimized)
   if (orderType === "limit" && sizeInput && !priceInput) {
-    for (const input of inputs) {
-      if (input === sizeInput) continue;
-      const isAboveResult = await page.evaluate((el, sizeEl) => {
-        const isVisible = (el.offsetParent !== null || (el.offsetWidth > 0 && el.offsetHeight > 0)) && !el.disabled && !el.readOnly;
-        if (!isVisible) return { isAbove: false };
-        const inputRect = el.getBoundingClientRect();
-        const sizeRect = sizeEl.getBoundingClientRect();
-        // If rects are empty (minimized), skip position-based detection
-        if (inputRect.width === 0 && inputRect.height === 0) return { isAbove: false };
-        if (sizeRect.width === 0 && sizeRect.height === 0) return { isAbove: false };
+    const sizeRect = await sizeInput.boundingBox();
+    if (sizeRect) {
+      for (const input of inputs) {
+        if (input === sizeInput) continue;
+        const inputRect = await input.boundingBox();
+        if (!inputRect) continue;
+        
+        // Price is usually above quantity
         const isAbove = inputRect.y < sizeRect.y && Math.abs(inputRect.x - sizeRect.x) < 200;
-        return { isAbove };
-      }, input, sizeInput);
-      if (isAboveResult.isAbove) {
-        priceInput = input;
-        console.log(`[Kraken] ✅ Found Limit price input via position (above quantity)`);
-        break;
+        if (isAbove) {
+          const isVisible = await page.evaluate((el) => {
+            return el.offsetParent !== null && !el.disabled && !el.readOnly;
+          }, input);
+          if (isVisible) {
+            priceInput = input;
+            console.log(`[Kraken] ✅ Found Limit price input via position (above quantity)`);
+            break;
+          }
+        }
       }
     }
   }
@@ -1194,11 +1230,11 @@ export async function executeTradeKraken(
     await setLeverageKraken(page, leverage, exchange);
   }
 
-  // If limit order without price, fetch aggressive price based on ORDER_AGGRESSIVENESS
+  // If limit order without price, fetch current market price
   if (orderType === "limit" && !price) {
-    price = await getAggressivePrice(page, exchange, side);
+    price = await getCurrentMarketPrice(page, exchange);
     if (!price) {
-      console.log(`[${exchange.name}] Could not fetch market price for limit order`);
+      console.log(`[${exchange.name}] ❌ Could not fetch market price for limit order`);
       return { success: false, error: "Could not fetch market price" };
     }
   }
@@ -1219,20 +1255,7 @@ export async function executeTradeKraken(
 
   // Step 2: Select order type from dropdown (on the right of Buy/Sell tabs)
   console.log(`[${exchange.name}] Step 2: Selecting ${orderType.toUpperCase()} from dropdown...`);
-  let orderTypeSelected = false;
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    const result = await selectOrderTypeKraken(page, orderType, exchange);
-    if (result) {
-      orderTypeSelected = true;
-      break;
-    }
-    console.log(`[${exchange.name}] ⚠️  Order type selection attempt ${attempt} failed, retrying...`);
-    await delay(500);
-  }
-  if (!orderTypeSelected && orderType === 'limit') {
-    console.log(`[${exchange.name}] ❌ Failed to select LIMIT order type after retries — aborting to prevent Market order`);
-    return { success: false, error: "Failed to select Limit order type" };
-  }
+  await selectOrderTypeKraken(page, orderType, exchange);
   await delay(500);
 
   // Step 3: Find and fill Limit price input (for limit orders)
@@ -1318,8 +1341,8 @@ export async function executeTradeKraken(
       } else {
         console.log(`[${exchange.name}] ✅ Found TP/SL dropdown button, clicking...`);
         
-        // Click to open the dropdown (DOM-level, works when minimized)
-        await safeClick(page, tpSlButton);
+        // Click to open the dropdown
+        await tpSlButton.click();
         await delay(800); // Wait for dropdown to open
         
         // Find and click "Simple" option in the opened dropdown
@@ -1364,11 +1387,11 @@ export async function executeTradeKraken(
         if (simpleOption) {
           console.log(`[${exchange.name}] ✅ Found "Simple" option, clicking...`);
           try {
-            await safeClick(page, simpleOption);
+            await simpleOption.click();
             await delay(300); // Wait for inputs to appear
             console.log(`[${exchange.name}] ✅ Selected "Simple" from TP/SL dropdown`);
           } catch (error) {
-            console.log(`[${exchange.name}] safeClick failed, trying JavaScript click...`);
+            console.log(`[${exchange.name}] Direct click failed, trying JavaScript click...`);
             await simpleOption.evaluate((el) => el.click());
             await delay(300); // Wait for inputs to appear
             console.log(`[${exchange.name}] ✅ Selected "Simple" from TP/SL dropdown (JavaScript click)`);
@@ -1378,81 +1401,15 @@ export async function executeTradeKraken(
         }
       }
       
-      // Step 5.1: Find and fill Stop Loss and Take Profit "Entry Distance" inputs
+      // Step 5.1: Find and fill Stop Loss and Take Profit "Entry Distance" inputs (% inputs)
       console.log(`[${exchange.name}] Step 5.1: Finding and filling TP/SL "Entry Distance" inputs...`);
-
-      // Calculate price movement%: ROI% / leverage
-      const tpPercent = parseFloat(process.env.TAKE_PROFIT) || 0;
-      const slPercent = parseFloat(process.env.STOP_LOSS) || 0;
-      const leverage = parseFloat(process.env.LEVERAGE) || 10;
-      const priceNum = price ? parseFloat(String(price).replace(/,/g, '')) : 0;
-      const tpPriceMovementPct = tpPercent / leverage; // e.g. 10% ROI / 10x = 1%
-      const slPriceMovementPct = slPercent / leverage; // e.g. 5% ROI / 10x = 0.5%
-
-      // Detect if entry distance mode is "%" or "USD"
-      const isPercentMode = await page.evaluate(() => {
-        // Strategy 1: Check TP input sibling/parent for "%" or "USD" suffix
-        const tpInput = document.querySelector('input[aria-label="Distance for Take profit"]');
-        if (tpInput) {
-          let parent = tpInput.parentElement;
-          for (let i = 0; i < 3 && parent; i++) {
-            const children = Array.from(parent.children);
-            for (const child of children) {
-              if (child === tpInput || child.contains(tpInput)) continue;
-              const text = (child.textContent || '').trim();
-              if (text === '%') return true;
-              if (text === 'USD') return false;
-            }
-            parent = parent.parentElement;
-          }
-        }
-        // Strategy 2: Check for active "%" toggle button
-        const buttons = Array.from(document.querySelectorAll('button'));
-        for (const btn of buttons) {
-          if (btn.offsetParent === null) continue;
-          const text = (btn.textContent || '').trim();
-          if (text === '%') {
-            const className = (typeof btn.className === 'string' ? btn.className : '').toLowerCase();
-            const ariaSelected = btn.getAttribute('aria-selected');
-            const ariaPressed = btn.getAttribute('aria-pressed');
-            if (className.includes('active') || className.includes('selected') ||
-                ariaSelected === 'true' || ariaPressed === 'true') {
-              return true;
-            }
-          }
-        }
-        // Strategy 3: Check for "%" suffix near TP/SL area
-        const allElements = document.querySelectorAll('span, div, label');
-        for (const el of allElements) {
-          if (el.offsetParent === null) continue;
-          const text = (el.textContent || '').trim();
-          if (text === '%' && el.children.length === 0) {
-            let p = el.parentElement;
-            for (let i = 0; i < 5 && p; i++) {
-              const pText = (p.textContent || '').toLowerCase();
-              if (pText.includes('take profit') || pText.includes('stop loss') || pText.includes('entry distance')) {
-                return true;
-              }
-              p = p.parentElement;
-            }
-          }
-        }
-        return false;
-      });
-
-      let takeProfitValue, stopLossValue;
-      if (isPercentMode) {
-        takeProfitValue = tpPriceMovementPct > 0 ? String(tpPriceMovementPct) : '';
-        stopLossValue = slPriceMovementPct > 0 ? String(slPriceMovementPct) : '';
-        console.log(`[${exchange.name}] Entry distance in % mode — TP=${tpPriceMovementPct}%, SL=${slPriceMovementPct}%`);
-      } else {
-        takeProfitValue = tpPercent > 0 && priceNum > 0 ? String(Math.round(priceNum * tpPriceMovementPct / 100)) : '';
-        stopLossValue = slPercent > 0 && priceNum > 0 ? String(Math.round(priceNum * slPriceMovementPct / 100)) : '';
-        console.log(`[${exchange.name}] Entry distance in USD mode — TP=$${takeProfitValue}, SL=$${stopLossValue}`);
-      }
-
+      
+      // Get values from environment variables
+      const takeProfitValue = process.env.TAKE_PROFIT || '';
+      const stopLossValue = process.env.STOP_LOSS || '';
+      
       if (!takeProfitValue && !stopLossValue) {
-        console.log(`[${exchange.name}] ⚠️  TAKE_PROFIT/STOP_LOSS env vars not set or price unavailable, skipping TP/SL inputs`);
+        console.log(`[${exchange.name}] ⚠️  TAKE_PROFIT and STOP_LOSS env variables not set, skipping TP/SL inputs`);
       } else {
         // Find inputs using aria-label attributes (most reliable)
         let takeProfitInput = null;
@@ -1573,11 +1530,13 @@ export async function executeTradeKraken(
           }
         }
         
-        // Fill Take Profit "Entry Distance" input (DOM-level, works when minimized)
+        // Fill Take Profit "Entry Distance" input
         if (takeProfitValue && takeProfitInput) {
-          console.log(`[${exchange.name}] Filling Take Profit distance: ${isPercentMode ? takeProfitValue + '%' : '$' + takeProfitValue}`);
+          console.log(`[${exchange.name}] Filling Take Profit "Entry Distance" input with value: ${takeProfitValue}`);
           try {
-            await safeClearAndType(page, takeProfitInput, takeProfitValue, { delay: 50 });
+            await takeProfitInput.click({ clickCount: 3 }); // Select all
+            await delay(100);
+            await takeProfitInput.type(takeProfitValue, { delay: 50 });
             await delay(300);
             console.log(`[${exchange.name}] ✅ Filled Take Profit "Entry Distance" input`);
           } catch (error) {
@@ -1586,12 +1545,14 @@ export async function executeTradeKraken(
         } else if (takeProfitValue) {
           console.log(`[${exchange.name}] ⚠️  Take Profit value set but "Entry Distance" input not found`);
         }
-
-        // Fill Stop Loss "Entry Distance" input (DOM-level, works when minimized)
+        
+        // Fill Stop Loss "Entry Distance" input
         if (stopLossValue && stopLossInput) {
-          console.log(`[${exchange.name}] Filling Stop Loss distance: ${isPercentMode ? stopLossValue + '%' : '$' + stopLossValue}`);
+          console.log(`[${exchange.name}] Filling Stop Loss "Entry Distance" input with value: ${stopLossValue}`);
           try {
-            await safeClearAndType(page, stopLossInput, stopLossValue, { delay: 50 });
+            await stopLossInput.click({ clickCount: 3 }); // Select all
+            await delay(100);
+            await stopLossInput.type(stopLossValue, { delay: 50 });
             await delay(300);
             console.log(`[${exchange.name}] ✅ Filled Stop Loss "Entry Distance" input`);
           } catch (error) {
@@ -1728,15 +1689,15 @@ export async function executeTradeKraken(
       const confirmButtonClickTime = Date.now();
       
       try {
-        await safeClick(page, confirmModalBtn);
+        await confirmModalBtn.click();
         console.log(`[${exchange.name}] ✅ Clicked Confirm button in modal`);
-
+        
         // ⏱️ TIMING: Log total time metrics
         if (thresholdMetTime) {
           const totalTime = confirmButtonClickTime - thresholdMetTime;
           const formFillTime = firstConfirmButtonClickTime - formFillStartTime;
           const buttonClickTime = confirmButtonClickTime - firstConfirmButtonClickTime;
-
+          
           console.log(`\n[${exchange.name}] ⏱️  [TIMING METRICS] ${sideLabel} Order Submission Complete:`);
           console.log(`[${exchange.name}]    Account: ${email}`);
           console.log(`[${exchange.name}]    Total time (threshold → submit): ${(totalTime / 1000).toFixed(2)}s`);
@@ -1745,7 +1706,7 @@ export async function executeTradeKraken(
           console.log(`[${exchange.name}]    Timestamp: ${new Date(confirmButtonClickTime).toISOString()}\n`);
         }
       } catch (error) {
-        console.log(`[${exchange.name}] safeClick failed, trying JavaScript click...`);
+        console.log(`[${exchange.name}] Direct click failed, trying JavaScript click...`);
         await confirmModalBtn.evaluate((el) => el.click());
         console.log(`[${exchange.name}] ✅ Clicked Confirm button in modal (JavaScript click)`);
         
@@ -1834,7 +1795,7 @@ export async function executeTradeKraken(
     if (isVisible) {
       console.log(`[${exchange.name}] ✅ Found "Open orders" tab, clicking...`);
       try {
-        await safeClick(page, openOrdersTab);
+        await openOrdersTab.click();
         console.log(`[${exchange.name}] ✅ Clicked "Open orders" tab`);
         await delay(1000); // Wait for tab content to load
       } catch (error) {

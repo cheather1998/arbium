@@ -2,10 +2,9 @@ import dotenv from 'dotenv';
 import EXCHANGE_CONFIGS from '../config/exchanges.js';
 import { delay } from '../utils/helpers.js';
 import { findByExactText } from '../utils/helpers.js';
-import { safeClick } from '../utils/safeActions.js';
 
 // Ensure environment variables are loaded
-dotenv.config();
+dotenv.config({ path: process.env.DOTENV_CONFIG_PATH || ".env" });
 
 
 /**
@@ -32,7 +31,7 @@ async function clickTpSlColumnInPositions(page, exchangeConfig = null) {
         return { success: false, message: "Positions tab not found" };
       }
       
-      await safeClick(page, positionsTab);
+      await positionsTab.click();
       console.log(`[${exchange.name}] ✅ Clicked Positions tab`);
       await delay(300); // Wait for positions table to load
       
@@ -139,7 +138,7 @@ async function clickTpSlColumnInPositions(page, exchangeConfig = null) {
               const clickableElements = tpSlCell.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"], a, div, span, svg, [onclick], [class*="icon"], [class*="Icon"]');
               
               for (const element of clickableElements) {
-                if (element.offsetParent !== null || (element.offsetWidth > 0 && element.offsetHeight > 0)) {
+                if (element.offsetParent !== null && element.offsetWidth > 0 && element.offsetHeight > 0) {
                   element.click();
                   console.log(`Clicked clickable element in TP/SL column`);
                   return true;
@@ -182,10 +181,12 @@ async function clickTpSlColumnInPositions(page, exchangeConfig = null) {
           
           for (const m of allModals) {
             const style = window.getComputedStyle(m);
-            const isVisible = (m.offsetParent !== null || (m.offsetWidth > 0 && m.offsetHeight > 0)) &&
-                             style.display !== 'none' &&
+            const isVisible = m.offsetParent !== null && 
+                             style.display !== 'none' && 
                              style.visibility !== 'hidden' &&
-                             style.opacity !== '0';
+                             style.opacity !== '0' &&
+                             m.offsetWidth > 0 &&
+                             m.offsetHeight > 0;
             if (isVisible) {
               return true; // Found any visible modal
             }
@@ -227,10 +228,12 @@ async function clickTpSlColumnInPositions(page, exchangeConfig = null) {
         
         for (const m of allModals) {
           const style = window.getComputedStyle(m);
-          const isVisible = (m.offsetParent !== null || (m.offsetWidth > 0 && m.offsetHeight > 0)) &&
-                           style.display !== 'none' &&
+          const isVisible = m.offsetParent !== null && 
+                           style.display !== 'none' && 
                            style.visibility !== 'hidden' &&
-                           style.opacity !== '0';
+                           style.opacity !== '0' &&
+                           m.offsetWidth > 0 &&
+                           m.offsetHeight > 0;
           if (isVisible) {
             return m; // Return first visible modal
           }
@@ -296,11 +299,10 @@ async function clickTpSlColumnInPositions(page, exchangeConfig = null) {
         try {
           const inputElement = slInputHandle.asElement();
           
-          // Focus and select all text (DOM-level, minimize-safe)
-          await page.evaluate(el => { el.focus(); el.select(); }, inputElement);
+          // Focus and clear the input
+          await inputElement.click({ clickCount: 3 }); // Triple click to select all
           await page.keyboard.press('Backspace'); // Clear selected text
-          await page.evaluate(el => el.focus(), inputElement); // Re-focus after clear
-          await page.keyboard.type(stopLossValue, { delay: 30 }); // Use exact string value from env
+          await inputElement.type(stopLossValue, { delay: 30 }); // Use exact string value from env
           await page.keyboard.press('Tab'); // Trigger blur to calculate USD
           await delay(200);
           console.log(`[${exchange.name}] ✅ Successfully filled Stop Loss percentage`);
@@ -347,10 +349,12 @@ async function clickTpSlColumnInPositions(page, exchangeConfig = null) {
           const allModals = Array.from(document.querySelectorAll('[class*="modal"], [role="dialog"], [class*="Modal"], [class*="Dialog"], [class*="overlay"], [class*="Overlay"]'));
           for (const m of allModals) {
             const style = window.getComputedStyle(m);
-            const isVisible = (m.offsetParent !== null || (m.offsetWidth > 0 && m.offsetHeight > 0)) &&
-                             style.display !== 'none' &&
+            const isVisible = m.offsetParent !== null && 
+                             style.display !== 'none' && 
                              style.visibility !== 'hidden' &&
-                             style.opacity !== '0';
+                             style.opacity !== '0' &&
+                             m.offsetWidth > 0 &&
+                             m.offsetHeight > 0;
             if (isVisible) {
               return m;
             }
@@ -390,7 +394,7 @@ async function clickTpSlColumnInPositions(page, exchangeConfig = null) {
         
         // Filter to only visible buttons
         const visibleButtons = allButtons.filter(btn => {
-          const isVisible = btn.offsetParent !== null || (btn.offsetWidth > 0 && btn.offsetHeight > 0);
+          const isVisible = btn.offsetParent !== null && btn.offsetWidth > 0 && btn.offsetHeight > 0;
           const isDisabled = btn.disabled || btn.getAttribute('disabled') !== null;
           return isVisible && !isDisabled;
         });
@@ -541,20 +545,18 @@ async function clickTpSlColumnInPositions(page, exchangeConfig = null) {
           if (labelText.toLowerCase().includes('tp/sl') || labelText.toLowerCase().includes('tp / sl')) {
             // Get label position
             const rect = label.getBoundingClientRect();
-
+            
             // Check if label is in the right 50% of screen
-            // Fallback: when minimized, getBoundingClientRect returns all zeros — skip position check
-            const isMinimized = rect.width === 0 && rect.height === 0;
-            if (isMinimized || rect.x >= rightSideThreshold) {
+            if (rect.x >= rightSideThreshold) {
               // Find the button with role="checkbox" inside this label
               const checkboxButton = label.querySelector('button[role="checkbox"]');
-
+              
               if (checkboxButton) {
                 // Check if it's visible and not disabled
-                // Fallback: use offsetParent !== null when width/height are 0 (minimized browser)
-                const isVisible = checkboxButton.offsetParent !== null ||
-                                 (checkboxButton.offsetWidth > 0 && checkboxButton.offsetHeight > 0);
-
+                const isVisible = checkboxButton.offsetParent !== null && 
+                                 checkboxButton.offsetWidth > 0 && 
+                                 checkboxButton.offsetHeight > 0;
+                
                 if (isVisible) {
                   // Check current state
                   const isChecked = checkboxButton.getAttribute('aria-checked') === 'true' ||
@@ -616,17 +618,16 @@ async function clickTpSlColumnInPositions(page, exchangeConfig = null) {
             });
             
             if (isVisible) {
-              // Focus and select all existing text (DOM-level, minimize-safe)
-              await page.evaluate(el => { el.focus(); el.select(); }, input);
+              // Triple-click to select all existing text
+              await input.click({ clickCount: 3 });
               await delay(100);
-
+              
               // Clear the selected text
               await page.keyboard.press('Backspace');
               await delay(50);
-
+              
               // Type the value
-              await page.evaluate(el => el.focus(), input); // Re-focus after clear
-              await page.keyboard.type(takeProfitValue, { delay: 50 });
+              await input.type(takeProfitValue, { delay: 50 });
               await delay(100);
               
               profitFilled = true;
@@ -661,17 +662,16 @@ async function clickTpSlColumnInPositions(page, exchangeConfig = null) {
             });
             
             if (isVisible) {
-              // Focus and select all existing text (DOM-level, minimize-safe)
-              await page.evaluate(el => { el.focus(); el.select(); }, input);
+              // Triple-click to select all existing text
+              await input.click({ clickCount: 3 });
               await delay(100);
-
+              
               // Clear the selected text
               await page.keyboard.press('Backspace');
               await delay(50);
-
+              
               // Type the value
-              await page.evaluate(el => el.focus(), input); // Re-focus after clear
-              await page.keyboard.type(stopLossValue, { delay: 50 });
+              await input.type(stopLossValue, { delay: 50 });
               await delay(100);
               
               lossFilled = true;
@@ -1110,11 +1110,10 @@ async function isTpSlModalOpen(page) {
         try {
           const inputElement = slInputHandle.asElement();
           
-          // Focus and select all text (DOM-level, minimize-safe)
-          await page.evaluate(el => { el.focus(); el.select(); }, inputElement);
+          // Focus and clear the input
+          await inputElement.click({ clickCount: 3 }); // Triple click to select all
           await page.keyboard.press('Backspace'); // Clear selected text
-          await page.evaluate(el => el.focus(), inputElement); // Re-focus after clear
-          await page.keyboard.type(stopLossPercentStr, { delay: 30 }); // Use exact string value from env
+          await inputElement.type(stopLossPercentStr, { delay: 30 }); // Use exact string value from env
           await page.keyboard.press('Tab'); // Trigger blur to calculate USD
           await delay(300); // Reduced wait
           console.log(`[${email}] ✓ Stop Loss percentage filled using Puppeteer type`);
@@ -1524,7 +1523,7 @@ async function isTpSlModalOpen(page) {
         const buttons = Array.from(tpslModal.querySelectorAll('button'));
         for (const btn of buttons) {
           const text = btn.textContent?.trim() || '';
-          const isVisible = btn.offsetParent !== null || (btn.offsetWidth > 0 && btn.offsetHeight > 0);
+          const isVisible = btn.offsetParent !== null && btn.offsetWidth > 0 && btn.offsetHeight > 0;
           // Only click Confirm button - ignore any close/X buttons
           if (isVisible && (text === 'Confirm' || text.includes('Confirm'))) {
             btn.click();
@@ -1568,7 +1567,7 @@ async function isTpSlModalOpen(page) {
       
       if (button) {
         console.log(`[${email}] Found TP/SL add button, clicking...`);
-        await safeClick(page, button);
+        await button.click();
         console.log(`[${email}] ✓ TP/SL add button clicked`);
         
         // Perform your actions after click

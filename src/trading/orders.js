@@ -1,5 +1,4 @@
 import { delay, findByExactText, findByText } from '../utils/helpers.js';
-import { safeClick } from '../utils/safeActions.js';
 
 async function cancelAllOrders(page) {
     console.log(`\n=== Canceling All Open Orders (GENERIC FUNCTION) ===`);
@@ -8,50 +7,43 @@ async function cancelAllOrders(page) {
     // Wait a moment for any previous actions to complete
     await delay(500); // Reduced from 1000ms
   
-    // Find "Open Orders" / "Open orders" tab (case-insensitive, handles count suffix like "(1)")
-    // Strategy 1: GRVT tabItem structure (same as positions tab — requires isTrusted click)
-    let ordersTabClicked = false;
-    const ordersTabHandle1 = await page.evaluateHandle(() => {
-      const allDivs = Array.from(document.querySelectorAll('div'));
-      for (const div of allDivs) {
-        const divClass = (typeof div.className === 'string' ? div.className : '').toLowerCase();
-        if ((divClass.includes('tabitem') || divClass.includes('tab-item') || divClass.includes('tab_item')) && div.offsetParent !== null) {
-          const spans = Array.from(div.querySelectorAll('span'));
-          for (const span of spans) {
-            if ((span.textContent || '').trim().toLowerCase().startsWith('open order')) return div;
-          }
-        }
+    // First try to find "Open Orders" tab
+    let ordersTab = await findByExactText(page, "Open Orders", [
+      "button",
+      "div",
+      "span",
+    ]);
+    
+    // If "Open Orders" not found, try "Order History" as fallback
+    if (!ordersTab) {
+      ordersTab = await findByExactText(page, "Order History", [
+        "button",
+        "div",
+        "span",
+      ]);
+      if (ordersTab) {
+        console.log("Found Order History tab (using as fallback)");
       }
-      return null;
-    });
-    const ordersTab1 = ordersTabHandle1.asElement();
-    if (ordersTab1) {
-      await ordersTab1.click(); // Puppeteer native click — isTrusted: true
-      console.log("✓ Clicked Open orders tab (via tabItem structure)");
-      ordersTabClicked = true;
-      await delay(1000);
     }
-
-    // Strategy 2: Fallback — find by text content with short text filter
-    if (!ordersTabClicked) {
-      const ordersTabHandle2 = await page.evaluateHandle(() => {
-        const elements = Array.from(document.querySelectorAll('button, div, span, a'));
-        for (const el of elements) {
-          if (el.offsetParent === null || el.offsetWidth === 0) continue;
-          const text = (el.textContent || '').trim().toLowerCase();
-          if (text.startsWith('open order') && text.length < 30) return el;
-        }
-        return null;
-      });
-      const ordersTab2 = ordersTabHandle2.asElement();
-      if (ordersTab2) {
-        await ordersTab2.click(); // Puppeteer native click — isTrusted: true
-        console.log("✓ Clicked Open orders tab (via text content)");
-        ordersTabClicked = true;
-        await delay(1000);
-      } else {
-        console.log("⚠ Could not find Open Orders / Open orders tab");
+    
+    // If still not found, try just "Orders" as last resort
+    if (!ordersTab) {
+      ordersTab = await findByExactText(page, "Orders", [
+        "button",
+        "div",
+        "span",
+      ]);
+      if (ordersTab) {
+        console.log("Found Orders tab (using as last resort)");
       }
+    }
+    
+    if (ordersTab) {
+      await ordersTab.click();
+      console.log("Clicked Orders/Open Orders/Order History tab");
+      await delay(1000); // Reduced from 2000ms - wait for orders to load
+    } else {
+      console.log("⚠ Could not find Open Orders, Order History, or Orders tab");
     }
   
     // Check if there are any open orders
@@ -89,53 +81,15 @@ async function cancelAllOrders(page) {
     }
   
     // Wait a bit more for UI to fully render
-    await delay(500);
-
-    // GRVT/Exchange shortcut: Try "Cancel all orders" button first (many exchanges have this)
-    const cancelAllBtn = await page.evaluateHandle(() => {
-      const elements = Array.from(document.querySelectorAll('button, div[role="button"], span'));
-      for (const el of elements) {
-        if (el.offsetParent === null || el.offsetWidth === 0) continue;
-        const text = (el.textContent || '').trim().toLowerCase();
-        if (text.includes('cancel all') && text.includes('order')) return el;
-      }
-      return null;
-    });
-
-    if (cancelAllBtn && cancelAllBtn.asElement()) {
-      console.log(`✅ Found "Cancel all orders" button — clicking to cancel all at once`);
-      // MUST use Puppeteer native click — GRVT may check isTrusted on cancel buttons
-      await cancelAllBtn.asElement().click();
-      await delay(1000);
-
-      // Check for confirmation dialog — also needs isTrusted click
-      const confirmHandle = await page.evaluateHandle(() => {
-        const elements = Array.from(document.querySelectorAll('button, div[role="button"], span'));
-        for (const el of elements) {
-          if (el.offsetParent === null || el.offsetWidth === 0) continue;
-          const text = (el.textContent || '').trim().toLowerCase();
-          if (text === 'confirm' || text === 'yes' || text === 'ok') return el;
-        }
-        return null;
-      });
-      const confirmEl = confirmHandle.asElement();
-      if (confirmEl) {
-        console.log(`Clicking Confirm to cancel all orders...`);
-        await confirmEl.click(); // Puppeteer native click — isTrusted: true
-        await delay(1000);
-      }
-
-      console.log(`✅ Cancel all orders completed`);
-      return { success: true, message: "Canceled all orders via Cancel All button", canceled: -1 };
-    }
-
-    // Fallback: Count orders in table and cancel individually
+    await delay(500); // Reduced from 1000ms
+  
+    // Find and click all Cancel buttons
     let canceledCount = 0;
-    let maxAttempts = 10;
+    let maxAttempts = 10; // Prevent infinite loop
     let attempts = 0;
-
+    
+    // Get initial order count for accurate reporting
     const initialOrderCount = await page.evaluate(() => {
-      // Try table-based detection first
       const tables = Array.from(document.querySelectorAll('table'));
       for (const table of tables) {
         const dataRows = Array.from(table.querySelectorAll('tbody tr, tr:not(:first-child)'));
@@ -148,23 +102,17 @@ async function cancelAllOrders(page) {
         });
         if (orderRows.length > 0) return orderRows.length;
       }
-      // Fallback: count visible Cancel buttons/links (for non-table UIs like GRVT)
-      const cancelBtns = Array.from(document.querySelectorAll('button, a, span, div[role="button"]'));
-      let cancelCount = 0;
-      for (const btn of cancelBtns) {
-        if (btn.offsetParent === null) continue;
-        const text = (btn.textContent || '').trim().toLowerCase();
-        // Match individual "Cancel" buttons (not "Cancel all orders")
-        if (text === 'cancel' && !text.includes('all')) cancelCount++;
-      }
-      return cancelCount;
+      return 0;
     });
-
+    
     console.log(`📊 Initial open orders detected: ${initialOrderCount}`);
-
+    
+    // Early exit if no orders found
     if (initialOrderCount === 0) {
       console.log("✅ No open orders found - skipping cancellation");
-      await delay(1000);
+      // Wait before proceeding to leverage setting
+      console.log("Waiting 2 seconds before proceeding to leverage setting...");
+      await delay(2000);
       return { success: true, message: "No orders to cancel", canceled: 0 };
     }
   
@@ -531,8 +479,8 @@ async function verifyOrderPlaced(page, exchange, side, qty, maxWaitTime = 10000)
  * 4. Click "Cancel order" button
  * 5. Click "Yes, cancel order" in confirmation modal
  */
-async function cancelKrakenOrders(page, closeAtMarket = false, skipOrderCancel = false) {
-  console.log(`\n=== ${skipOrderCancel ? 'Closing Kraken Position' : 'Canceling Kraken Orders'} via Modal Flow (KRAKEN-SPECIFIC FUNCTION) ${closeAtMarket ? '(Market Close)' : '(Limit Close)'}${skipOrderCancel ? ' (skip order cancel — preserve TP/SL)' : ''} ===`);
+async function cancelKrakenOrders(page, closeAtMarket = false) {
+  console.log(`\n=== Canceling Kraken Orders via Modal Flow (KRAKEN-SPECIFIC FUNCTION) ${closeAtMarket ? '(Market Close)' : '(Limit Close)'} ===`);
   
   // Smart wait for Kraken page to be ready (check for Open Orders tab instead of fixed delay)
   console.log(`[Kraken] Waiting for page to be ready...`);
@@ -591,18 +539,7 @@ async function cancelKrakenOrders(page, closeAtMarket = false, skipOrderCancel =
     console.log(`[Kraken] ⚠️  Page readiness check timeout, proceeding anyway...`);
     await delay(2000); // Fallback: wait 2 seconds
   }
-
-  // Initialize canceledCount here so it's accessible in the return statement
-  let canceledCount = 0;
-
-  // When skipOrderCancel=true, skip order cancellation entirely and go straight to position closing.
-  // This preserves TP/SL orders as a safety net while attempting to close the position.
-  // TP/SL auto-cancels when the position closes on the exchange.
-  if (skipOrderCancel) {
-    console.log(`[Kraken] Skipping order cancellation (preserving TP/SL) — going directly to position close...`);
-  }
-
-  if (!skipOrderCancel) {
+  
   // Step 1: Go to Open orders tab
   console.log(`[Kraken] Step 1: Going to Open orders tab...`);
   console.log(`[Kraken] Finding Open orders tab using data-layout-path="/c1/ts1/tb2"...`);
@@ -630,7 +567,7 @@ async function cancelKrakenOrders(page, closeAtMarket = false, skipOrderCancel =
     
     if (isVisible) {
       console.log(`[Kraken] ✅ Found Open orders tab, clicking...`);
-      await safeClick(page, openOrdersTabElement);
+      await openOrdersTabElement.click();
       console.log(`[Kraken] ✅ Clicked Open orders tab`);
       
       // Smart wait for orders table to load (check for table elements instead of fixed delay)
@@ -745,7 +682,8 @@ async function cancelKrakenOrders(page, closeAtMarket = false, skipOrderCancel =
       
       // Check if row contains order data indicators
       const hasOrderType = rowText.includes('limit') || rowText.includes('market');
-      const hasSide = rowText.includes('buy') || rowText.includes('sell');
+      const hasSide = (rowText.includes('buy') || rowText.includes('sell')) && 
+                      !rowText.includes('side'); // "side" is a header, not order data
       const hasPrice = /\d{1,3}([,.]\d{3})*[,.]?\d*\s*(usd|btc)/i.test(rowText) || 
                       /\d{4,}\s*(usd|btc)/i.test(rowText); // Match prices like "82,669 USD" or "83056 USD"
       const hasQuantity = /0\.\d+\s*(btc|usd)/i.test(rowText) || 
@@ -769,6 +707,9 @@ async function cancelKrakenOrders(page, closeAtMarket = false, skipOrderCancel =
     
     return { hasOrders: false, count: 0, debug: `checked ${allRows.length} rows, none matched` };
   });
+  
+  // Initialize canceledCount before the if/else block
+  let canceledCount = 0;
   
   if (!hasOrders.hasOrders) {
     console.log(`[Kraken] ✅ No open orders found`);
@@ -1138,7 +1079,7 @@ async function cancelKrakenOrders(page, closeAtMarket = false, skipOrderCancel =
       
       if (isInModal) {
         console.log(`[Kraken] ✅ Found "Cancel order" button in first modal, clicking...`);
-        await safeClick(page, cancelOrderBtn);
+        await cancelOrderBtn.click();
         console.log(`[Kraken] Waiting for first modal to close and second modal (confirmation) to open...`);
         
         // Step 4a: Wait for FIRST modal to close and SECOND modal to open
@@ -1238,7 +1179,7 @@ async function cancelKrakenOrders(page, closeAtMarket = false, skipOrderCancel =
       
       if (isInModal) {
         console.log(`[Kraken] ✅ Found "Yes, cancel order" button in second modal, clicking...`);
-        await safeClick(page, confirmCancelBtn);
+        await confirmCancelBtn.click();
         console.log(`[Kraken] Waiting for both modals to close...`);
         
         // Step 5a: Wait for both modals to close
@@ -1316,8 +1257,7 @@ async function cancelKrakenOrders(page, closeAtMarket = false, skipOrderCancel =
   if (!tableStable) {
     await delay(500); // Fallback
   }
-  } // end if (!skipOrderCancel)
-
+  
   // Step 6: Navigate to Positions tab and close all positions
   console.log(`[Kraken] Step 6: Navigating to Positions tab...`);
   let positionsTab = await page.evaluateHandle(() => {
@@ -1343,8 +1283,8 @@ async function cancelKrakenOrders(page, closeAtMarket = false, skipOrderCancel =
     
     if (isVisible) {
       console.log(`[Kraken] ✅ Found Positions tab, clicking...`);
-      await safeClick(page, positionsTabElement);
-
+      await positionsTabElement.click();
+      
       // Smart wait for positions tab to load
       let positionsReady = false;
       for (let i = 0; i < 8; i++) {
@@ -1352,7 +1292,7 @@ async function cancelKrakenOrders(page, closeAtMarket = false, skipOrderCancel =
           const hasPositionText = document.body.innerText.toLowerCase().includes('positions') ||
                                  document.body.innerText.toLowerCase().includes('long') ||
                                  document.body.innerText.toLowerCase().includes('short');
-          const hasPositionRows = document.querySelectorAll('div[role="button"], div[role="row"], tr, div[class*="cursor-pointer"]').length > 0;
+          const hasPositionRows = document.querySelectorAll('div[role="button"]').length > 0;
           return hasPositionText && hasPositionRows;
         });
         if (positionsReady) {
@@ -1377,8 +1317,8 @@ async function cancelKrakenOrders(page, closeAtMarket = false, skipOrderCancel =
       }, positionsTab);
       if (isVisible) {
         console.log(`[Kraken] ✅ Found Positions tab via text search, clicking...`);
-        await safeClick(page, positionsTab);
-
+        await positionsTab.click();
+        
         // Smart wait for positions tab to load
         let positionsReady = false;
         for (let i = 0; i < 8; i++) {
@@ -1386,7 +1326,7 @@ async function cancelKrakenOrders(page, closeAtMarket = false, skipOrderCancel =
             const hasPositionText = document.body.innerText.toLowerCase().includes('positions') ||
                                    document.body.innerText.toLowerCase().includes('long') ||
                                    document.body.innerText.toLowerCase().includes('short');
-            const hasPositionRows = document.querySelectorAll('div[role="button"], div[role="row"], tr, div[class*="cursor-pointer"]').length > 0;
+            const hasPositionRows = document.querySelectorAll('div[role="button"]').length > 0;
             return hasPositionText && hasPositionRows;
           });
           if (positionsReady) {
@@ -1404,48 +1344,55 @@ async function cancelKrakenOrders(page, closeAtMarket = false, skipOrderCancel =
       console.log(`[Kraken] ⚠️  Could not find Positions tab`);
     }
   }
-
+  
   // Step 7: Find all position rows and close them
   console.log(`[Kraken] Step 7: Finding all position rows in Positions tab...`);
   // Small delay to ensure DOM is stable
   await delay(300);
   
-  // CHANGE #89: Broadened selector for Kraken position rows (was: div[role="button"] + cursor-pointer only)
+  // Get count of position rows (divs with role="button" and cursor-pointer class)
   const positionCount = await page.evaluate(() => {
-    const allRows = Array.from(document.querySelectorAll(
-      'div[role="button"], div[role="row"], tr, div[class*="cursor-pointer"]'
-    ));
+    // Find all position rows - they have role="button" and cursor-pointer class
+    const positionRows = Array.from(document.querySelectorAll('div[role="button"]'));
     const validRows = [];
-
-    for (const row of allRows) {
+    
+    for (const row of positionRows) {
+      // Skip if not visible
+      if (row.offsetParent === null) continue;
       const style = window.getComputedStyle(row);
       if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
-
+      
+      // Check if element has dimensions
       const rect = row.getBoundingClientRect();
-      const isVisible = row.offsetParent !== null || (rect.width > 0 && rect.height > 0);
-      if (!isVisible) continue;
-
+      if (rect.width === 0 || rect.height === 0) continue;
+      
+      // Check if it has cursor-pointer class (position rows are clickable)
+      const className = row.className || '';
+      const hasCursorPointer = className.includes('cursor-pointer');
+      
+      // Check if it contains position data (BTC, Long, Short, etc.)
       const text = (row.textContent || '').toLowerCase();
-      const hasSide = text.includes('long') || text.includes('short');
-      const hasUsdValues = /\d+[,.]\d+\s*usd/i.test(text) || (text.includes('usd') && /\d{4,}/.test(text));
-      const hasSizeData = /[\-]?0\.\d{2,}/i.test(text);
-      const hasPositionData = hasSide && (hasUsdValues || hasSizeData);
-
-      const isHeader = (text.includes('market') && text.includes('side') && text.includes('open quantity')) ||
-                      (text.includes('side') && text.includes('size') && text.includes('price')) ||
+      const hasPositionData = text.includes('btc') || 
+                              text.includes('long') || 
+                              text.includes('short') ||
+                              (text.includes('perp') && /\d/.test(text));
+      
+      // Exclude headers - look for header patterns
+      const isHeader = (text.includes('side') && text.includes('size') && text.includes('price')) ||
+                      (text.includes('pair') && text.includes('side') && text.includes('size')) ||
                       row.querySelector('th') !== null ||
                       (row.parentElement && row.parentElement.tagName === 'THEAD');
-
-      // Removed cursor-pointer requirement — Kraken UI may not use it for all row types
-      if (hasPositionData && !isHeader) {
+      
+      // Include if it's a clickable row with position data and not a header
+      if (hasCursorPointer && hasPositionData && !isHeader) {
         validRows.push({
-          text: text.substring(0, 120),
+          text: text.substring(0, 80),
           hasLong: text.includes('long'),
           hasShort: text.includes('short')
         });
       }
     }
-
+    
     return validRows.length;
   });
   
@@ -1455,54 +1402,58 @@ async function cancelKrakenOrders(page, closeAtMarket = false, skipOrderCancel =
     console.log(`[Kraken] ✅ No positions found to close`);
   } else {
     // Close each position by clicking on clickable elements one by one
-    for (let i = 0; i < positionCount; i++) {
+    for (let i = 1; i < positionCount; i++) {
       console.log(`[Kraken] Closing position ${i + 1}/${positionCount}...`);
       
       // Step 7a: Click on the position row to open modal
       const positionClicked = await page.evaluate((index) => {
-        // CHANGE #89: Broadened selector (same as count query above)
-        const allRows = Array.from(document.querySelectorAll(
-          'div[role="button"], div[role="row"], tr, div[class*="cursor-pointer"]'
-        ));
+        // Find all position rows again (in case DOM changed)
+        const positionRows = Array.from(document.querySelectorAll('div[role="button"]'));
         const validRows = [];
-
-        for (const row of allRows) {
+        
+        for (const row of positionRows) {
+          if (row.offsetParent === null) continue;
           const style = window.getComputedStyle(row);
           if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
-
+          
           const rect = row.getBoundingClientRect();
-          const isVisible = row.offsetParent !== null || (rect.width > 0 && rect.height > 0);
-          if (!isVisible) continue;
-
+          if (rect.width === 0 || rect.height === 0) continue;
+          
+          const className = row.className || '';
+          const hasCursorPointer = className.includes('cursor-pointer');
+          
           const text = (row.textContent || '').toLowerCase();
-          const hasSide = text.includes('long') || text.includes('short');
-          const hasUsdValues = /\d+[,.]\d+\s*usd/i.test(text) || (text.includes('usd') && /\d{4,}/.test(text));
-          const hasSizeData = /[\-]?0\.\d{2,}/i.test(text);
-          const hasPositionData = hasSide && (hasUsdValues || hasSizeData);
-
-          const isHeader = (text.includes('market') && text.includes('side') && text.includes('open quantity')) ||
-                          (text.includes('side') && text.includes('size') && text.includes('price')) ||
+          const hasPositionData = text.includes('btc') || 
+                                  text.includes('long') || 
+                                  text.includes('short') ||
+                                  (text.includes('perp') && /\d/.test(text));
+          
+          const isHeader = (text.includes('side') && text.includes('size') && text.includes('price')) ||
+                          (text.includes('pair') && text.includes('side') && text.includes('size')) ||
                           row.querySelector('th') !== null ||
                           (row.parentElement && row.parentElement.tagName === 'THEAD');
-
-          if (hasPositionData && !isHeader) {
+          
+          if (hasCursorPointer && hasPositionData && !isHeader) {
             validRows.push(row);
           }
         }
         
         if (validRows.length > index) {
           const row = validRows[index];
+          // Try to click the row
           try {
             row.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            // Full mouse event sequence — Kraken needs mousedown/mouseup, not just click
-            row.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
-            row.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
-            row.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true }));
-            row.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
-            row.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+            row.click();
             return { success: true, text: row.textContent?.substring(0, 80) || '' };
           } catch (e) {
-            return { success: false, error: e.message };
+            // Try JavaScript click
+            try {
+              row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              row.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+              return { success: true, text: row.textContent?.substring(0, 80) || '' };
+            } catch (e2) {
+              return { success: false, error: e2.message };
+            }
           }
         }
         return { success: false, error: 'Row not found' };
@@ -1532,10 +1483,10 @@ async function cancelKrakenOrders(page, closeAtMarket = false, skipOrderCancel =
                              modal.offsetWidth > 0 && 
                              modal.offsetHeight > 0;
             
-            // Also check if modal is actually on screen (with offsetParent fallback for minimized browser)
+            // Also check if modal is actually on screen
             if (isVisible) {
               const rect = modal.getBoundingClientRect();
-              return (rect.width > 0 && rect.height > 0) || modal.offsetParent !== null;
+              return rect.width > 0 && rect.height > 0;
             }
             return false;
           });
@@ -1606,9 +1557,6 @@ async function cancelKrakenOrders(page, closeAtMarket = false, skipOrderCancel =
         
         if (isInModal) {
           console.log(`[Kraken] ✅ Found "Close position" button, clicking...`);
-          // MUST use Puppeteer native click (elementHandle.click()) — produces isTrusted: true
-          // DOM dispatchEvent() produces isTrusted: false which Kraken ignores on trading buttons.
-          // This was the root cause of close flow breaking after minimize-safe refactor.
           await closePositionBtn.click();
           await delay(300); // Reduced from 500ms
           
@@ -1658,67 +1606,51 @@ async function cancelKrakenOrders(page, closeAtMarket = false, skipOrderCancel =
             await delay(200); // Fallback
           }
           
-          // Step 7e: Try to select "Limit" in close modal (minimize taker fees)
-          // IMPORTANT: Must find the Limit tab INSIDE the close modal, not the main form's
-          // order type selector. The close modal has a Limit/Market toggle with exactly 2 tabs.
-          // The main form's dropdown has Limit, Market, Stop loss, etc. (many items).
-          console.log(`[Kraken] Looking for "Limit" option in close modal...`);
-          let limitSelected = false;
-
+          // Step 7e: Find and click "Limit" option (skip if closeAtMarket is true - Market is selected by default)
           if (!closeAtMarket) {
-            // Find Limit tab element — return as JSHandle so we can use Puppeteer native click
-            const limitHandle = await page.evaluateHandle(() => {
-              const allElements = Array.from(document.querySelectorAll('button, div, span, a'));
-              const candidates = [];
-
-              for (const el of allElements) {
-                const text = (el.textContent || '').trim();
-                if (text.toLowerCase() !== 'limit') continue;
-                if (el.offsetWidth <= 0 || el.offsetHeight <= 0) continue;
-
-                // Check if this element has a sibling with text "Market"
-                const parent = el.parentElement;
-                if (!parent) continue;
-                const children = Array.from(parent.children);
-                const hasMarket = children.some(c =>
-                  (c.textContent || '').trim().toLowerCase() === 'market'
-                );
-                if (!hasMarket) continue;
-
-                // Prefer elements with fewest siblings (close modal has ~2: Limit + Market)
-                // Main form dropdown has many items (Limit, Market, Stop loss, etc.)
-                candidates.push({ el, siblingCount: children.length });
+            console.log(`[Kraken] Looking for "Limit" option in modal...`);
+            const limitOption = await page.evaluateHandle(() => {
+              // Find button with role="tab" and text "Limit"
+              const buttons = Array.from(document.querySelectorAll('button[role="tab"]'));
+              for (const btn of buttons) {
+                const text = (btn.textContent || '').trim();
+                if (text.toLowerCase() === 'limit') {
+                  return btn;
+                }
               }
-
-              // Sort by fewest siblings — close modal tab bar has 2 children
-              candidates.sort((a, b) => a.siblingCount - b.siblingCount);
-
-              if (candidates.length > 0) return candidates[0].el;
               return null;
             });
-
-            const limitEl = limitHandle.asElement();
-            if (limitEl) {
-              // MUST use Puppeteer native click — isTrusted: true required
-              await limitEl.click();
-              console.log(`[Kraken] ✅ Found "Limit" tab in close modal, clicked`);
-              limitSelected = true;
-              await delay(300);
+            
+            if (limitOption && limitOption.asElement()) {
+              const limitElement = limitOption.asElement();
+              const isVisible = await page.evaluate((el) => {
+                return el && el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+              }, limitElement);
+              
+              if (isVisible) {
+                console.log(`[Kraken] ✅ Found "Limit" option, clicking...`);
+                await limitElement.click();
+                await delay(300); // Reduced from 500ms
+              } else {
+                console.log(`[Kraken] ⚠️  Limit option found but not visible`);
+              }
             } else {
-              console.log(`[Kraken] ⚠️  Could not find "Limit" tab in close modal — using default mode`);
+              // Fallback: Try text search
+              const limitBtn = await findByText(page, "Limit", ["button"]);
+              if (limitBtn) {
+                console.log(`[Kraken] ✅ Found "Limit" option via text search, clicking...`);
+                await limitBtn.click();
+                await delay(300); // Reduced from 500ms
+              } else {
+                console.log(`[Kraken] ⚠️  Could not find "Limit" option`);
+              }
             }
           } else {
-            console.log(`[Kraken] Using Market close (closeAtMarket=true)`);
+            // Market close: Skip Limit selection (Market is selected by default)
+            console.log(`[Kraken] Skipping Limit selection - closing at Market (default selection)`);
+            await delay(200); // Small delay for modal to be ready
           }
-
-          // Step 7e.5: REMOVED — Price fill was breaking the close flow.
-          // Kraken pre-fills the mark price (current market) in the close modal,
-          // which is reasonable for Limit close. The fallback input search was
-          // modifying the MAIN order form's price input instead of the close modal's,
-          // and the React native setter was breaking Kraken's form state, preventing
-          // "Close BTC Perp" from submitting the order.
-          // If Limit close doesn't fill at mark price, 4x Limit + Market fallback handles it.
-
+          
           // Step 7f: Find and click "Close BTC Perp" button
           console.log(`[Kraken] Looking for "Close BTC Perp" button in modal...`);
           let closeBtcBtn = await findByExactText(page, "Close BTC", ["button", "div", "span"]);
@@ -1749,9 +1681,6 @@ async function cancelKrakenOrders(page, closeAtMarket = false, skipOrderCancel =
             
             if (isInModal2) {
               console.log(`[Kraken] ✅ Found "Close BTC Perp" button, clicking...`);
-              // MUST use Puppeteer native click (elementHandle.click()) — produces isTrusted: true
-              // DOM dispatchEvent() produces isTrusted: false which Kraken ignores on trading buttons.
-              // This was the root cause of close flow breaking after minimize-safe refactor.
               await closeBtcBtn.click();
               await delay(500); // Reduced from 1000ms
               
@@ -1849,8 +1778,8 @@ async function checkKrakenOpenPositions(page) {
       
       if (isVisible) {
         console.log(`[Kraken] ✅ Found Positions tab, clicking...`);
-        await safeClick(page, positionsTabElement);
-
+        await positionsTabElement.click();
+        
         // Smart wait for positions tab to load
         let positionsReady = false;
         for (let i = 0; i < 8; i++) {
@@ -1858,7 +1787,7 @@ async function checkKrakenOpenPositions(page) {
             const hasPositionText = document.body.innerText.toLowerCase().includes('positions') ||
                                    document.body.innerText.toLowerCase().includes('long') ||
                                    document.body.innerText.toLowerCase().includes('short');
-            const hasPositionRows = document.querySelectorAll('div[role="button"], div[role="row"], tr, div[class*="cursor-pointer"]').length > 0;
+            const hasPositionRows = document.querySelectorAll('div[role="button"]').length > 0;
             return hasPositionText && hasPositionRows;
           });
           if (positionsReady) {
@@ -1882,8 +1811,8 @@ async function checkKrakenOpenPositions(page) {
         }, positionsTab);
         if (isVisible) {
           console.log(`[Kraken] ✅ Found Positions tab via text search, clicking...`);
-          await safeClick(page, positionsTab);
-
+          await positionsTab.click();
+          
           // Smart wait for positions tab to load
           let positionsReady = false;
           for (let i = 0; i < 8; i++) {
@@ -1891,7 +1820,7 @@ async function checkKrakenOpenPositions(page) {
               const hasPositionText = document.body.innerText.toLowerCase().includes('positions') ||
                                      document.body.innerText.toLowerCase().includes('long') ||
                                      document.body.innerText.toLowerCase().includes('short');
-              const hasPositionRows = document.querySelectorAll('div[role="button"], div[role="row"], tr, div[class*="cursor-pointer"]').length > 0;
+              const hasPositionRows = document.querySelectorAll('div[role="button"]').length > 0;
               return hasPositionText && hasPositionRows;
             });
             if (positionsReady) {
@@ -1906,149 +1835,80 @@ async function checkKrakenOpenPositions(page) {
         }
       } else {
         console.log(`[Kraken] ⚠️  Could not find Positions tab`);
-        return {
-          success: false,
-          hasPositions: false,
+        return { 
+          success: false, 
+          hasPositions: false, 
           count: 0,
           longCount: 0,
           shortCount: 0,
           positions: [],
-          message: "Could not find Positions tab"
+          message: "Could not find Positions tab" 
         };
       }
     }
-
+    
     // Step 2: Check for position rows
     console.log(`[Kraken] Step 2: Checking for position rows in Positions tab...`);
     await delay(300); // Small delay to ensure DOM is stable
-
+    
     const positionResult = await page.evaluate(() => {
-      // CHANGE #89: Broadened selector — Kraken position rows may be tr, div[role="row"],
-      // div[role="button"], or other row-like elements depending on UI version.
-      const allRows = Array.from(document.querySelectorAll(
-        'div[role="button"], div[role="row"], tr, div[class*="cursor-pointer"]'
-      ));
+      // Find all position rows - they have role="button" and cursor-pointer class
+      const positionRows = Array.from(document.querySelectorAll('div[role="button"]'));
       const validRows = [];
-
-      for (const row of allRows) {
-        // Skip if CSS-hidden
+      
+      for (const row of positionRows) {
+        // Skip if not visible
+        if (row.offsetParent === null) continue;
         const style = window.getComputedStyle(row);
         if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
-
+        
+        // Check if element has dimensions
+        const rect = row.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) continue;
+        
+        // Check if it has cursor-pointer class (position rows are clickable)
+        const className = row.className || '';
+        const hasCursorPointer = className.includes('cursor-pointer');
+        
+        // Check if it contains position data (BTC, Long, Short, etc.)
         const text = (row.textContent || '').toLowerCase();
-
-        // Must contain a side indicator (Long/Short)
-        const isLong = text.includes('long');
-        const isShort = text.includes('short');
-        const hasSideIndicator = isLong || isShort;
-
-        // Position rows contain: BTC/Perp + numeric data (size, price, PnL)
-        const hasPerp = text.includes('perp');
-        const hasBtc = text.includes('btc');
-        const hasNumericData = /\d+\.\d+/.test(text);
-        const hasPositionData = (hasPerp || hasBtc) && hasNumericData;
-
-        // Exclude header rows
-        const isHeader = (text.includes('market') && text.includes('side') && text.includes('open quantity')) ||
-                        (text.includes('side') && text.includes('size') && text.includes('price')) ||
+        const hasPositionData = text.includes('btc') || 
+                                text.includes('long') || 
+                                text.includes('short') ||
+                                (text.includes('perp') && /\d/.test(text));
+        
+        // Exclude headers - look for header patterns
+        const isHeader = (text.includes('side') && text.includes('size') && text.includes('price')) ||
+                        (text.includes('pair') && text.includes('side') && text.includes('size')) ||
                         row.querySelector('th') !== null ||
                         (row.parentElement && row.parentElement.tagName === 'THEAD');
-
-        if (hasSideIndicator && hasPositionData && !isHeader) {
+        
+        // Include if it's a clickable row with position data and not a header
+        if (hasCursorPointer && hasPositionData && !isHeader) {
+          const isLong = text.includes('long');
+          const isShort = text.includes('short');
+          
           validRows.push({
-            text: text.substring(0, 120),
-            side: isLong ? 'long' : 'short',
+            text: text.substring(0, 80),
+            side: isLong ? 'long' : (isShort ? 'short' : 'unknown'),
             isLong: isLong,
             isShort: isShort
           });
         }
       }
-
-      // FALLBACK 1: Scan the ORDER FORM area for position indicator.
-      // Kraken's order form always shows "Short X.XXXXBTC" or "Long X.XXXXBTC" when a position exists.
-      // This is visible regardless of which tab is selected at the bottom panel.
-      // SKIP fallbacks if Positions tab shows "No positions" — prevents false positive
-      // from order form buttons like "Short (sell) BTC" + qty field "0.0001"
-      const noPositionsText = document.body.innerText.includes('No positions');
-      if (validRows.length === 0 && !noPositionsText) {
-        const bodyText = document.body.innerText;
-        // Match patterns like "Short 0.0040BTC" or "Long 0.002 BTC" (with/without space before BTC)
-        const posMatch = bodyText.match(/(?:^|\n|\s)(Short|Long)\s+([\d.]+)\s*BTC/i);
-        if (posMatch) {
-          const side = posMatch[1].toLowerCase();
-          const size = posMatch[2];
-          validRows.push({
-            text: `[order-form fallback] ${side} ${size} BTC`,
-            side: side,
-            isLong: side === 'long',
-            isShort: side === 'short'
-          });
-        }
-      }
-
-      // FALLBACK 2: Scan leaf elements for "short"/"long" text near BTC data.
-      if (validRows.length === 0 && !noPositionsText) {
-        const allElements = Array.from(document.querySelectorAll('div, td, span, p'));
-        let foundShort = false;
-        let foundLong = false;
-        for (const el of allElements) {
-          if (el.children.length > 10) continue;
-          const t = (el.textContent || '').trim().toLowerCase();
-          // Match "short" or "long" (exact or as part of short text like "short 0.004btc")
-          if (t.length < 30 && t.includes('short') && !t.includes('shortcut')) foundShort = true;
-          if (t.length < 30 && t.includes('long') && !t.includes('along') && !t.includes('belong')) foundLong = true;
-        }
-        if (foundShort || foundLong) {
-          const bodyText = document.body.innerText.toLowerCase();
-          const hasBtcPosition = (bodyText.includes('btc') || bodyText.includes('perp')) &&
-                                 /[\-]?0\.\d{2,}/.test(bodyText);
-          if (hasBtcPosition) {
-            validRows.push({
-              text: '[text-scan fallback] ' + (foundLong ? 'long' : '') + (foundShort ? 'short' : ''),
-              side: foundLong ? 'long' : 'short',
-              isLong: foundLong,
-              isShort: foundShort
-            });
-          }
-        }
-      }
-
-      // Debug: log what selectors found and what position text exists
-      const debugInfo = {
-        divRoleButton: document.querySelectorAll('div[role="button"]').length,
-        divRoleRow: document.querySelectorAll('div[role="row"]').length,
-        trElements: document.querySelectorAll('tr').length,
-        cursorPointer: document.querySelectorAll('[class*="cursor-pointer"]').length,
-      };
-      // Check if order form shows position info (e.g., "Short 0.0040BTC")
-      const bodyInnerText = document.body.innerText;
-      const orderFormPos = bodyInnerText.match(/(?:^|\n|\s)(Short|Long)\s+([\d.]+)\s*BTC/i);
-      if (orderFormPos) {
-        debugInfo.orderFormPosition = `${orderFormPos[1]} ${orderFormPos[2]} BTC`;
-      }
-
+      
+      // Count long and short positions
       const longCount = validRows.filter(row => row.isLong).length;
       const shortCount = validRows.filter(row => row.isShort).length;
-
+      
       return {
-        hasPositions: validRows.length > 0,
-        count: validRows.length,
+        hasPositions: validRows.length -1 > 0,
+        count: validRows.length -1 ,
         longCount: longCount,
         shortCount: shortCount,
-        rows: validRows,
-        debugInfo: debugInfo
+        rows: validRows
       };
     });
-
-    // Log debug info (helps diagnose detection failures)
-    if (positionResult.debugInfo) {
-      const d = positionResult.debugInfo;
-      const debugParts = [`div[role="button"]=${d.divRoleButton}`, `div[role="row"]=${d.divRoleRow}`, `tr=${d.trElements}`, `cursor-pointer=${d.cursorPointer}`];
-      if (d.orderFormPosition) debugParts.push(`orderForm="${d.orderFormPosition}"`);
-      if (!positionResult.hasPositions) {
-        console.log(`[Kraken] 🔍 Debug: ${debugParts.join(', ')}`);
-      }
-    }
     
     if (positionResult.hasPositions) {
       console.log(`[Kraken] ✅ Found ${positionResult.count} open position(s) - Long: ${positionResult.longCount}, Short: ${positionResult.shortCount}`);

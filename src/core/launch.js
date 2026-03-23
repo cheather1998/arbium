@@ -4,64 +4,58 @@ import path from 'path';
 import { execSync } from 'child_process';
 import EXCHANGE_CONFIGS from '../config/exchanges.js';
 import { delay, closeNotifyBarWrapperNotifications } from '../utils/helpers.js';
-import { loadCookies, saveCookies, hasExtendedExchangeCookies } from '../utils/cookies.js';
+import { loadCookies, hasExtendedExchangeCookies } from '../utils/cookies.js';
 import { isLoggedIn, login } from '../auth/login.js';
 import { clickOrdersTab } from '../ui/tabs.js';
 import { startApiServer } from '../api/server.js';
 import { HEADLESS } from '../config/headless.js';
 
 /**
- * Find a usable Chrome/Chromium executable.
- * Priority: Puppeteer cache → System Chrome → null (let Puppeteer decide)
+ * Find a usable Chrome/Chromium executable on the system.
+ * Required when running inside packaged Electron (no bundled Puppeteer Chrome).
  */
-function findChromePath() {
-  const isPackaged = process.env.ELECTRON_MODE === '1';
-  if (!isPackaged) return undefined; // Dev mode — Puppeteer handles it
-
-  // 1. Check Puppeteer cache (~/.cache/puppeteer/chrome/...)
-  const homeDir = process.env.HOME || process.env.USERPROFILE;
-  if (homeDir) {
-    const cacheDir = path.join(homeDir, '.cache', 'puppeteer', 'chrome');
-    try {
-      if (fs.existsSync(cacheDir)) {
-        const versions = fs.readdirSync(cacheDir).sort().reverse(); // newest first
-        for (const ver of versions) {
-          // macOS
-          const macPath = path.join(cacheDir, ver, 'chrome-mac-x64', 'Google Chrome for Testing.app', 'Contents', 'MacOS', 'Google Chrome for Testing');
-          if (fs.existsSync(macPath)) {
-            console.log(`[Chrome] Using Puppeteer cached Chrome: ${macPath}`);
-            return macPath;
-          }
-          // Windows
-          const winPath = path.join(cacheDir, ver, 'chrome-win64', 'chrome.exe');
-          if (fs.existsSync(winPath)) {
-            console.log(`[Chrome] Using Puppeteer cached Chrome: ${winPath}`);
-            return winPath;
-          }
-        }
-      }
-    } catch { /* ignore */ }
-  }
-
-  // 2. System Chrome
-  const systemPaths = [
-    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',                    // macOS
-    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',                       // Windows
-    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',                // Windows x86
-    '/usr/bin/google-chrome',                                                           // Linux
-    '/usr/bin/google-chrome-stable',                                                    // Linux
+function findSystemChrome() {
+  const candidates = [
+    // macOS
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    '/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary',
+    '/Applications/Chromium.app/Contents/MacOS/Chromium',
+    '/Applications/Brave Browser.app/Contents/MacOS/Brave Browser',
+    // Linux
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    // Windows
+    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
   ];
-  for (const p of systemPaths) {
-    if (fs.existsSync(p)) {
-      console.log(`[Chrome] Using system Chrome: ${p}`);
-      return p;
-    }
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
   }
+  // Try `which` on unix
+  try {
+    const result = execSync('which google-chrome || which chromium || which chrome 2>/dev/null', { encoding: 'utf-8' }).trim();
+    if (result && fs.existsSync(result)) return result;
+  } catch { /* ignore */ }
+  return null;
+}
 
-  // No Chrome found anywhere
-  const err = new Error('CHROME_NOT_FOUND');
-  err.code = 'CHROME_NOT_FOUND';
-  throw err;
+// Determine if we need a system Chrome (packaged Electron mode)
+function getChromePath() {
+  // If ELECTRON_MODE is set, we're running inside Electron's packaged app
+  // Puppeteer's bundled Chrome won't be accessible inside the asar
+  if (process.env.ELECTRON_MODE === '1') {
+    const systemChrome = findSystemChrome();
+    if (systemChrome) {
+      console.log(`[Chrome] Using system Chrome: ${systemChrome}`);
+      return systemChrome;
+    }
+    console.warn('[Chrome] No system Chrome found! Puppeteer may fail to launch.');
+    return undefined;
+  }
+  // In dev/CLI mode, let Puppeteer use its own bundled Chrome
+  return undefined;
 }
 
 async function launchAccount(accountConfig, exchangeConfig) {
@@ -101,17 +95,31 @@ async function launchAccount(accountConfig, exchangeConfig) {
         }
       }
   
-      // Remove stale lock file from previous crashed sessions
-      const lockFile = path.join(profileDir, 'SingletonLock');
-      if (fs.existsSync(lockFile)) {
-        console.log(`[${email}] Removing stale browser lock: ${lockFile}`);
-        try { fs.unlinkSync(lockFile); } catch { /* ignore */ }
+      // Kill any existing Chrome process using this profile directory
+      try {
+        const { execSync } = await import('child_process');
+        // Find and kill Chrome processes using this specific profile
+        const profileBase = path.basename(profileDir);
+        try {
+          execSync(`pkill -f "${profileBase}" 2>/dev/null`, { timeout: 3000 });
+          console.log(`[${email}] Killed stale Chrome process for profile ${profileBase}`);
+          await delay(1000);
+        } catch {
+          // No matching process found — that's fine
+        }
+        // Also remove the SingletonLock file that prevents reuse
+        const lockFile = path.join(profileDir, 'SingletonLock');
+        if (fs.existsSync(lockFile)) {
+          fs.unlinkSync(lockFile);
+          console.log(`[${email}] Removed stale SingletonLock`);
+        }
+      } catch {
+        // Ignore cleanup errors
       }
 
-      const chromePath = findChromePath();
-      const browser = await puppeteer.launch({
+      const chromePath = getChromePath();
+      const launchOptions = {
         headless: HEADLESS,
-        ...(chromePath ? { executablePath: chromePath } : {}),
         userDataDir: profileDir,
         args: [
           "--start-maximized",
@@ -119,12 +127,14 @@ async function launchAccount(accountConfig, exchangeConfig) {
           "--no-sandbox",
           "--disable-setuid-sandbox",
           "--window-size=1920,1080",
-          "--disable-backgrounding-occluded-windows",  // Prevent throttling when window is behind others
-          "--disable-renderer-backgrounding",           // Prevent throttling background tab rendering
         ],
         defaultViewport: HEADLESS ? { width: 1920, height: 1080 } : null,
-        protocolTimeout: 180000, // Increase protocol timeout to 180 seconds (default is 30s) - needed for complex DOM queries
-      });
+        protocolTimeout: 180000,
+      };
+      if (chromePath) {
+        launchOptions.executablePath = chromePath;
+      }
+      const browser = await puppeteer.launch(launchOptions);
   
       const page = await browser.newPage();
   
@@ -344,53 +354,6 @@ async function launchAccount(accountConfig, exchangeConfig) {
       }
     } catch (error) {
       console.error(`\n✗ [${email}] Error during account launch:`, error.message);
-
-      // For Kraken: navigation can destroy context due to redirects — retry with fresh page
-      if (error.message.includes('Execution context was destroyed') || error.message.includes('navigation')) {
-        try {
-          console.log(`[${email}] Retrying with fresh page after navigation error...`);
-          const pages = await browser.pages();
-          const activePage = pages[pages.length - 1] || await browser.newPage();
-          await activePage.setUserAgent(
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-          );
-          await delay(3000);
-
-          // Navigate to the exchange URL
-          try {
-            await activePage.goto(exchange.url, { waitUntil: "domcontentloaded", timeout: 60000 });
-          } catch (navErr) {
-            console.log(`[${email}] Page load timeout on retry, continuing...`);
-          }
-          await delay(5000);
-
-          // Check if already logged in (Kraken may have session)
-          const loggedIn = await isLoggedIn(activePage, exchange);
-          if (loggedIn) {
-            console.log(`[${email}] *** Successfully logged in to ${exchange.name} on retry! ***`);
-            startApiServer(activePage, apiPort, email);
-            return { browser, page: activePage, email, success: true, exchange: exchange.name };
-          }
-
-          // Not logged in — attempt login with wait
-          console.log(`[${email}] Not logged in, starting login process...`);
-          await login(activePage, browser, email, cookiesPath, true, exchange);
-          await delay(3000);
-          const loggedInAfterLogin = await isLoggedIn(activePage, exchange);
-          if (loggedInAfterLogin) {
-            console.log(`[${email}] *** Successfully logged in to ${exchange.name} after login flow! ***`);
-            await saveCookies(activePage, cookiesPath, email);
-            startApiServer(activePage, apiPort, email);
-            return { browser, page: activePage, email, success: true, exchange: exchange.name };
-          }
-
-          console.log(`[${email}] Login failed on retry. Keeping browser open for manual login.`);
-          return { browser, page: activePage, email, success: false, exchange: exchange.name, keepBrowserOpen: true };
-        } catch (retryError) {
-          console.error(`[${email}] Retry also failed:`, retryError.message);
-        }
-      }
-
       return { email, success: false, error: error.message };
     }
   }

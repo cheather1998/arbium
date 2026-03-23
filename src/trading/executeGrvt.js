@@ -1,9 +1,6 @@
 import { delay, findByText, findByExactText, closeNotifyBarWrapperNotifications } from '../utils/helpers.js';
-import { safeClick, safeType, safeClearAndType } from '../utils/safeActions.js';
 import {
   getCurrentMarketPrice,
-  getBestBidAsk,
-  getAggressivePrice,
   selectBuyOrSell,
   selectOrderType,
   findSizeAndPriceInputs,
@@ -14,7 +11,7 @@ import {
 } from './executeBase.js';
 import dotenv from 'dotenv';
 
-dotenv.config();
+dotenv.config({ path: process.env.DOTENV_CONFIG_PATH || ".env" });
 
 /**
  * GRVT specific trade execution logic
@@ -205,424 +202,2586 @@ export async function findConfirmButtonGrvt(page, side, exchange) {
   return { confirmBtn, confirmText };
 }
 
-
 /**
- * Handle TP/SL for GRVT Exchange — BASIC SCREEN approach (no Advanced modal)
- * After TP/SL checkbox is checked, trigger price inputs appear directly on CreateOrderPanel.
- * This function calculates TP/SL trigger prices and fills them into those inputs.
+ * Handle TP/SL for GRVT Exchange
+ * GRVT has "TP trigger price" and "SL trigger price" inputs with "Mark" dropdowns
  */
 export async function handleTpSlGrvt(page, exchange, price = null, side = 'buy') {
-  console.log(`[${exchange.name}] [TP/SL] Setting TP/SL on basic screen (Side: ${side.toUpperCase()}, Price: ${price})...`);
+  console.log(`[${exchange.name}] Handling TP/SL for GRVT (Side: ${side.toUpperCase()})...`);
 
   const takeProfitPercent = process.env.TAKE_PROFIT || '';
   const stopLossPercent = process.env.STOP_LOSS || '';
 
   if (!takeProfitPercent && !stopLossPercent) {
-    console.log(`[${exchange.name}] [TP/SL] TAKE_PROFIT and STOP_LOSS env not set, skipping`);
+    console.log(`[${exchange.name}] ⚠️  TAKE_PROFIT and STOP_LOSS env variables not set, skipping TP/SL`);
     return { success: false, error: 'TAKE_PROFIT and STOP_LOSS not set' };
   }
 
   if (!price || isNaN(price)) {
-    console.log(`[${exchange.name}] [TP/SL] Price not provided or invalid, skipping`);
+    console.log(`[${exchange.name}] ⚠️  Price not provided or invalid, skipping TP/SL calculation`);
     return { success: false, error: 'Price not provided or invalid' };
   }
 
-  // Calculate absolute trigger prices (GRVT requires direct price entry, not distance)
-  // Formula: envValue = ROI % → price movement % = ROI% / leverage
-  // e.g. STOP_LOSS=5 → 5% ROI / 10x = 0.5% price → BUY SL at $69,650 ($70,000 - $350)
-  // e.g. TAKE_PROFIT=10 → 10% ROI / 10x = 1% price → BUY TP at $70,700 ($70,000 + $700)
+  console.log(`[${exchange.name}] Using price value: ${price} for TP/SL calculation`);
+
+  let calculatedTakeProfit = null;
+  let calculatedStopLoss = null;
+
   const takeProfitNum = parseFloat(takeProfitPercent);
   const stopLossNum = parseFloat(stopLossPercent);
-  const leverage = parseFloat(process.env.LEVERAGE) || 10;
-  const percentageTP = takeProfitNum / 100 / leverage;
-  const percentageSL = stopLossNum / 100 / leverage;
-
-  let calculatedTP = null;
-  let calculatedSL = null;
+  const percentageTP = (takeProfitNum / 10) / 100;
+  const percentageSL = (stopLossNum / 10) / 100;
 
   if (side === 'buy') {
-    if (!isNaN(takeProfitNum) && takeProfitNum > 0) {
-      calculatedTP = price + (price * percentageTP); // TP above entry for long
+    if (!isNaN(takeProfitNum) && price) {
+      calculatedTakeProfit = price + (price * percentageTP);
+      console.log(`[${exchange.name}] BUY TP: ${price} + (${price} * ${percentageTP}) = ${calculatedTakeProfit.toFixed(2)}`);
+      if (calculatedTakeProfit <= price) {
+        console.log(`[${exchange.name}] ❌ ERROR: Calculated BUY TP (${calculatedTakeProfit.toFixed(2)}) is NOT greater than price (${price})!`);
+        calculatedTakeProfit = null;
+      }
     }
-    if (!isNaN(stopLossNum) && stopLossNum > 0) {
-      calculatedSL = price - (price * percentageSL); // SL below entry for long
-      if (calculatedSL <= 0) calculatedSL = null;
+    if (!isNaN(stopLossNum) && price) {
+      calculatedStopLoss = price - (price * percentageSL);
+      console.log(`[${exchange.name}] BUY SL: ${price} - (${price} * ${percentageSL}) = ${calculatedStopLoss.toFixed(2)}`);
+      if (calculatedStopLoss >= price) {
+        console.log(`[${exchange.name}] ❌ ERROR: Calculated BUY SL (${calculatedStopLoss.toFixed(2)}) is NOT less than price (${price})!`);
+        calculatedStopLoss = null;
+      } else if (calculatedStopLoss <= 0) {
+        console.log(`[${exchange.name}] ❌ ERROR: Calculated BUY SL (${calculatedStopLoss.toFixed(2)}) is negative or zero!`);
+        calculatedStopLoss = null;
+      }
     }
-  } else {
-    if (!isNaN(takeProfitNum) && takeProfitNum > 0) {
-      calculatedTP = price - (price * percentageTP); // TP below entry for short
-      if (calculatedTP <= 0) calculatedTP = null;
+  } else if (side === 'sell') {
+    if (!isNaN(takeProfitNum) && price) {
+      calculatedTakeProfit = price - (price * percentageTP);
+      console.log(`[${exchange.name}] SELL TP: ${price} - (${price} * ${percentageTP}) = ${calculatedTakeProfit.toFixed(2)}`);
+      if (calculatedTakeProfit >= price) {
+        console.log(`[${exchange.name}] ❌ ERROR: Calculated SELL TP (${calculatedTakeProfit.toFixed(2)}) is NOT less than price (${price})!`);
+        calculatedTakeProfit = null;
+      } else if (calculatedTakeProfit <= 0) {
+        console.log(`[${exchange.name}] ❌ ERROR: Calculated SELL TP (${calculatedTakeProfit.toFixed(2)}) is negative or zero!`);
+        calculatedTakeProfit = null;
+      }
     }
-    if (!isNaN(stopLossNum) && stopLossNum > 0) {
-      calculatedSL = price + (price * percentageSL); // SL above entry for short
+    if (!isNaN(stopLossNum) && price) {
+      calculatedStopLoss = price + (price * percentageSL);
+      console.log(`[${exchange.name}] SELL SL: ${price} + (${price} * ${percentageSL}) = ${calculatedStopLoss.toFixed(2)}`);
+      if (calculatedStopLoss <= price) {
+        console.log(`[${exchange.name}] ❌ ERROR: Calculated SELL SL (${calculatedStopLoss.toFixed(2)}) is NOT greater than price (${price})!`);
+        calculatedStopLoss = null;
+      }
     }
   }
 
-  if (!calculatedTP && !calculatedSL) {
-    console.log(`[${exchange.name}] [TP/SL] Could not calculate valid TP/SL prices, skipping`);
+  if (!calculatedTakeProfit && !calculatedStopLoss) {
+    console.log(`[${exchange.name}] ⚠️  Could not calculate TP/SL values, skipping`);
     return { success: false, error: 'Could not calculate TP/SL values' };
   }
 
-  console.log(`[${exchange.name}] [TP/SL] Trigger prices: TP=$${calculatedTP?.toFixed(2) || 'none'} (${(percentageTP * 100).toFixed(1)}%), SL=$${calculatedSL?.toFixed(2) || 'none'} (${(percentageSL * 100).toFixed(1)}%) [Side: ${side.toUpperCase()}, Entry: $${price}]`);
+  // Step 1: Find the "TP/SL" checkbox and check its status
+  // First, try to find within CreateOrderPanel
+  console.log(`[${exchange.name}] Looking for "TP/SL" checkbox in CreateOrderPanel...`);
 
-  // Step 1: Ensure TP/SL checkbox is checked on CreateOrderPanel
-  const checkboxResult = await page.evaluate(() => {
-    const panel = document.querySelector('[data-sentry-element="CreateOrderPanel"]');
-    if (!panel) return { success: false, error: 'CreateOrderPanel not found' };
+  let checkboxElement = null;
+  let isChecked = false;
 
-    const labels = Array.from(panel.querySelectorAll('label'));
-    for (const label of labels) {
-      const text = (label.textContent || '').trim().toLowerCase();
-      if ((text.includes('tp') && text.includes('sl')) ||
-          (text.includes('take profit') && text.includes('stop loss'))) {
-        const checkbox = label.querySelector('input[type="checkbox"]');
-        if (checkbox) {
-          if (!checkbox.checked) {
-            checkbox.click();
-            return { success: true, action: 'clicked' };
+  // Method 1: Search within CreateOrderPanel first
+  const createOrderPanel = await page.$('[data-sentry-element="CreateOrderPanel"]');
+  if (createOrderPanel) {
+    console.log(`[${exchange.name}] ✅ Found CreateOrderPanel, searching for TP/SL checkbox within it...`);
+
+    // Find checkbox within CreateOrderPanel
+    // const panelCheckboxes = await createOrderPanel.$$('input[type="checkbox"]');
+    // for (const checkbox of panelCheckboxes) {
+    //   const isVisible = await page.evaluate((el) => el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0, checkbox);
+    //   if (!isVisible) continue;
+
+    //   // Check parent text for TP/SL
+    //   const parentText = await page.evaluate((el) => {
+    //     let parent = el.parentElement;
+    //     for (let i = 0; i < 5 && parent; i++) {
+    //       if (parent.textContent) {
+    //         const text = parent.textContent.toLowerCase();
+    //         if (text.includes('tp') && text.includes('sl')) {
+    //           return text;
+    //         }
+    //       }
+    //       parent = parent.parentElement;
+    //     }
+    //     return '';
+    //   }, checkbox);
+
+    //   if (parentText.includes('tp') && parentText.includes('sl')) {
+    //     checkboxElement = checkbox;
+    //     isChecked = await page.evaluate((el) => el.checked, checkbox);
+    //     console.log(`[${exchange.name}] ✅ Found TP/SL : 1 checkbox in CreateOrderPanel (checked: ${isChecked})`);
+    //     break;
+    //   }
+    // }
+
+    // Also check labels within CreateOrderPanel
+    if (!checkboxElement) {
+      const panelLabels = await createOrderPanel.$$('label');
+      for (const label of panelLabels) {
+        const labelText = await page.evaluate((el) => el.textContent?.trim().toLowerCase() || '', label);
+        if ((labelText.includes('tp') && labelText.includes('sl')) ||
+          (labelText.includes('take profit') && labelText.includes('stop loss'))) {
+          const checkbox = await label.$('input[type="checkbox"]');
+          if (checkbox) {
+            checkboxElement = checkbox;
+            isChecked = await page.evaluate((el) => el.checked, checkbox);
+            console.log(`[${exchange.name}] ✅ Found TP/SL : 2 checkbox via label in CreateOrderPanel (checked: ${isChecked})`);
+            break;
           }
-          return { success: true, action: 'already_checked' };
         }
       }
     }
-    return { success: false, error: 'TP/SL checkbox not found' };
-  });
-
-  if (!checkboxResult.success) {
-    console.log(`[${exchange.name}] [TP/SL] ${checkboxResult.error}`);
-    return { success: false, error: checkboxResult.error };
   }
 
-  if (checkboxResult.action === 'clicked') {
-    console.log(`[${exchange.name}] [TP/SL] Checkbox clicked, waiting for inputs to appear...`);
-    await delay(1500);
+
+  if (checkboxElement) {
+    if (isChecked) {
+      console.log(`[${exchange.name}] ✅ TP/SL checkbox is already checked, recalculating and re-entering values.`);
+      await delay(500);
+    } else {
+      console.log(`[${exchange.name}] TP/SL checkbox is not checked, clicking it...`);
+
+      // Try multiple methods to click the checkbox
+      try {
+        // Method 1: Scroll into view and click
+        await checkboxElement.evaluate(el => el.scrollIntoView({ behavior: 'smooth', block: 'center' }));
+        await delay(300);
+        await checkboxElement.click();
+        console.log(`[${exchange.name}] ✅ TP/SL checkbox clicked successfully`);
+      } catch (error1) {
+        console.log(`[${exchange.name}] ⚠️  Direct click failed: ${error1.message}, trying JavaScript click...`);
+        try {
+          // Method 2: JavaScript click
+          await checkboxElement.evaluate(el => {
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            el.click();
+          });
+          console.log(`[${exchange.name}] ✅ TP/SL checkbox clicked via JavaScript`);
+        } catch (error2) {
+          console.log(`[${exchange.name}] ⚠️  JavaScript click failed: ${error2.message}, trying label click...`);
+          try {
+            // Method 3: Find and click the label instead
+            const label = await page.evaluateHandle((checkbox) => {
+              let parent = checkbox.parentElement;
+              for (let i = 0; i < 5 && parent; i++) {
+                if (parent.tagName === 'LABEL') {
+                  return parent;
+                }
+                parent = parent.parentElement;
+              }
+              return null;
+            }, checkboxElement);
+
+            if (label && label.asElement()) {
+              await label.asElement().click();
+              console.log(`[${exchange.name}] ✅ TP/SL checkbox clicked via label`);
+            } else {
+              console.log(`[${exchange.name}] ⚠️  Could not find label, checkbox may already be checked or UI changed`);
+            }
+          } catch (error3) {
+            console.log(`[${exchange.name}] ⚠️  All click methods failed: ${error3.message}`);
+            console.log(`[${exchange.name}] ⚠️  Continuing anyway - checkbox may already be checked or not required`);
+          }
+        }
+      }
+
+      await delay(1000);
+    }
   } else {
-    console.log(`[${exchange.name}] [TP/SL] Checkbox already checked`);
+    console.log(`[${exchange.name}] ⚠️  Could not find TP/SL checkbox, continuing anyway.`);
   }
 
-  // Debug: log all visible inputs in CreateOrderPanel to help identify TP/SL fields
-  const debugInputs = await page.evaluate(() => {
-    const panel = document.querySelector('[data-sentry-element="CreateOrderPanel"]');
-    if (!panel) return [];
-    const inputs = Array.from(panel.querySelectorAll('input:not([type="checkbox"]):not([type="hidden"])'));
-    return inputs.filter(i => i.offsetParent !== null).map(i => ({
-      placeholder: i.placeholder || '',
-      ariaLabel: i.getAttribute('aria-label') || '',
-      name: i.name || '',
-      value: i.value || '',
-      type: i.type || '',
-    }));
-  });
-  console.log(`[${exchange.name}] [TP/SL] Visible inputs in panel: ${JSON.stringify(debugInputs)}`);
+  // Find and click "Advanced" element in the same parent container as TP/SL checkbox
+  if (checkboxElement) {
+    console.log(`[${exchange.name}] Looking for "Advanced" element in the same parent container as TP/SL checkbox...`);
 
-  // Step 2: Find and fill trigger price inputs on the basic screen
-  // After checkbox is checked, GRVT shows TP/SL trigger price inputs inline on CreateOrderPanel
-  const fillResult = await page.evaluate((tp, sl) => {
-    const panel = document.querySelector('[data-sentry-element="CreateOrderPanel"]');
-    if (!panel) return { success: false, error: 'CreateOrderPanel not found' };
+    try {
+      const advancedElement = await page.evaluateHandle((checkbox) => {
+        // Find the parent container that contains the checkbox
+        let parentContainer = checkbox.parentElement;
 
-    const results = { tp: false, sl: false, tpError: '', slError: '' };
+        // Try to find a common parent container (go up a few levels if needed)
+        for (let i = 0; i < 5 && parentContainer; i++) {
+          // Search for "Advanced" element within this parent container
+          const allElements = Array.from(parentContainer.querySelectorAll('*'));
 
-    // Find all input groups in the panel that relate to TP/SL
-    // Use broad selector + JS filter — CSS [type="text"] may miss React inputs where type is set as DOM property
-    const allInputs = Array.from(panel.querySelectorAll('input')).filter(i => {
-      const t = (i.type || '').toLowerCase();
-      return t !== 'checkbox' && t !== 'hidden' && t !== 'range';
+          for (const el of allElements) {
+            // Skip if not visible
+            if (el.offsetParent === null || el.offsetWidth === 0 || el.offsetHeight === 0) continue;
+
+            // Check if element contains "Advanced" text (case-insensitive, exact match preferred)
+            const text = (el.textContent || '').trim();
+            if (text.toLowerCase() === 'advanced' || text.toLowerCase().includes('advanced')) {
+              return el;
+            }
+          }
+
+          // If not found, try the next parent level
+          parentContainer = parentContainer.parentElement;
+        }
+
+        return null;
+      }, checkboxElement);
+
+      if (advancedElement && advancedElement.asElement()) {
+        const advancedEl = advancedElement.asElement();
+        console.log(`[${exchange.name}] ✅ Found "Advanced" element in same parent container, clicking...`);
+
+        try {
+          await advancedEl.click();
+          console.log(`[${exchange.name}] ✅ Clicked "Advanced" element successfully`);
+          await delay(500);
+        } catch (clickError) {
+          console.log(`[${exchange.name}] ⚠️  Direct click failed: ${clickError.message}, trying JavaScript click...`);
+          try {
+            await advancedEl.evaluate(el => {
+              el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              el.click();
+            });
+            console.log(`[${exchange.name}] ✅ Clicked "Advanced" element via JavaScript`);
+            await delay(500);
+          } catch (jsError) {
+            console.log(`[${exchange.name}] ⚠️  Failed to click "Advanced" element: ${jsError.message}`);
+          }
+        }
+      } else {
+        console.log(`[${exchange.name}] ⚠️  Could not find "Advanced" element in same parent container as TP/SL checkbox`);
+      }
+    } catch (error) {
+      console.log(`[${exchange.name}] ⚠️  Error searching for "Advanced" element: ${error.message}`);
+    }
+  }
+
+  // Wait for TP/SL modal to open after clicking Advanced
+  console.log(`[${exchange.name}] Waiting for TP/SL modal to open...`);
+  let modalOpened = false;
+  for (let i = 0; i < 10; i++) {
+    modalOpened = await page.evaluate(() => {
+      const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"]'));
+      for (const modal of modals) {
+        const style = window.getComputedStyle(modal);
+        if (style.display !== 'none' && style.visibility !== 'hidden' &&
+          modal.offsetWidth > 0 && modal.offsetHeight > 0) {
+          const modalText = (modal.textContent || '').toLowerCase();
+          if (modalText.includes('tp/sl') || modalText.includes('take profit') || modalText.includes('stop loss')) {
+            return true;
+          }
+        }
+      }
+      return false;
     });
 
-    // Helper: get context text around an input (labels, siblings, parent text)
-    const getInputContext = (input) => {
-      let context = '';
-      // Check placeholder (use .placeholder property — React sets DOM property, not HTML attribute)
-      context += (input.placeholder || '').toLowerCase() + ' ';
-      // Check aria-label
-      context += (input.getAttribute('aria-label') || '').toLowerCase() + ' ';
-      // Check parent and sibling text (up 3 levels)
-      let parent = input.parentElement;
-      for (let i = 0; i < 4 && parent; i++) {
-        // Get direct text nodes and label text, not deep children text
-        for (const child of parent.childNodes) {
-          if (child.nodeType === 3) context += (child.textContent || '').toLowerCase() + ' '; // text node
-          if (child.tagName === 'LABEL' || child.tagName === 'SPAN' || child.tagName === 'DIV') {
-            const childText = (child.textContent || '').trim().toLowerCase();
-            if (childText.length < 50) context += childText + ' '; // avoid grabbing entire panel text
+    if (modalOpened) {
+      console.log(`[${exchange.name}] ✅ TP/SL modal opened`);
+      await delay(500);
+      break;
+    }
+    await delay(300);
+  }
+
+  if (modalOpened) {
+    // First, select Buy/Long or Sell/Short based on side parameter (before other operations)
+    console.log(`[${exchange.name}] 🔄 [TOGGLE SELECTION] Selecting ${side === 'buy' ? 'Buy/Long' : 'Sell/Short'} option in TP/SL modal...`);
+    try {
+      const toggleOptionHandle = await page.evaluateHandle((side) => {
+        // Find toggle container first (usually has class containing "toggle")
+        const toggleContainers = Array.from(document.querySelectorAll('[class*="toggle"], [class*="Toggle"]'));
+        
+        for (const container of toggleContainers) {
+          // Look for toggle items inside the container
+          const toggleItems = Array.from(container.querySelectorAll('[class*="toggleItem"], div[class*="toggleItem"]'));
+          
+          for (const item of toggleItems) {
+            const text = (item.textContent || '').trim();
+            
+            // Check if this is the target option
+            if (side === 'buy') {
+              if (text === 'Buy/Long' || text === 'Buy' || text === 'Long') {
+                if (item.offsetParent !== null) return item;
+              }
+            } else if (side === 'sell') {
+              if (text === 'Sell/Short' || text === 'Sell' || text === 'Short') {
+                if (item.offsetParent !== null) return item;
+              }
+            }
           }
         }
-        parent = parent.parentElement;
+        
+        // Fallback: search all elements for toggle items
+        const allElements = Array.from(document.querySelectorAll('*'));
+        for (const el of allElements) {
+          const text = (el.textContent || '').trim();
+          const className = el.className || '';
+          
+          if (className.includes('toggleItem') && el.offsetParent !== null) {
+            if (side === 'buy' && (text === 'Buy/Long' || text === 'Buy' || text === 'Long')) {
+              return el;
+            } else if (side === 'sell' && (text === 'Sell/Short' || text === 'Sell' || text === 'Short')) {
+              return el;
+            }
+          }
+        }
+        
+        return null;
+      }, side);
+      
+      const toggleOption = toggleOptionHandle.asElement();
+      if (toggleOption) {
+        // Check if it's already selected (has active class or green background)
+        const isAlreadySelected = await page.evaluate((element) => {
+          const className = element.className || '';
+          const style = window.getComputedStyle(element);
+          const bgColor = style.backgroundColor || '';
+          
+          // Check for active class
+          if (className.includes('active') || className.includes('Active')) {
+            return true;
+          }
+          
+          // Check for green background (Buy/Long is usually green when active)
+          if (bgColor.includes('rgb')) {
+            const rgbMatch = bgColor.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+            if (rgbMatch) {
+              const r = parseInt(rgbMatch[1]);
+              const g = parseInt(rgbMatch[2]);
+              const b = parseInt(rgbMatch[3]);
+              // Green color typically has high green value
+              if (g > 150 && r < 100 && b < 100) {
+                return true;
+              }
+            }
+          }
+          
+          return false;
+        }, toggleOption);
+        
+        if (!isAlreadySelected) {
+          // Use JavaScript click to avoid triggering unwanted events
+          await toggleOption.evaluate(el => el.scrollIntoView({ behavior: 'smooth', block: 'center' }));
+          await delay(300);
+          
+          // Click using JavaScript to prevent event propagation issues
+          await toggleOption.evaluate((el) => {
+            const clickEvent = new MouseEvent('click', {
+              view: window,
+              bubbles: true,
+              cancelable: true,
+              buttons: 1
+            });
+            el.dispatchEvent(clickEvent);
+          });
+          
+          console.log(`[${exchange.name}] ✅ [TOGGLE SELECTION] Selected ${side === 'buy' ? 'Buy/Long' : 'Sell/Short'} option`);
+          await delay(300);
+        } else {
+          console.log(`[${exchange.name}] ✅ [TOGGLE SELECTION] ${side === 'buy' ? 'Buy/Long' : 'Sell/Short'} option is already selected`);
+        }
+      } else {
+        console.log(`[${exchange.name}] ⚠️  [TOGGLE SELECTION] Could not find ${side === 'buy' ? 'Buy/Long' : 'Sell/Short'} toggle option`);
       }
-      return context;
-    };
-
-    // Helper: set input value with React-compatible event dispatch
-    const setInputValue = (input, value) => {
-      const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-      nativeInputValueSetter.call(input, value);
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-      input.dispatchEvent(new Event('change', { bubbles: true }));
-    };
-
-    // Categorize inputs by their context
-    let tpInput = null;
-    let slInput = null;
-
-    // Debug: log what allInputs query found inside evaluate
-    const debugInfo = allInputs.map(i => ({ ph: i.placeholder || '', vis: i.offsetParent !== null, dis: i.disabled }));
-
-    for (const input of allInputs) {
-      if (input.offsetParent === null || input.disabled) continue; // skip hidden/disabled
-
-      // Priority 1: Match by placeholder (most reliable — avoids parent text contamination)
-      // Use .placeholder property (not getAttribute) — React sets DOM property directly, not HTML attribute
-      const ph = (input.placeholder || '').toLowerCase();
-      if (!tpInput && ph.includes('tp') && !ph.includes('sl')) {
-        tpInput = input;
-        continue;
-      }
-      if (!slInput && ph.includes('sl') && !ph.includes('tp')) {
-        slInput = input;
-        continue;
-      }
-
-      // Priority 2: Match by surrounding context text
-      const ctx = getInputContext(input);
-
-      // Skip price and size inputs (they're also in the panel)
-      if (ctx.includes('size') || ctx.includes('amount') || ctx.includes('qty')) continue;
-
-      // Match TP input — GRVT shows absolute price inputs near "Take Profit" / "TP" labels
-      if (!tpInput && (
-        ctx.includes('take profit') ||
-        (ctx.includes('tp') && !ctx.includes('stop'))
-      )) {
-        tpInput = input;
-        continue;
-      }
-
-      // Match SL input — near "Stop Loss" / "SL" labels
-      if (!slInput && (
-        ctx.includes('stop loss') ||
-        (ctx.includes('sl') && !ctx.includes('take'))
-      )) {
-        slInput = input;
-        continue;
-      }
+    } catch (error) {
+      console.log(`[${exchange.name}] ⚠️  [TOGGLE SELECTION] Error selecting ${side === 'buy' ? 'Buy/Long' : 'Sell/Short'} option: ${error.message}`);
+      // Continue with the flow even if toggle selection fails
     }
+    
+    // Verify modal is still open before proceeding
+    const modalStillOpen = await page.evaluate(() => {
+      const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"]'));
+      for (const modal of modals) {
+        const style = window.getComputedStyle(modal);
+        if (style.display !== 'none' && style.visibility !== 'hidden' &&
+          modal.offsetWidth > 0 && modal.offsetHeight > 0) {
+          const modalText = (modal.textContent || '').toLowerCase();
+          if (modalText.includes('tp/sl') || modalText.includes('take profit') || modalText.includes('stop loss')) {
+            return true;
+          }
+        }
+      }
+      return false;
+    });
+    
+    if (!modalStillOpen) {
+      console.log(`[${exchange.name}] ⚠️  Modal closed after toggle selection, cannot proceed with TP/SL configuration`);
+      return { success: false, error: 'Modal closed after toggle selection' };
+    }
+    
+    // Small delay to ensure modal is fully ready after toggle selection
+    await delay(200);
+    
+    const takeProfitPercent = process.env.TAKE_PROFIT || '';
+    const stopLossPercent = process.env.STOP_LOSS || '';
 
-    // Fallback: if we didn't find specific TP/SL inputs, look for inputs near TP/SL text
-    if (!tpInput || !slInput) {
-      // Find sections with TP/SL labels
-      const allElements = Array.from(panel.querySelectorAll('*'));
-      for (const el of allElements) {
-        if (el.offsetParent === null) continue;
-        const text = (el.textContent || '').trim().toLowerCase();
+    console.log(`[${exchange.name}] Configuring TP/SL modal with TAKE_PROFIT=${takeProfitPercent}, STOP_LOSS=${stopLossPercent}...`);
 
-        if (!tpInput && (text === 'take profit' || text === 'tp') && el.children.length === 0) {
-          // Find nearest input after this label
-          let sibling = el.nextElementSibling;
-          let parent = el.parentElement;
-          for (let i = 0; i < 3 && parent; i++) {
-            const inputs = Array.from(parent.querySelectorAll('input'));
-            for (const inp of inputs) {
-              if (inp.offsetParent !== null && !inp.disabled && inp.type !== 'checkbox') {
-                // Check this isn't an SL input
+    // Helper function to find and click ROI% element for a section
+    // Phase 1: Only find and click ROI% - no dropdown selection or input filling yet
+    const fillRoiInput = async (sectionName, value) => {
+      console.log(`[${exchange.name}] [PHASE 1] Finding and clicking ROI% element for ${sectionName}...`);
+
+      // Step 1: Find ROI% element's parent to click (following the specified approach)
+      console.log(`[${exchange.name}] [ROI% FINDING] Starting evaluation to find ROI% parent element...`);
+      let roiParentInfo;
+      try {
+        roiParentInfo = await page.evaluate((sectionName) => {
+        // Step 1: Find the TP/SL modal by text "TP/SL" in header
+        const allElements = Array.from(document.querySelectorAll('*'));
+        let tpslModal = null;
+        
+        // Find element with "TP/SL" text (this is the modal header)
+        for (const el of allElements) {
+          const text = (el.textContent || '').trim();
+          if (text === 'TP/SL' && el.offsetParent !== null) {
+            // Walk up to find the modal container
+            let parent = el.parentElement;
+            for (let i = 0; i < 10 && parent; i++) {
+              const style = window.getComputedStyle(parent);
+              if (style.display !== 'none' && style.visibility !== 'hidden' &&
+                parent.offsetWidth > 0 && parent.offsetHeight > 0) {
+                // Check if this parent contains both "Take profit" and "Stop loss"
                 const parentText = (parent.textContent || '').toLowerCase();
-                if (!parentText.includes('stop loss') || parentText.indexOf('take profit') < parentText.indexOf('stop loss')) {
-                  tpInput = inp;
+                if (parentText.includes('take profit') && parentText.includes('stop loss')) {
+                  tpslModal = parent;
+                  break;
+                }
+              }
+              parent = parent.parentElement;
+            }
+            if (tpslModal) break;
+          }
+        }
+
+        if (!tpslModal) {
+          return { success: false, step: 1, message: 'TP/SL modal not found' };
+        }
+
+        // Step 2: Find element with text matching sectionName ("Take profit" or "Stop loss")
+        const sectionNameLower = sectionName.toLowerCase();
+        let sectionElement = null;
+        
+        // Search all elements in modal for section header
+        const modalElements = Array.from(tpslModal.querySelectorAll('*'));
+        for (const el of modalElements) {
+          const text = (el.textContent || '').trim();
+          // Match exact text (case-insensitive) - "Take profit" or "Stop loss"
+          if (text.toLowerCase() === sectionNameLower && el.offsetParent !== null) {
+            sectionElement = el;
+            break;
+          }
+        }
+
+        if (!sectionElement) {
+          return { 
+            success: false, 
+            step: 2, 
+            message: `Could not find element with text "${sectionName}"`
+          };
+        }
+
+        // Step 3: Find sectionElement's parent (the section container)
+        const sectionParent = sectionElement.parentElement;
+        if (!sectionParent) {
+          return { success: false, step: 3, message: `Could not find parent of "${sectionName}" element` };
+        }
+
+        // Step 4: Find ROI% element - look for React Select control structure
+        // Strategy: Find ROI% text, then walk up to find the React Select control container
+        // The control container will have: ROI% text + input[role="combobox"] as children/descendants
+        const allDescendants = Array.from(sectionParent.querySelectorAll('*'));
+        let roiTextElement = null;
+        
+        // First, find the ROI% text element
+        for (const el of allDescendants) {
+          const text = (el.textContent || '').trim();
+          if (text === 'ROI%' && el.offsetParent !== null) {
+            roiTextElement = el;
+            break;
+          }
+        }
+        
+        if (!roiTextElement) {
+          return { 
+            success: false, 
+            step: 4, 
+            message: `Could not find "ROI%" text element inside "${sectionName}" parent`
+          };
+        }
+        
+        // Walk up from ROI% text to find the React Select control container
+        // The control container should contain both ROI% text AND an input[role="combobox"]
+        let roiClickableElement = null;
+        let current = roiTextElement.parentElement;
+        
+        for (let i = 0; i < 15 && current; i++) {
+          // Check if this element contains both ROI% text and a combobox input
+          const hasRoiText = (current.textContent || '').includes('ROI%');
+          const hasCombobox = current.querySelector('input[role="combobox"]') !== null;
+          const hasAriaHaspopup = current.querySelector('[aria-haspopup="true"]') !== null;
+          
+          // Also check if this element itself is the combobox input
+          const isCombobox = current.tagName.toLowerCase() === 'input' && 
+                            current.getAttribute('role') === 'combobox';
+          
+          // Check if this is a div that looks like a select control container
+          const isDiv = current.tagName.toLowerCase() === 'div';
+          const style = window.getComputedStyle(current);
+          const isVisible = style.display !== 'none' && style.visibility !== 'hidden';
+          
+          // If it has both ROI% text and combobox input, or is the combobox itself, it's likely the control
+          if ((hasRoiText && (hasCombobox || hasAriaHaspopup)) || isCombobox) {
+            if (isVisible && current.offsetParent !== null) {
+              roiClickableElement = current;
+              break;
+            }
+          }
+          
+          // Also check for dropdown indicator (arrow icon) - if parent contains it, it's likely the control
+          const hasDropdownIndicator = current.querySelector('svg') !== null || 
+                                      current.querySelector('[aria-hidden="true"]') !== null;
+          if (hasRoiText && hasDropdownIndicator && isDiv && isVisible) {
+            roiClickableElement = current;
+            break;
+          }
+          
+          current = current.parentElement;
+        }
+        
+        // If still not found, try to find the combobox input directly
+        if (!roiClickableElement) {
+          const comboboxInput = sectionParent.querySelector('input[role="combobox"][aria-haspopup="true"]');
+          if (comboboxInput) {
+            // Check if it's near the ROI% text (same parent structure)
+            let checkParent = comboboxInput.parentElement;
+            for (let i = 0; i < 5 && checkParent; i++) {
+              if ((checkParent.textContent || '').includes('ROI%')) {
+                roiClickableElement = comboboxInput;
+                break;
+              }
+              checkParent = checkParent.parentElement;
+            }
+          }
+        }
+        
+        // Fallback: use the ROI% text element's parent that contains the combobox
+        if (!roiClickableElement) {
+          let parent = roiTextElement.parentElement;
+          for (let i = 0; i < 10 && parent; i++) {
+            const hasCombobox = parent.querySelector('input[role="combobox"]') !== null;
+            if (hasCombobox) {
+              const style = window.getComputedStyle(parent);
+              if (style.display !== 'none' && style.visibility !== 'hidden' && parent.offsetParent !== null) {
+                roiClickableElement = parent;
+                break;
+              }
+            }
+            parent = parent.parentElement;
+          }
+        }
+        
+        // Final fallback: use ROI% text element itself
+        if (!roiClickableElement) {
+          roiClickableElement = roiTextElement;
+        }
+
+        // Get the clickable element's bounding rect for clicking
+        const rect = roiClickableElement.getBoundingClientRect();
+        
+        // DEBUG: Find all inputs (not labels) with empty or whitespace placeholder and className containing "text"
+        const allInputsInModal = Array.from(tpslModal.querySelectorAll('input'));
+        const emptyPlaceholderInputs = [];
+        for (const input of allInputsInModal) {
+          // Only process input elements (not labels)
+          if (input.tagName !== 'INPUT') continue;
+          
+          const placeholder = input.getAttribute('placeholder') || '';
+          const className = input.className || '';
+          
+          // Check if placeholder is empty or only whitespace AND className contains "text"
+          if ((placeholder.trim() === '' || placeholder === ' ') && className.toLowerCase().includes('text')) {
+            emptyPlaceholderInputs.push({
+              className: className
+            });
+          }
+        }
+        
+        return {
+          success: true,
+          clickX: rect.x + rect.width / 2,
+          clickY: rect.y + rect.height / 2,
+          roiElementText: (roiClickableElement.textContent || '').trim().substring(0, 20),
+          clickableTag: roiClickableElement.tagName,
+          clickableRole: roiClickableElement.getAttribute('role') || 'none',
+          debugInfo: {
+            emptyPlaceholderInputsCount: emptyPlaceholderInputs.length,
+            emptyPlaceholderInputs: emptyPlaceholderInputs
+          }
+        };
+      }, sectionName);
+      } catch (error) {
+        console.log(`[${exchange.name}] ❌ [ROI% FINDING] Error during page.evaluate: ${error.message}`);
+        return false;
+      }
+
+      if (!roiParentInfo) {
+        console.log(`[${exchange.name}] [ROI% FINDING] Evaluation returned null/undefined`);
+        return false;
+      }
+
+      if (!roiParentInfo.success) {
+        console.log(`[${exchange.name}] [ROI% FINDING] ❌ Step ${roiParentInfo.step} failed: ${roiParentInfo.message}`);
+        if (roiParentInfo.sampleTexts) {
+          console.log(`[${exchange.name}] [ROI% FINDING] Sample texts found in modal: ${roiParentInfo.sampleTexts.join(', ')}`);
+        }
+        if (roiParentInfo.roiTexts) {
+          console.log(`[${exchange.name}] [ROI% FINDING] ROI-related texts found: ${roiParentInfo.roiTexts.join(', ')}`);
+        }
+        return false;
+      }
+
+      console.log(`[${exchange.name}] [ROI% FINDING] ✅ Successfully found ROI% element`);
+      console.log(`[${exchange.name}] 🔍 [ROI% ELEMENT] Found ROI% element for ${sectionName} at coordinates (${roiParentInfo.clickX}, ${roiParentInfo.clickY})`);
+      console.log(`[${exchange.name}] [ROI% ELEMENT] Element: ${roiParentInfo.clickableTag}, role: ${roiParentInfo.clickableRole}, text: "${roiParentInfo.roiElementText}"`);
+      
+      // Log debug info about inputs with empty placeholders (from browser context)
+      if (roiParentInfo.debugInfo) {
+        console.log(`[${exchange.name}] [DEBUG] Found ${roiParentInfo.debugInfo.emptyPlaceholderInputsCount} input(s) with empty or whitespace placeholder in TP/SL modal`);
+        roiParentInfo.debugInfo.emptyPlaceholderInputs.forEach((input, idx) => {
+          console.log(`[${exchange.name}] [DEBUG] Input ${idx + 1} class: "${input.className}"`);
+        });
+      }
+
+      try {
+        // Phase 1: Click on ROI% element - try JavaScript click first
+        console.log(`[${exchange.name}] 🔧 [PHASE 1] Clicking on ROI% element for ${sectionName}...`);
+        
+        // Try JavaScript click first on the React Select control or combobox input
+        const jsClickWorked = await page.evaluate((sectionName) => {
+          const allElements = Array.from(document.querySelectorAll('*'));
+          let tpslModal = null;
+          
+          for (const el of allElements) {
+            const text = (el.textContent || '').trim();
+            if (text === 'TP/SL' && el.offsetParent !== null) {
+              let parent = el.parentElement;
+              for (let i = 0; i < 10 && parent; i++) {
+                const style = window.getComputedStyle(parent);
+                if (style.display !== 'none' && style.visibility !== 'hidden' &&
+                  parent.offsetWidth > 0 && parent.offsetHeight > 0) {
+                  const parentText = (parent.textContent || '').toLowerCase();
+                  if (parentText.includes('take profit') && parentText.includes('stop loss')) {
+                    tpslModal = parent;
+                    break;
+                  }
+                }
+                parent = parent.parentElement;
+              }
+              if (tpslModal) break;
+            }
+          }
+          
+          if (!tpslModal) return false;
+          
+          const sectionNameLower = sectionName.toLowerCase();
+          let sectionElement = null;
+          const modalElements = Array.from(tpslModal.querySelectorAll('*'));
+          for (const el of modalElements) {
+            const text = (el.textContent || '').trim();
+            if (text.toLowerCase() === sectionNameLower && el.offsetParent !== null) {
+              sectionElement = el;
+              break;
+            }
+          }
+          
+          if (!sectionElement) return false;
+          
+          let sectionParent = sectionElement.parentElement;
+          if (!sectionParent) return false;
+          
+          // Strategy: Find ROI% text, then find the React Select control container
+          const allDescendants = Array.from(sectionParent.querySelectorAll('*'));
+          let roiTextElement = null;
+          
+          for (const el of allDescendants) {
+            const text = (el.textContent || '').trim();
+            if (text === 'ROI%' && el.offsetParent !== null) {
+              roiTextElement = el;
+              break;
+            }
+          }
+          
+          if (!roiTextElement) return false;
+          
+          // Walk up to find the React Select control container
+          let current = roiTextElement.parentElement;
+          for (let i = 0; i < 15 && current; i++) {
+            const hasRoiText = (current.textContent || '').includes('ROI%');
+            const hasCombobox = current.querySelector('input[role="combobox"]') !== null;
+            const hasAriaHaspopup = current.querySelector('[aria-haspopup="true"]') !== null;
+            const isCombobox = current.tagName.toLowerCase() === 'input' && 
+                              current.getAttribute('role') === 'combobox';
+            
+            const style = window.getComputedStyle(current);
+            const isVisible = style.display !== 'none' && style.visibility !== 'hidden';
+            
+            if ((hasRoiText && (hasCombobox || hasAriaHaspopup)) || isCombobox) {
+              if (isVisible && current.offsetParent !== null) {
+                if (current.click) {
+                  current.click();
+                  return true;
+                }
+              }
+            }
+            
+            current = current.parentElement;
+          }
+          
+          // Fallback: Find and click the combobox input directly
+          const comboboxInput = sectionParent.querySelector('input[role="combobox"][aria-haspopup="true"]');
+          if (comboboxInput) {
+            let checkParent = comboboxInput.parentElement;
+            for (let i = 0; i < 5 && checkParent; i++) {
+              if ((checkParent.textContent || '').includes('ROI%')) {
+                if (comboboxInput.click) {
+                  comboboxInput.click();
+                  return true;
+                }
+                break;
+              }
+              checkParent = checkParent.parentElement;
+            }
+          }
+          
+          // Final fallback: click parent of ROI% text that contains combobox
+          let parent = roiTextElement.parentElement;
+          for (let i = 0; i < 10 && parent; i++) {
+            const hasCombobox = parent.querySelector('input[role="combobox"]') !== null;
+            if (hasCombobox) {
+              const style = window.getComputedStyle(parent);
+              if (style.display !== 'none' && style.visibility !== 'hidden' && parent.offsetParent !== null) {
+                if (parent.click) {
+                  parent.click();
+                  return true;
+                }
+              }
+            }
+            parent = parent.parentElement;
+          }
+          
+          return false;
+        }, sectionName);
+        
+        if (jsClickWorked) {
+          console.log(`[${exchange.name}] ✅ JavaScript click executed on ROI% element`);
+          await delay(500);
+        } else {
+          // Fallback to mouse click
+          console.log(`[${exchange.name}] JavaScript click didn't work, trying mouse click...`);
+          await page.mouse.click(roiParentInfo.clickX, roiParentInfo.clickY);
+          await delay(500);
+        }
+        
+        console.log(`[${exchange.name}] ✅ Clicked ROI% element for ${sectionName}`);
+        
+        // Wait for dropdown to be ready
+        console.log(`[${exchange.name}] ⏳ Waiting for ROI% dropdown to be ready...`);
+        let dropdownReady = false;
+        for (let i = 0; i < 15; i++) {
+          const checkResult = await page.evaluate(() => {
+            const listboxes = Array.from(document.querySelectorAll('[role="listbox"]'));
+            const menus = Array.from(document.querySelectorAll('[role="menu"]'));
+            const allDropdowns = [...listboxes, ...menus];
+            
+            for (const menu of allDropdowns) {
+              const style = window.getComputedStyle(menu);
+              if (style.display !== 'none' && style.visibility !== 'hidden') {
+                const rect = menu.getBoundingClientRect();
+                if (rect.width > 0 && rect.height > 0) {
+                  return { ready: true };
+                }
+              }
+            }
+            return { ready: false };
+          });
+          
+          if (checkResult.ready) {
+            dropdownReady = true;
+            break;
+          }
+          await delay(200);
+        }
+        
+        if (!dropdownReady) {
+          console.log(`[${exchange.name}] ⚠️  ROI% dropdown not detected as ready, proceeding anyway...`);
+        } else {
+          console.log(`[${exchange.name}] ✅ ROI% dropdown is ready`);
+        }
+        
+        await delay(300);
+        
+        // Focus the combobox input first, then use keyboard navigation
+        console.log(`[${exchange.name}] Focusing combobox input for keyboard navigation...`);
+        const comboboxFocused = await page.evaluate((sectionName) => {
+          const allElements = Array.from(document.querySelectorAll('*'));
+          let tpslModal = null;
+          
+          for (const el of allElements) {
+            const text = (el.textContent || '').trim();
+            if (text === 'TP/SL' && el.offsetParent !== null) {
+              let parent = el.parentElement;
+              for (let i = 0; i < 10 && parent; i++) {
+                const style = window.getComputedStyle(parent);
+                if (style.display !== 'none' && style.visibility !== 'hidden' &&
+                  parent.offsetWidth > 0 && parent.offsetHeight > 0) {
+                  const parentText = (parent.textContent || '').toLowerCase();
+                  if (parentText.includes('take profit') && parentText.includes('stop loss')) {
+                    tpslModal = parent;
+                    break;
+                  }
+                }
+                parent = parent.parentElement;
+              }
+              if (tpslModal) break;
+            }
+          }
+          
+          if (!tpslModal) return false;
+          
+          const sectionNameLower = sectionName.toLowerCase();
+          let sectionElement = null;
+          const modalElements = Array.from(tpslModal.querySelectorAll('*'));
+          for (const el of modalElements) {
+            const text = (el.textContent || '').trim();
+            if (text.toLowerCase() === sectionNameLower && el.offsetParent !== null) {
+              sectionElement = el;
+              break;
+            }
+          }
+          
+          if (!sectionElement) return false;
+          
+          let sectionParent = sectionElement.parentElement;
+          if (!sectionParent) return false;
+          
+          const comboboxInput = sectionParent.querySelector('input[role="combobox"]');
+          if (comboboxInput) {
+            comboboxInput.focus();
+            comboboxInput.click();
+            return true;
+          }
+          return false;
+        }, sectionName);
+        
+        if (comboboxFocused) {
+          console.log(`[${exchange.name}] ✅ Focused combobox input`);
+          await delay(300);
+        } else {
+          console.log(`[${exchange.name}] ⚠️  Could not focus combobox input, proceeding with keyboard navigation anyway...`);
+        }
+        
+        // Try to open dropdown with Space if not already open
+        if (!dropdownReady) {
+          console.log(`[${exchange.name}] Dropdown not detected, trying Space key to open...`);
+          await page.keyboard.press('Space');
+          await delay(500);
+          
+          // Check again if dropdown opened
+          const checkAgain = await page.evaluate(() => {
+            const listboxes = Array.from(document.querySelectorAll('[role="listbox"]'));
+            const menus = Array.from(document.querySelectorAll('[role="menu"]'));
+            const allDropdowns = [...listboxes, ...menus];
+            
+            for (const menu of allDropdowns) {
+              const style = window.getComputedStyle(menu);
+              if (style.display !== 'none' && style.visibility !== 'hidden') {
+                const rect = menu.getBoundingClientRect();
+                if (rect.width > 0 && rect.height > 0) {
+                  return { ready: true };
+                }
+              }
+            }
+            return { ready: false };
+          });
+          
+          if (checkAgain.ready) {
+            console.log(`[${exchange.name}] ✅ Dropdown opened with Space key`);
+            dropdownReady = true;
+          }
+        }
+        
+        // Since ROI% is the default, we need to navigate to P&L
+        // Try to click P&L option directly if dropdown is open, otherwise use keyboard navigation
+        if (dropdownReady) {
+          console.log(`[${exchange.name}] Dropdown is open, trying to click P&L option directly (ROI% is default)...`);
+          const pnlClicked = await page.evaluate(() => {
+            const listboxes = Array.from(document.querySelectorAll('[role="listbox"]'));
+            const menus = Array.from(document.querySelectorAll('[role="menu"]'));
+            const allDropdowns = [...listboxes, ...menus];
+            
+            for (const dropdown of allDropdowns) {
+              const style = window.getComputedStyle(dropdown);
+              if (style.display !== 'none' && style.visibility !== 'hidden') {
+                const rect = dropdown.getBoundingClientRect();
+                if (rect.width > 0 && rect.height > 0) {
+                  const options = Array.from(dropdown.querySelectorAll('[role="option"], li, div, button, span'));
+                  for (const option of options) {
+                    const text = (option.textContent || '').trim();
+                    if (text === 'P&L' || text === 'P&amp;L') {
+                      const optionStyle = window.getComputedStyle(option);
+                      if (optionStyle.display !== 'none' && optionStyle.visibility !== 'hidden') {
+                        const optionRect = option.getBoundingClientRect();
+                        if (optionRect.width > 0 && optionRect.height > 0) {
+                          if (option.click) {
+                            option.click();
+                            return true;
+                          } else if (option.dispatchEvent) {
+                            const clickEvent = new MouseEvent('click', {
+                              bubbles: true,
+                              cancelable: true,
+                              view: window
+                            });
+                            option.dispatchEvent(clickEvent);
+                            return true;
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            return false;
+          }, sectionName);
+          
+          if (pnlClicked) {
+            console.log(`[${exchange.name}] ✅ Clicked P&L option directly in dropdown`);
+            await delay(500);
+          } else {
+            // Couldn't click directly, use keyboard navigation
+            // Since ROI% is default, press ArrowDown once to get to P&L
+            console.log(`[${exchange.name}] Could not click P&L directly, navigating with ArrowDown (ROI% is default, so ArrowDown once to P&L)...`);
+            await page.keyboard.press('ArrowDown');
+            await delay(500);
+            // Press Enter to select P&L
+            console.log(`[${exchange.name}] Pressing Enter to select P&L...`);
+            await page.keyboard.press('Enter');
+            await delay(500);
+          }
+        } else {
+          // Dropdown not detected as open, but try keyboard navigation anyway
+          // Since ROI% is default, press ArrowDown once to get to P&L
+          console.log(`[${exchange.name}] Dropdown not detected, using keyboard navigation (ArrowDown once from ROI% to P&L)...`);
+          await page.keyboard.press('ArrowDown');
+          await delay(500);
+          // Press Enter to select P&L
+          console.log(`[${exchange.name}] Pressing Enter to select P&L...`);
+          await page.keyboard.press('Enter');
+          await delay(500);
+        }
+        
+        // Wait for ROI% dropdown to close and P&L to be selected
+        console.log(`[${exchange.name}] ⏳ Waiting for ROI% dropdown to close and P&L to be selected...`);
+        let roiDropdownClosed = false;
+        for (let i = 0; i < 10; i++) {
+          const checkResult = await page.evaluate(() => {
+            // Check if any dropdown is still open
+            const listboxes = Array.from(document.querySelectorAll('[role="listbox"]'));
+            const menus = Array.from(document.querySelectorAll('[role="menu"]'));
+            const allDropdowns = [...listboxes, ...menus];
+            
+            for (const menu of allDropdowns) {
+              const style = window.getComputedStyle(menu);
+              if (style.display !== 'none' && style.visibility !== 'hidden') {
+                const rect = menu.getBoundingClientRect();
+                if (rect.width > 0 && rect.height > 0) {
+                  return { open: true };
+                }
+              }
+            }
+            return { open: false };
+          });
+          
+          if (!checkResult.open) {
+            roiDropdownClosed = true;
+            break;
+          }
+          await delay(200);
+        }
+        
+        if (!roiDropdownClosed) {
+          console.log(`[${exchange.name}] ⚠️  ROI% dropdown did not close within timeout`);
+        }
+        
+        await delay(300); // Additional delay to ensure UI is stable
+        
+        // Check if modal is still open after selection
+        const modalStillOpenAfter = await page.evaluate(() => {
+          const allElements = Array.from(document.querySelectorAll('*'));
+          for (const el of allElements) {
+            const text = (el.textContent || '').trim();
+            if (text === 'TP/SL' && el.offsetParent !== null) {
+              let parent = el.parentElement;
+              for (let i = 0; i < 10 && parent; i++) {
+                const style = window.getComputedStyle(parent);
+                if (style.display !== 'none' && style.visibility !== 'hidden' &&
+                  parent.offsetWidth > 0 && parent.offsetHeight > 0) {
+                  const parentText = (parent.textContent || '').toLowerCase();
+                  if (parentText.includes('take profit') && parentText.includes('stop loss')) {
+                    return true; // Modal is still open
+                  }
+                }
+                parent = parent.parentElement;
+              }
+            }
+          }
+          return false; // Modal not found or closed
+        });
+        
+        if (!modalStillOpenAfter) {
+          console.log(`[${exchange.name}] ⚠️  Modal closed after ROI% dropdown selection`);
+          return false;
+        }
+        
+        console.log(`[${exchange.name}] ✅ [PHASE 1] Completed ROI% dropdown selection for ${sectionName} (modal still open)`);
+        
+        await delay(500); // Wait before moving to Phase 2
+        
+        // Phase 2: Find Market dropdown within the specific section and click it
+        console.log(`[${exchange.name}] 🔧 [PHASE 2] Finding Market dropdown Select element for ${sectionName}...`);
+        const selectElementInfo = await page.evaluate((sectionName) => {
+          // Find the TP/SL modal
+          const allElements = Array.from(document.querySelectorAll('*'));
+          let tpslModal = null;
+          
+          for (const el of allElements) {
+            const text = (el.textContent || '').trim();
+            if (text === 'TP/SL' && el.offsetParent !== null) {
+              let parent = el.parentElement;
+              for (let i = 0; i < 10 && parent; i++) {
+                const style = window.getComputedStyle(parent);
+                if (style.display !== 'none' && style.visibility !== 'hidden' &&
+                  parent.offsetWidth > 0 && parent.offsetHeight > 0) {
+                  const parentText = (parent.textContent || '').toLowerCase();
+                  if (parentText.includes('take profit') && parentText.includes('stop loss')) {
+                    tpslModal = parent;
+                    break;
+                  }
+                }
+                parent = parent.parentElement;
+              }
+              if (tpslModal) break;
+            }
+          }
+          
+          if (!tpslModal) return { success: false, message: 'TP/SL modal not found' };
+          
+          // Step 1: Find the section element (Take profit or Stop loss)
+          const sectionNameLower = sectionName.toLowerCase();
+          let sectionElement = null;
+          
+          const modalElements = Array.from(tpslModal.querySelectorAll('*'));
+          for (const el of modalElements) {
+            const text = (el.textContent || '').trim();
+            if (text.toLowerCase() === sectionNameLower && el.offsetParent !== null) {
+              sectionElement = el;
+              break;
+            }
+          }
+          
+          if (!sectionElement) {
+            return { success: false, message: `Could not find "${sectionName}" section` };
+          }
+          
+          // Step 2: Find the section parent container that contains this section's Market dropdown
+          // Walk up to find a container that has Market dropdown but doesn't have the other section
+          let sectionParent = sectionElement.parentElement;
+          const otherSectionName = sectionNameLower.includes('profit') ? 'stop loss' : 'take profit';
+          
+          for (let i = 0; i < 10 && sectionParent; i++) {
+            const allDescendants = Array.from(sectionParent.querySelectorAll('*'));
+            let hasMarketSelect = false;
+            let hasOtherSection = false;
+            
+            for (const el of allDescendants) {
+              // Check for Market text in a singleValue element (the actual Market dropdown value)
+              const text = (el.textContent || '').trim();
+              if (text === 'Market' && el.offsetParent !== null) {
+                // Check if this is inside a Select element with data-sentry-component="Select"
+                let parent = el.parentElement;
+                for (let j = 0; j < 5 && parent; j++) {
+                  if (parent.getAttribute && parent.getAttribute('data-sentry-component') === 'Select') {
+                    hasMarketSelect = true;
+                    break;
+                  }
+                  parent = parent.parentElement;
+                }
+              }
+              // Check if this container has the OTHER section (we don't want that)
+              if (text.toLowerCase() === otherSectionName && el.offsetParent !== null) {
+                hasOtherSection = true;
+                break;
+              }
+            }
+            
+            // If this container has Market Select and doesn't have the other section, it's the right container
+            if (hasMarketSelect && !hasOtherSection) {
+              break;
+            }
+            
+            sectionParent = sectionParent.parentElement;
+            if (!sectionParent) break;
+          }
+          
+          if (!sectionParent) {
+            sectionParent = sectionElement.parentElement;
+          }
+          
+          // Step 3: Find the Market dropdown Select element within this section
+          // Look for element with data-sentry-component="Select" that has "Market" in style_singleValue__arIDb
+          const allSelectElements = Array.from(sectionParent.querySelectorAll('[data-sentry-component="Select"]'));
+          
+          for (const selectEl of allSelectElements) {
+            if (selectEl.offsetParent === null) continue;
+            const style = window.getComputedStyle(selectEl);
+            if (style.display === 'none' || style.visibility === 'hidden') continue;
+            if (selectEl.offsetWidth === 0 || selectEl.offsetHeight === 0) continue;
+            
+            // Check if this Select element contains "Market" text in a singleValue element
+            // Look for div with class containing "singleValue" that has "Market" text
+            const singleValueElements = Array.from(selectEl.querySelectorAll('[class*="singleValue"]'));
+            for (const svEl of singleValueElements) {
+              const svText = (svEl.textContent || '').trim();
+              if (svText === 'Market') {
+                // Found the Market dropdown! Get the clickable area (the Select wrapper or control)
+                // Click on the control element (the clickable part of the dropdown)
+                const controlEl = selectEl.querySelector('.style_control__NtOg3') || selectEl;
+                const rect = controlEl.getBoundingClientRect();
+                return {
+                  success: true,
+                  clickX: rect.x + rect.width / 2,
+                  clickY: rect.y + rect.height / 2,
+                  sectionName: sectionName
+                };
+              }
+            }
+          }
+          
+          return {
+            success: false,
+            message: `Could not find Market Select element in "${sectionName}" section`
+          };
+        }, sectionName);
+        
+        if (!selectElementInfo || !selectElementInfo.success) {
+          console.log(`[${exchange.name}] ⚠️  Could not find Select element: ${selectElementInfo?.message || 'unknown error'}`);
+          return false;
+        }
+        
+        console.log(`[${exchange.name}] ✅ Found Market Select element for ${selectElementInfo.sectionName || sectionName}`);
+        
+        // Check if modal is still open before clicking
+        const modalStillOpenBeforeSelect = await page.evaluate(() => {
+          const allElements = Array.from(document.querySelectorAll('*'));
+          for (const el of allElements) {
+            const text = (el.textContent || '').trim();
+            if (text === 'TP/SL' && el.offsetParent !== null) {
+              let parent = el.parentElement;
+              for (let i = 0; i < 10 && parent; i++) {
+                const style = window.getComputedStyle(parent);
+                if (style.display !== 'none' && style.visibility !== 'hidden' &&
+                  parent.offsetWidth > 0 && parent.offsetHeight > 0) {
+                  const parentText = (parent.textContent || '').toLowerCase();
+                  if (parentText.includes('take profit') && parentText.includes('stop loss')) {
+                    return true;
+                  }
+                }
+                parent = parent.parentElement;
+              }
+            }
+          }
+          return false;
+        });
+        
+        if (!modalStillOpenBeforeSelect) {
+          console.log(`[${exchange.name}] ⚠️  Modal closed before clicking Select element`);
+          return false;
+        }
+        
+        // Click the Select element
+        console.log(`[${exchange.name}] 🔧 Clicking Market Select element for ${sectionName} at coordinates (${selectElementInfo.clickX}, ${selectElementInfo.clickY})...`);
+        await page.mouse.click(selectElementInfo.clickX, selectElementInfo.clickY);
+        await delay(500);
+        console.log(`[${exchange.name}] ✅ Clicked Market Select element for ${sectionName}`);
+        
+        // Wait for Select dropdown to open
+        console.log(`[${exchange.name}] ⏳ Waiting for Select dropdown to open...`);
+        let dropdownOpened = false;
+        for (let i = 0; i < 10; i++) {
+          const checkResult = await page.evaluate(() => {
+            // Check if dropdown is open
+            const listboxes = Array.from(document.querySelectorAll('[role="listbox"]'));
+            const menus = Array.from(document.querySelectorAll('[role="menu"]'));
+            const allDropdowns = [...listboxes, ...menus];
+            
+            // Also check for aria-expanded="true"
+            const expandedElements = Array.from(document.querySelectorAll('[aria-expanded="true"]'));
+            for (const el of expandedElements) {
+              const style = window.getComputedStyle(el);
+              if (style.display !== 'none' && style.visibility !== 'hidden' &&
+                el.offsetWidth > 0 && el.offsetHeight > 0) {
+                allDropdowns.push(el);
+              }
+            }
+            
+            for (const menu of allDropdowns) {
+              const style = window.getComputedStyle(menu);
+              if (style.display !== 'none' && style.visibility !== 'hidden') {
+                const rect = menu.getBoundingClientRect();
+                if (rect.width > 0 && rect.height > 0) {
+                  return { open: true };
+                }
+              }
+            }
+            return { open: false };
+          });
+          
+          if (checkResult.open) {
+            dropdownOpened = true;
+            break;
+          }
+          await delay(200);
+        }
+        
+        if (!dropdownOpened) {
+          console.log(`[${exchange.name}] ⚠️  Select dropdown did not open within timeout, proceeding anyway...`);
+        } else {
+          console.log(`[${exchange.name}] ✅ Select dropdown opened`);
+        }
+        
+        await delay(300); // Additional delay to ensure dropdown is fully open
+        
+        // Press ArrowDown once, then press Enter to select the option
+        console.log(`[${exchange.name}] ⌨️  Pressing ArrowDown x1, then Enter to select option...`);
+        await page.keyboard.press('ArrowDown');
+        await delay(300);
+        await page.keyboard.press('Enter');
+        await delay(300);
+        console.log(`[${exchange.name}] ✅ Pressed Enter to select option in Select dropdown`);
+        
+        // Check if modal is still open after selection
+        const modalStillOpenAfterSelect = await page.evaluate(() => {
+          const allElements = Array.from(document.querySelectorAll('*'));
+          for (const el of allElements) {
+            const text = (el.textContent || '').trim();
+            if (text === 'TP/SL' && el.offsetParent !== null) {
+              let parent = el.parentElement;
+              for (let i = 0; i < 10 && parent; i++) {
+                const style = window.getComputedStyle(parent);
+                if (style.display !== 'none' && style.visibility !== 'hidden' &&
+                  parent.offsetWidth > 0 && parent.offsetHeight > 0) {
+                  const parentText = (parent.textContent || '').toLowerCase();
+                  if (parentText.includes('take profit') && parentText.includes('stop loss')) {
+                    return true;
+                  }
+                }
+                parent = parent.parentElement;
+              }
+            }
+          }
+          return false;
+        });
+        
+        if (!modalStillOpenAfterSelect) {
+          console.log(`[${exchange.name}] ⚠️  Modal closed after Select dropdown selection`);
+          return false;
+        }
+        
+        console.log(`[${exchange.name}] ✅ [PHASE 2] Completed Market dropdown selection for ${sectionName} (modal still open)`);
+        
+        await delay(500); // Wait before moving to Phase 3
+        
+        // Phase 3: Fill input values - first input gets TAKE_PROFIT/10, second gets STOP_LOSS/10
+        console.log(`[${exchange.name}] 🔧 [PHASE 3] Filling input values for ${sectionName}...`);
+        
+        // Find input elements and get their selectors/identifiers
+        const inputInfo = await page.evaluate((sectionName) => {
+          // Find the TP/SL modal
+          const allElements = Array.from(document.querySelectorAll('*'));
+          let tpslModal = null;
+          
+          for (const el of allElements) {
+            const text = (el.textContent || '').trim();
+            if (text === 'TP/SL' && el.offsetParent !== null) {
+              let parent = el.parentElement;
+              for (let i = 0; i < 10 && parent; i++) {
+                const style = window.getComputedStyle(parent);
+                if (style.display !== 'none' && style.visibility !== 'hidden' &&
+                  parent.offsetWidth > 0 && parent.offsetHeight > 0) {
+                  const parentText = (parent.textContent || '').toLowerCase();
+                  if (parentText.includes('take profit') && parentText.includes('stop loss')) {
+                    tpslModal = parent;
+                    break;
+                  }
+                }
+                parent = parent.parentElement;
+              }
+              if (tpslModal) break;
+            }
+          }
+          
+          if (!tpslModal) return { success: false, message: 'TP/SL modal not found' };
+          
+          // Find all inputs with empty/whitespace placeholder and className containing "text"
+          const allInputsInModal = Array.from(tpslModal.querySelectorAll('input'));
+          const emptyPlaceholderInputs = [];
+          for (const input of allInputsInModal) {
+            if (input.tagName !== 'INPUT') continue;
+            const placeholder = input.getAttribute('placeholder') || '';
+            const className = input.className || '';
+            if ((placeholder.trim() === '' || placeholder === ' ') && className.toLowerCase().includes('text')) {
+              if (input.offsetParent !== null && !input.disabled && !input.readOnly) {
+                // Get unique identifier for the input (prefer ID, fallback to generating a selector)
+                let identifier = input.id || '';
+                if (!identifier) {
+                  // Generate a selector based on position and parent
+                  const parent = input.closest('[data-sentry-component]') || input.parentElement;
+                  const index = Array.from(parent.querySelectorAll('input')).indexOf(input);
+                  identifier = `input-${index}`;
+                }
+                emptyPlaceholderInputs.push({
+                  id: input.id || '',
+                  identifier: identifier,
+                  className: className,
+                  placeholder: placeholder
+                });
+              }
+            }
+          }
+          
+          return {
+            success: true,
+            inputsFound: emptyPlaceholderInputs.length,
+            inputs: emptyPlaceholderInputs
+          };
+        }, sectionName);
+        
+        if (!inputInfo || !inputInfo.success) {
+          console.log(`[${exchange.name}] ⚠️  Could not find inputs: ${inputInfo?.message || 'unknown error'}`);
+          return false;
+        }
+        
+        const takeProfitValue = (parseFloat(takeProfitPercent) / 10).toString();
+        const stopLossValue = (parseFloat(stopLossPercent) / 10).toString();
+        
+        // Type into first input (TAKE_PROFIT/10)
+        if (inputInfo.inputs.length >= 1) {
+          const firstInputInfo = inputInfo.inputs[0];
+          console.log(`[${exchange.name}] ⌨️  Typing into first input: ${takeProfitValue}...`);
+          
+          try {
+            // Find the input element using evaluateHandle (works with any ID, including colons)
+            let inputElement = null;
+            if (firstInputInfo.id) {
+              // Use evaluateHandle to get element by ID directly (handles special characters)
+              inputElement = await page.evaluateHandle((id) => {
+                return document.getElementById(id);
+              }, firstInputInfo.id);
+              
+              // Check if element was found
+              const isValid = await page.evaluate(el => el !== null && el !== undefined, inputElement);
+              if (!isValid) {
+                inputElement = null;
+              }
+            }
+            
+            // Fallback: find by className and position
+            if (!inputElement) {
+              const allInputs = await page.$$('input');
+              console.log(`[${exchange.name}] [DEBUG] Found ${allInputs.length} total input elements, searching for first matching input...`);
+              for (let i = 0; i < allInputs.length; i++) {
+                const input = allInputs[i];
+                const className = await page.evaluate(el => el.className || '', input);
+                const placeholder = await page.evaluate(el => el.getAttribute('placeholder') || '', input);
+                const id = await page.evaluate(el => el.id || '', input);
+                const isVisible = await page.evaluate(el => {
+                  const style = window.getComputedStyle(el);
+                  return el.offsetParent !== null && 
+                         style.display !== 'none' && 
+                         style.visibility !== 'hidden' &&
+                         !el.disabled && 
+                         !el.readOnly;
+                }, input);
+                
+                console.log(`[${exchange.name}] [DEBUG] Input ${i}: id="${id}", className="${className}", placeholder="${placeholder}", visible=${isVisible}`);
+                
+                if (className.toLowerCase().includes('text') && (placeholder.trim() === '' || placeholder === ' ') && isVisible) {
+                  inputElement = input;
+                  console.log(`[${exchange.name}] [DEBUG] Found first matching input at index ${i}`);
                   break;
                 }
               }
             }
-            if (tpInput) break;
-            parent = parent.parentElement;
+            
+            if (inputElement) {
+              // Detect platform and use appropriate modifier key
+              const platform = await page.evaluate(() => navigator.platform || navigator.userAgentData?.platform || '');
+              const isMac = platform.toLowerCase().includes('mac');
+              const modifierKey = isMac ? 'Meta' : 'Control';
+              
+              // Focus the input
+              await inputElement.focus();
+              await delay(200);
+              
+              // Clear existing value - use multiple methods to ensure it's completely cleared
+              // First, try JavaScript clear
+              await inputElement.evaluate((el) => {
+                el.value = '';
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+              });
+              await delay(100);
+              
+              // Then verify it's cleared
+              let clearedValue = await page.evaluate((el) => el.value || '', inputElement);
+              if (clearedValue && clearedValue.trim() !== '') {
+                // If not cleared, use keyboard selection and delete
+                await page.keyboard.down(modifierKey);
+                await page.keyboard.press('KeyA');
+                await page.keyboard.up(modifierKey);
+                await delay(100);
+                await page.keyboard.press('Backspace');
+                await delay(100);
+                
+                // Verify again
+                clearedValue = await page.evaluate((el) => el.value || '', inputElement);
+                if (clearedValue && clearedValue.trim() !== '') {
+                  // Last resort: JavaScript clear again
+                  await inputElement.evaluate((el) => {
+                    el.value = '';
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                  });
+                  await delay(100);
+                }
+              }
+              
+              // Final verification that input is empty before typing
+              const finalClearedCheck = await page.evaluate((el) => el.value || '', inputElement);
+              if (finalClearedCheck && finalClearedCheck.trim() !== '') {
+                console.log(`[${exchange.name}] ⚠️  Input still has value "${finalClearedCheck}" after clearing, will type anyway...`);
+              }
+              
+              // Type the value - use faster typing (no delay) to avoid intermediate states
+              await inputElement.type(takeProfitValue, { delay: 0 });
+              await delay(200);
+              
+              // Verify the value was set correctly
+              const verifyValue = await page.evaluate((el) => el.value || '', inputElement);
+              const verifyNum = parseFloat(verifyValue.replace(/,/g, ''));
+              const expectedNum = parseFloat(takeProfitValue);
+              const tolerance = 0.01;
+              
+              if (verifyValue && !isNaN(verifyNum) && Math.abs(verifyNum - expectedNum) < tolerance) {
+                console.log(`[${exchange.name}] ✅ Typed into first input: ${verifyValue} (expected: ${takeProfitValue})`);
+              } else {
+                console.log(`[${exchange.name}] ⚠️  First input verification failed. Expected: ${takeProfitValue}, Got: ${verifyValue}`);
+              }
+            } else {
+              console.log(`[${exchange.name}] ⚠️  Could not find first input element to type into`);
+            }
+          } catch (error) {
+            console.log(`[${exchange.name}] ⚠️  Error typing into first input: ${error.message}`);
           }
         }
+        
+        // Type into second input (STOP_LOSS/10)
+        if (inputInfo.inputs.length >= 2) {
+          const secondInputInfo = inputInfo.inputs[1];
+          console.log(`[${exchange.name}] ⌨️  Typing into second input: ${stopLossValue}...`);
+          
+          try {
+            // Find the input element using evaluateHandle (works with any ID, including colons)
+            let inputElement = null;
+            if (secondInputInfo.id) {
+              // Use evaluateHandle to get element by ID directly (handles special characters)
+              inputElement = await page.evaluateHandle((id) => {
+                return document.getElementById(id);
+              }, secondInputInfo.id);
+              
+              // Check if element was found
+              const isValid = await page.evaluate(el => el !== null && el !== undefined, inputElement);
+              if (!isValid) {
+                inputElement = null;
+              }
+            }
+            
+            // Fallback: find by className and position (second one)
+            if (!inputElement) {
+              const allInputs = await page.$$('input');
+              let foundFirst = false;
+              for (const input of allInputs) {
+                const className = await page.evaluate(el => el.className || '', input);
+                const placeholder = await page.evaluate(el => el.getAttribute('placeholder') || '', input);
+                if (className.toLowerCase().includes('text') && (placeholder.trim() === '' || placeholder === ' ')) {
+                  const isVisible = await page.evaluate(el => {
+                    const style = window.getComputedStyle(el);
+                    return el.offsetParent !== null && 
+                           style.display !== 'none' && 
+                           style.visibility !== 'hidden' &&
+                           !el.disabled && 
+                           !el.readOnly;
+                  }, input);
+                  
+                  if (isVisible) {
+                    if (foundFirst) {
+                      inputElement = input;
+                      break;
+                    } else {
+                      foundFirst = true;
+                    }
+                  }
+                }
+              }
+            }
+            
+            if (inputElement) {
+              // Detect platform and use appropriate modifier key
+              const platform = await page.evaluate(() => navigator.platform || navigator.userAgentData?.platform || '');
+              const isMac = platform.toLowerCase().includes('mac');
+              const modifierKey = isMac ? 'Meta' : 'Control';
+              
+              // Focus the input
+              await inputElement.focus();
+              await delay(200);
+              
+              // Clear existing value - use multiple methods to ensure it's completely cleared
+              // First, try JavaScript clear
+              await inputElement.evaluate((el) => {
+                el.value = '';
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+              });
+              await delay(100);
+              
+              // Then verify it's cleared
+              let clearedValue = await page.evaluate((el) => el.value || '', inputElement);
+              if (clearedValue && clearedValue.trim() !== '') {
+                // If not cleared, use keyboard selection and delete
+                await page.keyboard.down(modifierKey);
+                await page.keyboard.press('KeyA');
+                await page.keyboard.up(modifierKey);
+                await delay(100);
+                await page.keyboard.press('Backspace');
+                await delay(100);
+                
+                // Verify again
+                clearedValue = await page.evaluate((el) => el.value || '', inputElement);
+                if (clearedValue && clearedValue.trim() !== '') {
+                  // Last resort: JavaScript clear again
+                  await inputElement.evaluate((el) => {
+                    el.value = '';
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                  });
+                  await delay(100);
+                }
+              }
+              
+              // Final verification that input is empty before typing
+              const finalClearedCheck = await page.evaluate((el) => el.value || '', inputElement);
+              if (finalClearedCheck && finalClearedCheck.trim() !== '') {
+                console.log(`[${exchange.name}] ⚠️  Input still has value "${finalClearedCheck}" after clearing, will type anyway...`);
+              }
+              
+              // Type the value - use faster typing (no delay) to avoid intermediate states
+              await inputElement.type(stopLossValue, { delay: 0 });
+              await delay(200);
+              
+              // Verify the value was set correctly
+              const verifyValue = await page.evaluate((el) => el.value || '', inputElement);
+              const verifyNum = parseFloat(verifyValue.replace(/,/g, ''));
+              const expectedNum = parseFloat(stopLossValue);
+              const tolerance = 0.01;
+              
+              if (verifyValue && !isNaN(verifyNum) && Math.abs(verifyNum - expectedNum) < tolerance) {
+                console.log(`[${exchange.name}] ✅ Typed into second input: ${verifyValue} (expected: ${stopLossValue})`);
+              } else {
+                console.log(`[${exchange.name}] ⚠️  Second input verification failed. Expected: ${stopLossValue}, Got: ${verifyValue}`);
+              }
+            } else {
+              console.log(`[${exchange.name}] ⚠️  Could not find second input element to type into`);
+            }
+          } catch (error) {
+            console.log(`[${exchange.name}] ⚠️  Error typing into second input: ${error.message}`);
+          }
+        }
+        
+        const inputFillResult = {
+          success: true,
+          inputsFound: inputInfo.inputsFound,
+          results: [
+            { index: 1, value: takeProfitValue, filled: inputInfo.inputs.length >= 1 },
+            { index: 2, value: stopLossValue, filled: inputInfo.inputs.length >= 2 }
+          ]
+        };
+        
+        if (inputFillResult && inputFillResult.success) {
+          console.log(`[${exchange.name}] ✅ Filled ${inputFillResult.results.length} input(s) with values`);
+          inputFillResult.results.forEach((result) => {
+            console.log(`[${exchange.name}]    Input ${result.index}: ${result.value}`);
+          });
+          
+          // Wait for inputs to be filled and UI to update
+          console.log(`[${exchange.name}] ⏳ Waiting for inputs to be filled and UI to update...`);
+          await delay(500);
+          
+          // Verify inputs are actually filled
+          const verifyInputs = await page.evaluate((sectionName, takeProfitValue, stopLossValue) => {
+            const allElements = Array.from(document.querySelectorAll('*'));
+            let tpslModal = null;
+            
+            for (const el of allElements) {
+              const text = (el.textContent || '').trim();
+              if (text === 'TP/SL' && el.offsetParent !== null) {
+                let parent = el.parentElement;
+                for (let i = 0; i < 10 && parent; i++) {
+                  const style = window.getComputedStyle(parent);
+                  if (style.display !== 'none' && style.visibility !== 'hidden' &&
+                    parent.offsetWidth > 0 && parent.offsetHeight > 0) {
+                    const parentText = (parent.textContent || '').toLowerCase();
+                    if (parentText.includes('take profit') && parentText.includes('stop loss')) {
+                      tpslModal = parent;
+                      break;
+                    }
+                  }
+                  parent = parent.parentElement;
+                }
+                if (tpslModal) break;
+              }
+            }
+            
+            if (!tpslModal) return { verified: false, message: 'Modal not found' };
+            
+            const allInputsInModal = Array.from(tpslModal.querySelectorAll('input'));
+            const filledInputs = [];
+            for (const input of allInputsInModal) {
+              if (input.tagName !== 'INPUT') continue;
+              const placeholder = input.getAttribute('placeholder') || '';
+              const className = input.className || '';
+              if ((placeholder.trim() === '' || placeholder === ' ') && className.toLowerCase().includes('text')) {
+                if (input.offsetParent !== null && !input.disabled && !input.readOnly) {
+                  const value = input.value || '';
+                  if (value.trim() !== '') {
+                    filledInputs.push({ value: value });
+                  }
+                }
+              }
+            }
+            
+            return { verified: filledInputs.length > 0, filledCount: filledInputs.length };
+          }, sectionName, (parseFloat(takeProfitPercent) / 10).toString(), (parseFloat(stopLossPercent) / 10).toString());
+          
+          if (!verifyInputs.verified) {
+            console.log(`[${exchange.name}] ⚠️  Inputs verification failed, waiting longer...`);
+            await delay(500);
+          } else {
+            console.log(`[${exchange.name}] ✅ Verified ${verifyInputs.filledCount} input(s) are filled`);
+          }
+        } else {
+          console.log(`[${exchange.name}] ⚠️  Could not fill inputs: ${inputFillResult?.message || 'unknown error'}`);
+          return false;
+        }
+        
+        console.log(`[${exchange.name}] ✅ [PHASE 3] Completed input filling for ${sectionName}`);
+        return true;
+      } catch (error) {
+        console.log(`[${exchange.name}] ⚠️  Error clicking ROI% element for ${sectionName}: ${error.message}`);
+        return false;
+      }
+    };
 
-        if (!slInput && (text === 'stop loss' || text === 'sl') && el.children.length === 0) {
-          let parent = el.parentElement;
-          for (let i = 0; i < 3 && parent; i++) {
-            const inputs = Array.from(parent.querySelectorAll('input'));
-            for (const inp of inputs) {
-              if (inp.offsetParent !== null && !inp.disabled && inp.type !== 'checkbox' && inp !== tpInput) {
-                slInput = inp;
+    // OLD Helper function to select "Limit" in Market dropdown for a section - REMOVED
+    // Market dropdown logic is now integrated into fillRoiInput function
+    const selectLimitInMarketDropdown_OLD = async (sectionName) => {
+      console.log(`[${exchange.name}] Finding and clicking Market element for ${sectionName}...`);
+      
+      let marketInfo;
+      try {
+        // Find the Market element for the section using text-based approach
+        marketInfo = await page.evaluate((sectionName) => {
+          // Step 1: Find the TP/SL modal by text "TP/SL" in header
+          const allElements = Array.from(document.querySelectorAll('*'));
+          let tpslModal = null;
+          
+          // Find element with "TP/SL" text (this is the modal header)
+          for (const el of allElements) {
+            const text = (el.textContent || '').trim();
+            if (text === 'TP/SL' && el.offsetParent !== null) {
+              // Walk up to find the modal container
+              let parent = el.parentElement;
+              for (let i = 0; i < 10 && parent; i++) {
+                const style = window.getComputedStyle(parent);
+                if (style.display !== 'none' && style.visibility !== 'hidden' &&
+                  parent.offsetWidth > 0 && parent.offsetHeight > 0) {
+                  // Check if this parent contains both "Take profit" and "Stop loss"
+                  const parentText = (parent.textContent || '').toLowerCase();
+                  if (parentText.includes('take profit') && parentText.includes('stop loss')) {
+                    tpslModal = parent;
+                    break;
+                  }
+                }
+                parent = parent.parentElement;
+              }
+              if (tpslModal) break;
+            }
+          }
+
+          if (!tpslModal) {
+            return { success: false, step: 1, message: 'TP/SL modal not found' };
+          }
+
+          // Step 2: Find element with text matching sectionName ("Take profit" or "Stop loss")
+          const sectionNameLower = sectionName.toLowerCase();
+          let sectionElement = null;
+          
+          // Search all elements in modal for section header
+          const modalElements = Array.from(tpslModal.querySelectorAll('*'));
+          for (const el of modalElements) {
+            const text = (el.textContent || '').trim();
+            // Match exact text (case-insensitive) - "Take profit" or "Stop loss"
+            if (text.toLowerCase() === sectionNameLower && el.offsetParent !== null) {
+              sectionElement = el;
+              break;
+            }
+          }
+
+          if (!sectionElement) {
+            return { 
+              success: false, 
+              step: 2, 
+              message: `Could not find element with text "${sectionName}"`
+            };
+          }
+
+          // Step 3: Find sectionElement's parent (the section container)
+          // We need to find a container that has this section's Market but NOT the other section
+          let sectionParent = sectionElement.parentElement;
+          const otherSectionName = sectionNameLower.includes('profit') ? 'stop loss' : 'take profit';
+          
+          // Walk up to find a container that has Market but doesn't have the other section
+          for (let i = 0; i < 10 && sectionParent; i++) {
+            const allDescendants = Array.from(sectionParent.querySelectorAll('*'));
+            let hasMarket = false;
+            let hasOtherSection = false;
+            
+            for (const el of allDescendants) {
+              const text = (el.textContent || '').trim();
+              if (text === 'Market' && el.offsetParent !== null) {
+                hasMarket = true;
+              }
+              // Check if this container has the OTHER section (we don't want that)
+              if (text.toLowerCase() === otherSectionName && el.offsetParent !== null) {
+                hasOtherSection = true;
                 break;
               }
             }
-            if (slInput) break;
-            parent = parent.parentElement;
+            
+            // If this container has Market and doesn't have the other section, it's the right container
+            if (hasMarket && !hasOtherSection) {
+              break;
+            }
+            
+            sectionParent = sectionParent.parentElement;
           }
-        }
-      }
-    }
-
-    // Fill TP
-    if (tp && tpInput) {
-      try {
-        setInputValue(tpInput, tp);
-        results.tp = true;
-      } catch (e) {
-        results.tpError = e.message;
-      }
-    } else if (tp) {
-      results.tpError = 'TP trigger input not found';
-    }
-
-    // Fill SL
-    if (sl && slInput) {
-      try {
-        setInputValue(slInput, sl);
-        results.sl = true;
-      } catch (e) {
-        results.slError = e.message;
-      }
-    } else if (sl) {
-      results.slError = 'SL trigger input not found';
-    }
-
-    return { success: results.tp || results.sl, ...results, debugInfo };
-  }, calculatedTP ? calculatedTP.toFixed(2) : '', calculatedSL ? calculatedSL.toFixed(2) : '');
-
-  if (fillResult.success) {
-    console.log(`[${exchange.name}] [TP/SL] Fill result: TP=${fillResult.tp ? 'OK' : fillResult.tpError || 'skipped'}, SL=${fillResult.sl ? 'OK' : fillResult.slError || 'skipped'}`);
-  } else {
-    console.log(`[${exchange.name}] [TP/SL] Failed to fill trigger prices: TP=${fillResult.tpError}, SL=${fillResult.slError}`);
-    if (fillResult.debugInfo) {
-      console.log(`[${exchange.name}] [TP/SL] Evaluate fill found ${fillResult.debugInfo.length} inputs: ${JSON.stringify(fillResult.debugInfo)}`);
-    }
-
-    // Fallback: try using keyboard input (slower but more reliable)
-    console.log(`[${exchange.name}] [TP/SL] Trying keyboard fallback...`);
-    const fallbackResult = await fillTpSlWithKeyboard(page, exchange, calculatedTP, calculatedSL);
-    if (fallbackResult.success) {
-      console.log(`[${exchange.name}] [TP/SL] Keyboard fallback succeeded`);
-    } else {
-      // TP/SL is mandatory — abort order if all fill methods fail
-      console.log(`[${exchange.name}] [TP/SL] ❌ All fill methods failed. TP/SL is mandatory — aborting order.`);
-      return { success: false, error: 'All TP/SL fill methods failed — mandatory, cannot place order without TP/SL' };
-    }
-  }
-
-  // Verify TP/SL values were actually set
-  await delay(300);
-  const verifyTpSl = async () => {
-    return await page.evaluate((expectedTP, expectedSL) => {
-      const panel = document.querySelector('[data-sentry-element="CreateOrderPanel"]');
-      if (!panel) return { tpOk: false, slOk: false, tpVal: '', slVal: '' };
-      const inputs = Array.from(panel.querySelectorAll('input')).filter(i => {
-        const t = (i.type || '').toLowerCase();
-        return t !== 'checkbox' && t !== 'hidden' && t !== 'range' && i.offsetParent !== null;
-      });
-      let tpVal = '', slVal = '';
-      for (const input of inputs) {
-        const ph = (input.placeholder || '').toLowerCase();
-        if (ph.includes('tp') && !ph.includes('sl')) tpVal = input.value || '';
-        if (ph.includes('sl') && !ph.includes('tp')) slVal = input.value || '';
-      }
-      const tpOk = !expectedTP || (tpVal && parseFloat(tpVal.replace(/,/g, '')) > 0);
-      const slOk = !expectedSL || (slVal && parseFloat(slVal.replace(/,/g, '')) > 0);
-      return { tpOk, slOk, tpVal, slVal };
-    }, calculatedTP ? calculatedTP.toFixed(2) : '', calculatedSL ? calculatedSL.toFixed(2) : '');
-  };
-
-  const verifyResult = await verifyTpSl();
-  if (verifyResult.tpOk && verifyResult.slOk) {
-    console.log(`[${exchange.name}] [TP/SL] ✅ Verified: TP=${verifyResult.tpVal}, SL=${verifyResult.slVal}`);
-    return { success: true };
-  }
-
-  // Values not verified — retry up to 2 more times with keyboard fill
-  console.log(`[${exchange.name}] [TP/SL] ⚠️  Verification failed (TP=${verifyResult.tpVal || 'empty'}, SL=${verifyResult.slVal || 'empty'}). Retrying...`);
-  for (let retry = 1; retry <= 2; retry++) {
-    console.log(`[${exchange.name}] [TP/SL] Retry ${retry}/2...`);
-    await delay(500);
-    const retryResult = await fillTpSlWithKeyboard(page, exchange, calculatedTP, calculatedSL);
-    if (retryResult.success) {
-      await delay(300);
-      const reVerify = await verifyTpSl();
-      if (reVerify.tpOk && reVerify.slOk) {
-        console.log(`[${exchange.name}] [TP/SL] ✅ Retry ${retry}: Verified TP=${reVerify.tpVal}, SL=${reVerify.slVal}`);
-        return { success: true };
-      }
-    }
-  }
-
-  // All retries failed — TP/SL is mandatory, abort
-  console.log(`[${exchange.name}] [TP/SL] ❌ All TP/SL fill retries failed. Mandatory — aborting order.`);
-  return { success: false, error: 'TP/SL verification failed after retries — mandatory, cannot place order without TP/SL' };
-}
-
-/**
- * Fallback: Fill TP/SL trigger prices using keyboard input (slower but more reliable)
- */
-async function fillTpSlWithKeyboard(page, exchange, calculatedTP, calculatedSL) {
-  const panel = await page.$('[data-sentry-element="CreateOrderPanel"]');
-  if (!panel) return { success: false, error: 'CreateOrderPanel not found' };
-
-  // Find all visible non-checkbox inputs in the panel
-  const inputs = await panel.$$('input:not([type="checkbox"])');
-  let tpFilled = false;
-  let slFilled = false;
-
-  for (const input of inputs) {
-    const isVisible = await page.evaluate(el => el.offsetParent !== null && !el.disabled, input);
-    if (!isVisible) continue;
-
-    const context = await page.evaluate(el => {
-      let text = '';
-      let parent = el.parentElement;
-      for (let i = 0; i < 4 && parent; i++) {
-        for (const child of parent.childNodes) {
-          if (child.nodeType === 3 || (child.tagName && ['LABEL', 'SPAN', 'DIV'].includes(child.tagName))) {
-            const t = (child.textContent || '').trim().toLowerCase();
-            if (t.length < 50) text += t + ' ';
+          
+          if (!sectionParent) {
+            // Fallback: use immediate parent
+            sectionParent = sectionElement.parentElement;
+            if (!sectionParent) {
+              return { success: false, step: 3, message: `Could not find parent of "${sectionName}" element` };
+            }
           }
-        }
-        parent = parent.parentElement;
+
+          // Step 4: Inside sectionParent, find element with text "Market"
+          const allDescendants = Array.from(sectionParent.querySelectorAll('*'));
+          let marketElement = null;
+          
+          for (const el of allDescendants) {
+            if (el.offsetParent === null) continue;
+            
+            // Get text content - try both direct text and full textContent
+            const directText = Array.from(el.childNodes)
+              .filter(node => node.nodeType === Node.TEXT_NODE)
+              .map(node => node.textContent)
+              .join('')
+              .trim();
+            const fullText = (el.textContent || '').trim();
+            
+            // Match exact "Market" text (check both direct text and full text)
+            if ((directText === 'Market' || fullText === 'Market')) {
+              marketElement = el;
+              console.log(`[DEBUG] Found Market element for ${sectionName}: directText="${directText}", fullText="${fullText}", tagName="${el.tagName}", className="${el.className || ''}"`);
+              break;
+            }
+          }
+
+          if (!marketElement) {
+            return { 
+              success: false, 
+              step: 4, 
+              message: `Could not find "Market" element inside "${sectionName}" parent`
+            };
+          }
+
+          // Log Market element details for debugging
+          const marketElementInfo = {
+            tagName: marketElement.tagName,
+            className: marketElement.className || '',
+            id: marketElement.id || '',
+            role: marketElement.getAttribute('role') || '',
+            textContent: marketElement.textContent || '',
+            offsetWidth: marketElement.offsetWidth,
+            offsetHeight: marketElement.offsetHeight
+          };
+
+          // Step 5: Find clickable parent of Market element
+          // Walk up to find a clickable container (similar to ROI%)
+          let clickableElement = marketElement.parentElement;
+          let levelsUp = 0;
+          const parentInfo = [];
+          
+          while (clickableElement && levelsUp < 5) {
+            const style = window.getComputedStyle(clickableElement);
+            const parentInfoItem = {
+              level: levelsUp,
+              tagName: clickableElement.tagName,
+              className: clickableElement.className || '',
+              id: clickableElement.id || '',
+              display: style.display,
+              visibility: style.visibility,
+              offsetWidth: clickableElement.offsetWidth,
+              offsetHeight: clickableElement.offsetHeight,
+              hasMarketText: (clickableElement.textContent || '').includes('Market')
+            };
+            parentInfo.push(parentInfoItem);
+            
+            if (style.display !== 'none' && style.visibility !== 'hidden' &&
+              clickableElement.offsetWidth > 0 && clickableElement.offsetHeight > 0) {
+              // Check if this element contains "Market" text (to ensure we're in the right container)
+              const parentText = (clickableElement.textContent || '').trim();
+              if (parentText.includes('Market')) {
+                // This is likely the clickable control
+                break;
+              }
+            }
+            clickableElement = clickableElement.parentElement;
+            levelsUp++;
+          }
+          
+          // If we didn't find a clickable parent, use the Market element itself
+          if (!clickableElement) {
+            clickableElement = marketElement;
+          }
+
+          // Get the clickable element's bounding rect for clicking
+          const rect = clickableElement.getBoundingClientRect();
+          const clickableElementInfo = {
+            tagName: clickableElement.tagName,
+            className: clickableElement.className || '',
+            id: clickableElement.id || '',
+            offsetWidth: clickableElement.offsetWidth,
+            offsetHeight: clickableElement.offsetHeight
+          };
+          
+          return {
+            success: true,
+            clickX: rect.x + rect.width / 2,
+            clickY: rect.y + rect.height / 2,
+            marketElementInfo: marketElementInfo,
+            clickableElementInfo: clickableElementInfo,
+            parentInfo: parentInfo
+          };
+        }, sectionName);
+      } catch (error) {
+        console.log(`[${exchange.name}] ❌ [MARKET FINDING] Error during page.evaluate: ${error.message}`);
+        return false;
       }
-      return text;
-    }, input);
 
-    // Priority 1: Match by placeholder (avoids parent text contamination)
-    // Use .placeholder property (not getAttribute) — React sets DOM property directly, not HTML attribute
-    const placeholder = await page.evaluate(el => (el.placeholder || '').toLowerCase(), input);
-    const isTPbyPh = !tpFilled && calculatedTP && placeholder.includes('tp') && !placeholder.includes('sl');
-    const isSLbyPh = !slFilled && calculatedSL && placeholder.includes('sl') && !placeholder.includes('tp');
+      if (!marketInfo) {
+        console.log(`[${exchange.name}] [MARKET FINDING] Evaluation returned null/undefined`);
+        return false;
+      }
 
-    // Priority 2: Match by surrounding context text
-    const isTPbyCtx = !tpFilled && calculatedTP && !isTPbyPh && !isSLbyPh && (
-      context.includes('take profit') ||
-      (context.includes('tp') && !context.includes('stop'))
-    );
-    const isSLbyCtx = !slFilled && calculatedSL && !isTPbyPh && !isSLbyPh && (
-      context.includes('stop loss') ||
-      (context.includes('sl') && !context.includes('take'))
-    );
+      if (!marketInfo.success) {
+        console.log(`[${exchange.name}] [MARKET FINDING] ❌ Step ${marketInfo.step} failed: ${marketInfo.message}`);
+        return false;
+      }
 
-    const isTP = isTPbyPh || isTPbyCtx;
-    const isSL = isSLbyPh || isSLbyCtx;
+      console.log(`[${exchange.name}] [MARKET FINDING] ✅ Successfully found Market element`);
+      console.log(`[${exchange.name}] 🔍 [MARKET ELEMENT] Found Market element for ${sectionName}:`);
+      console.log(`[${exchange.name}]    - Tag: ${marketInfo.marketElementInfo.tagName}`);
+      console.log(`[${exchange.name}]    - Class: "${marketInfo.marketElementInfo.className}"`);
+      console.log(`[${exchange.name}]    - ID: "${marketInfo.marketElementInfo.id}"`);
+      console.log(`[${exchange.name}]    - Role: "${marketInfo.marketElementInfo.role}"`);
+      console.log(`[${exchange.name}]    - Size: ${marketInfo.marketElementInfo.offsetWidth}x${marketInfo.marketElementInfo.offsetHeight}`);
+      console.log(`[${exchange.name}] 🔍 [CLICKABLE ELEMENT] Will click on:`);
+      console.log(`[${exchange.name}]    - Tag: ${marketInfo.clickableElementInfo.tagName}`);
+      console.log(`[${exchange.name}]    - Class: "${marketInfo.clickableElementInfo.className}"`);
+      console.log(`[${exchange.name}]    - ID: "${marketInfo.clickableElementInfo.id}"`);
+      console.log(`[${exchange.name}]    - Size: ${marketInfo.clickableElementInfo.offsetWidth}x${marketInfo.clickableElementInfo.offsetHeight}`);
+      console.log(`[${exchange.name}]    - Coordinates: (${marketInfo.clickX}, ${marketInfo.clickY})`);
+      if (marketInfo.parentInfo && marketInfo.parentInfo.length > 0) {
+        console.log(`[${exchange.name}] 🔍 [PARENT CHAIN] Parent elements:`);
+        marketInfo.parentInfo.forEach((parent, idx) => {
+          console.log(`[${exchange.name}]    Level ${parent.level}: ${parent.tagName}, class="${parent.className}", hasMarket=${parent.hasMarketText}, visible=${parent.display !== 'none' && parent.visibility !== 'hidden'}`);
+        });
+      }
 
-    if (isTP || isSL) {
-      const value = isTP ? calculatedTP.toFixed(2) : calculatedSL.toFixed(2);
-      // DOM-level: focus + select all (instead of coordinate-based triple-click)
-      await page.evaluate(el => { el.focus(); el.select(); }, input);
-      await delay(50);
-      await page.keyboard.press('Backspace');
-      await delay(50);
-      await safeType(page, input, value, { delay: 10 });
+      try {
+        // Click on Market element, then press ArrowDown once and Enter
+        console.log(`[${exchange.name}] 🔧 Clicking on Market element for ${sectionName}...`);
+        await page.mouse.click(marketInfo.clickX, marketInfo.clickY);
+        await delay(300);
+        console.log(`[${exchange.name}] ✅ Clicked Market element for ${sectionName}`);
+        
+        // Press ArrowDown once, then click the "Limit" option directly
+        console.log(`[${exchange.name}] ⌨️  Pressing ArrowDown x1 for ${sectionName} Market...`);
+        await page.keyboard.press('ArrowDown');
+        await delay(200);
+        
+        // Find and click the "Limit" option in the opened dropdown
+        const optionInfo = await page.evaluate(() => {
+          // Find all open listboxes and menus
+          const listboxes = Array.from(document.querySelectorAll('[role="listbox"]'));
+          const menus = Array.from(document.querySelectorAll('[role="menu"]'));
+          const allDropdowns = [...listboxes, ...menus];
+          
+          // Also look for elements with aria-expanded="true" that might be dropdowns
+          const expandedElements = Array.from(document.querySelectorAll('[aria-expanded="true"]'));
+          for (const el of expandedElements) {
+            const style = window.getComputedStyle(el);
+            if (style.display !== 'none' && style.visibility !== 'hidden' &&
+              el.offsetWidth > 0 && el.offsetHeight > 0) {
+              allDropdowns.push(el);
+            }
+          }
+          
+          for (const menu of allDropdowns) {
+            const style = window.getComputedStyle(menu);
+            if (style.display === 'none' || style.visibility === 'hidden') continue;
+            const rect = menu.getBoundingClientRect();
+            if (rect.width === 0 || rect.height === 0) continue;
+            
+            // Look for "Limit" option
+            const allInMenu = Array.from(menu.querySelectorAll('*'));
+            for (const el of allInMenu) {
+              if (el.offsetParent === null) continue;
+              const elText = (el.textContent || '').trim();
+              if (elText === 'Limit' || elText.toLowerCase() === 'limit') {
+                const rect = el.getBoundingClientRect();
+                return {
+                  found: true,
+                  x: rect.x + rect.width / 2,
+                  y: rect.y + rect.height / 2,
+                  text: elText
+                };
+              }
+            }
+          }
+          return { found: false };
+        });
+        
+        if (!optionInfo.found) {
+          console.log(`[${exchange.name}] ⚠️  Could not find "Limit" option to click in Market dropdown`);
+          return false;
+        }
+        
+        // Click the option using Puppeteer's mouse click
+        console.log(`[${exchange.name}] 🖱️  Clicking "Limit" option at coordinates (${optionInfo.x}, ${optionInfo.y})...`);
+        await page.mouse.click(optionInfo.x, optionInfo.y);
+        await delay(300);
+        
+        // Check if modal is still open after selection
+        const modalStillOpenAfter = await page.evaluate(() => {
+          const allElements = Array.from(document.querySelectorAll('*'));
+          for (const el of allElements) {
+            const text = (el.textContent || '').trim();
+            if (text === 'TP/SL' && el.offsetParent !== null) {
+              let parent = el.parentElement;
+              for (let i = 0; i < 10 && parent; i++) {
+                const style = window.getComputedStyle(parent);
+                if (style.display !== 'none' && style.visibility !== 'hidden' &&
+                  parent.offsetWidth > 0 && parent.offsetHeight > 0) {
+                  const parentText = (parent.textContent || '').toLowerCase();
+                  if (parentText.includes('take profit') && parentText.includes('stop loss')) {
+                    return true; // Modal is still open
+                  }
+                }
+                parent = parent.parentElement;
+              }
+            }
+          }
+          return false; // Modal not found or closed
+        });
+        
+        if (!modalStillOpenAfter) {
+          console.log(`[${exchange.name}] ⚠️  Modal closed after Market dropdown selection`);
+          return false;
+        }
+        
+        console.log(`[${exchange.name}] ✅ Completed Market dropdown selection for ${sectionName} (modal still open)`);
+        return true;
+      } catch (error) {
+        console.log(`[${exchange.name}] ⚠️  Error selecting Limit in Market dropdown for ${sectionName}: ${error.message}`);
+        return false;
+      }
+    };
+    
+    // Combined function to configure a section: Select P&L in ROI% dropdown, fill input, and select Limit in Market dropdown
+    const configureTpSlSection = async (sectionName, value) => {
+      console.log(`[${exchange.name}] 🔄 [SECTION CONFIG] Configuring ${sectionName} section (P&L dropdown → Fill input → Limit dropdown)...`);
+      
+      // Step 1: Select P&L in ROI% dropdown and fill input (using existing fillRoiInput function)
+      await fillRoiInput(sectionName, value);
       await delay(100);
-
-      if (isTP) {
-        tpFilled = true;
-        console.log(`[${exchange.name}] [TP/SL] Keyboard: TP trigger filled = ${value}`);
+      
+      // Step 2: Select Limit in Market dropdown - NOW HANDLED INSIDE fillRoiInput
+      // await selectLimitInMarketDropdown(sectionName); // REMOVED - logic is now in fillRoiInput
+      await delay(100);
+      
+      console.log(`[${exchange.name}] ✅ [SECTION CONFIG] Completed configuration for ${sectionName}`);
+    };
+    
+    // Configure both sections in one go (each section does all 3 operations)
+    console.log(`[${exchange.name}] 🔄 [TP/SL CONFIG] Configuring both sections in one go...`);
+    if (takeProfitPercent) {
+      await configureTpSlSection('Take profit', takeProfitPercent);
+      await delay(150);
+    }
+    if (stopLossPercent) {
+      await configureTpSlSection('Stop loss', stopLossPercent);
+      await delay(150);
+    }
+    console.log(`[${exchange.name}] ✅ [TP/SL CONFIG] Completed configuration for both sections`);
+    
+    // Fill Take profit Limit price with Trigger price value
+    console.log(`[${exchange.name}] 🔧 [LIMIT PRICE] Filling Take profit Limit price with Trigger price value...`);
+    await delay(500); // Wait for auto-fill to complete
+    
+    try {
+      // Find Trigger price value and TP limit price input
+      const limitPriceInfo = await page.evaluate(() => {
+        // Find the TP/SL modal
+        const allElements = Array.from(document.querySelectorAll('*'));
+        let tpslModal = null;
+        
+        for (const el of allElements) {
+          const text = (el.textContent || '').trim();
+          if (text === 'TP/SL' && el.offsetParent !== null) {
+            let parent = el.parentElement;
+            for (let i = 0; i < 10 && parent; i++) {
+              const style = window.getComputedStyle(parent);
+              if (style.display !== 'none' && style.visibility !== 'hidden' &&
+                parent.offsetWidth > 0 && parent.offsetHeight > 0) {
+                const parentText = (parent.textContent || '').toLowerCase();
+                if (parentText.includes('take profit') && parentText.includes('stop loss')) {
+                  tpslModal = parent;
+                  break;
+                }
+              }
+              parent = parent.parentElement;
+            }
+            if (tpslModal) break;
+          }
+        }
+        
+        if (!tpslModal) return { success: false, message: 'TP/SL modal not found' };
+        
+        // Find Take profit section
+        let takeProfitSection = null;
+        const modalElements = Array.from(tpslModal.querySelectorAll('*'));
+        for (const el of modalElements) {
+          const text = (el.textContent || '').trim();
+          if (text.toLowerCase() === 'take profit' && el.offsetParent !== null) {
+            takeProfitSection = el;
+            break;
+          }
+        }
+        
+        if (!takeProfitSection) return { success: false, message: 'Take profit section not found' };
+        
+        // Find section parent
+        let sectionParent = takeProfitSection.parentElement;
+        for (let i = 0; i < 10 && sectionParent; i++) {
+          const allDescendants = Array.from(sectionParent.querySelectorAll('*'));
+          let hasStopLoss = false;
+          for (const el of allDescendants) {
+            const text = (el.textContent || '').trim();
+            if (text.toLowerCase() === 'stop loss' && el.offsetParent !== null) {
+              hasStopLoss = true;
+              break;
+            }
+          }
+          if (!hasStopLoss) break;
+          sectionParent = sectionParent.parentElement;
+          if (!sectionParent) break;
+        }
+        
+        if (!sectionParent) sectionParent = takeProfitSection.parentElement;
+        
+        // Find Trigger price input in Take profit section
+        const allInputsInSection = Array.from(sectionParent.querySelectorAll('input'));
+        let triggerPriceInput = null;
+        let triggerPriceValue = '';
+        
+        for (const input of allInputsInSection) {
+          if (input.tagName !== 'INPUT') continue;
+          const placeholder = (input.getAttribute('placeholder') || '').trim().toLowerCase();
+          if (placeholder.includes('trigger price')) {
+            triggerPriceInput = input;
+            triggerPriceValue = input.value || '';
+            break;
+          }
+        }
+        
+        if (!triggerPriceInput || !triggerPriceValue) {
+          return { success: false, message: 'Could not find Trigger price input or value in Take profit section' };
+        }
+        
+        // Find TP limit price input (or Take profit Limit price)
+        let limitPriceInput = null;
+        let limitPriceInputId = '';
+        
+        for (const input of allInputsInSection) {
+          if (input.tagName !== 'INPUT') continue;
+          const placeholder = (input.getAttribute('placeholder') || '').trim().toLowerCase();
+          if (placeholder.includes('tp limit price') || placeholder.includes('take profit limit price') || 
+              placeholder.includes('limit price')) {
+            // Make sure it's not the trigger price input
+            if (!placeholder.includes('trigger')) {
+              limitPriceInput = input;
+              limitPriceInputId = input.id || '';
+              break;
+            }
+          }
+        }
+        
+        if (!limitPriceInput) {
+          return { success: false, message: 'Could not find TP limit price input' };
+        }
+        
+        return {
+          success: true,
+          triggerPriceValue: triggerPriceValue,
+          limitPriceInputId: limitPriceInputId
+        };
+      });
+      
+      if (!limitPriceInfo || !limitPriceInfo.success) {
+        console.log(`[${exchange.name}] ⚠️  Could not find limit price input: ${limitPriceInfo?.message || 'unknown error'}`);
       } else {
-        slFilled = true;
-        console.log(`[${exchange.name}] [TP/SL] Keyboard: SL trigger filled = ${value}`);
+        console.log(`[${exchange.name}] ✅ Found Trigger price value: ${limitPriceInfo.triggerPriceValue}`);
+        console.log(`[${exchange.name}] ⌨️  Typing Trigger price into TP limit price input...`);
+        
+        // Get the limit price input element
+        let limitPriceElement = null;
+        if (limitPriceInfo.limitPriceInputId) {
+          limitPriceElement = await page.evaluateHandle((id) => {
+            return document.getElementById(id);
+          }, limitPriceInfo.limitPriceInputId);
+          
+          const isValid = await page.evaluate(el => el !== null && el !== undefined, limitPriceElement);
+          if (!isValid) {
+            limitPriceElement = null;
+          }
+        }
+        
+        // Fallback: find by placeholder
+        if (!limitPriceElement) {
+          const allInputs = await page.$$('input');
+          for (const input of allInputs) {
+            const placeholder = await page.evaluate(el => (el.getAttribute('placeholder') || '').trim().toLowerCase(), input);
+            if ((placeholder.includes('tp limit price') || placeholder.includes('take profit limit price') || 
+                 placeholder.includes('limit price')) && !placeholder.includes('trigger')) {
+              const isVisible = await page.evaluate(el => {
+                const style = window.getComputedStyle(el);
+                return el.offsetParent !== null && 
+                       style.display !== 'none' && 
+                       style.visibility !== 'hidden' &&
+                       !el.disabled && 
+                       !el.readOnly;
+              }, input);
+              
+              if (isVisible) {
+                limitPriceElement = input;
+                break;
+              }
+            }
+          }
+        }
+        
+        if (limitPriceElement) {
+          // Focus the input
+          await limitPriceElement.focus();
+          await delay(200);
+          
+          // Select all existing text
+          await page.keyboard.down('Control');
+          await page.keyboard.press('KeyA');
+          await page.keyboard.up('Control');
+          await delay(100);
+          
+          // Clear existing value
+          await page.keyboard.press('Backspace');
+          await delay(100);
+          
+          // Type the trigger price value character by character
+          await limitPriceElement.type(limitPriceInfo.triggerPriceValue, { delay: 50 });
+          await delay(200);
+          
+          console.log(`[${exchange.name}] ✅ Typed Trigger price (${limitPriceInfo.triggerPriceValue}) into TP limit price input`);
+        } else {
+          console.log(`[${exchange.name}] ⚠️  Could not find TP limit price input element to type into`);
+        }
+      }
+    } catch (error) {
+      console.log(`[${exchange.name}] ⚠️  Error filling TP limit price: ${error.message}`);
+    }
+    
+    // Phase 4b: Fill SL limit price input with Trigger price value from Stop Loss section
+    console.log(`[${exchange.name}] 🔧 [PHASE 4b] Filling SL limit price input with Trigger price value...`);
+    try {
+      const slLimitPriceInfo = await page.evaluate(() => {
+        // Find TP/SL modal
+        const allElements = Array.from(document.querySelectorAll('*'));
+        let tpslModal = null;
+        
+        for (const el of allElements) {
+          const text = (el.textContent || '').trim();
+          if (text === 'TP/SL' && el.offsetParent !== null) {
+            let parent = el.parentElement;
+            for (let i = 0; i < 10 && parent; i++) {
+              const style = window.getComputedStyle(parent);
+              if (style.display !== 'none' && style.visibility !== 'hidden' &&
+                parent.offsetWidth > 0 && parent.offsetHeight > 0) {
+                const parentText = (parent.textContent || '').toLowerCase();
+                if (parentText.includes('take profit') && parentText.includes('stop loss')) {
+                  tpslModal = parent;
+                  break;
+                }
+              }
+              parent = parent.parentElement;
+            }
+            if (tpslModal) break;
+          }
+        }
+        
+        if (!tpslModal) return { success: false, message: 'TP/SL modal not found' };
+        
+        // Find Stop loss section
+        let stopLossSection = null;
+        const modalElements = Array.from(tpslModal.querySelectorAll('*'));
+        for (const el of modalElements) {
+          const text = (el.textContent || '').trim();
+          if (text.toLowerCase() === 'stop loss' && el.offsetParent !== null) {
+            stopLossSection = el;
+            break;
+          }
+        }
+        
+        if (!stopLossSection) return { success: false, message: 'Stop loss section not found' };
+        
+        // Find section parent
+        let sectionParent = stopLossSection.parentElement;
+        for (let i = 0; i < 10 && sectionParent; i++) {
+          const allDescendants = Array.from(sectionParent.querySelectorAll('*'));
+          let hasTakeProfit = false;
+          for (const el of allDescendants) {
+            const text = (el.textContent || '').trim();
+            if (text.toLowerCase() === 'take profit' && el.offsetParent !== null) {
+              hasTakeProfit = true;
+              break;
+            }
+          }
+          if (!hasTakeProfit) break;
+          sectionParent = sectionParent.parentElement;
+          if (!sectionParent) break;
+        }
+        
+        if (!sectionParent) sectionParent = stopLossSection.parentElement;
+        
+        // Find Trigger price input in Stop loss section
+        const allInputsInSection = Array.from(sectionParent.querySelectorAll('input'));
+        let triggerPriceInput = null;
+        let triggerPriceValue = '';
+        
+        for (const input of allInputsInSection) {
+          if (input.tagName !== 'INPUT') continue;
+          const placeholder = (input.getAttribute('placeholder') || '').trim().toLowerCase();
+          if (placeholder.includes('trigger price')) {
+            triggerPriceInput = input;
+            triggerPriceValue = input.value || '';
+            break;
+          }
+        }
+        
+        if (!triggerPriceInput || !triggerPriceValue) {
+          return { success: false, message: 'Could not find Trigger price input or value in Stop loss section' };
+        }
+        
+        // Find SL limit price input (or Stop loss Limit price)
+        let limitPriceInput = null;
+        let limitPriceInputId = '';
+        
+        for (const input of allInputsInSection) {
+          if (input.tagName !== 'INPUT') continue;
+          const placeholder = (input.getAttribute('placeholder') || '').trim().toLowerCase();
+          if (placeholder.includes('sl limit price') || placeholder.includes('stop loss limit price') || 
+              placeholder.includes('limit price')) {
+            // Make sure it's not the trigger price input
+            if (!placeholder.includes('trigger')) {
+              limitPriceInput = input;
+              limitPriceInputId = input.id || '';
+              break;
+            }
+          }
+        }
+        
+        if (!limitPriceInput) {
+          return { success: false, message: 'Could not find SL limit price input' };
+        }
+        
+        return {
+          success: true,
+          triggerPriceValue: triggerPriceValue,
+          limitPriceInputId: limitPriceInputId
+        };
+      });
+      
+      if (!slLimitPriceInfo || !slLimitPriceInfo.success) {
+        console.log(`[${exchange.name}] ⚠️  Could not find SL limit price input: ${slLimitPriceInfo?.message || 'unknown error'}`);
+      } else {
+        console.log(`[${exchange.name}] ✅ Found Trigger price value in Stop Loss section: ${slLimitPriceInfo.triggerPriceValue}`);
+        console.log(`[${exchange.name}] ⌨️  Typing Trigger price into SL limit price input...`);
+        
+        // Get the limit price input element
+        let slLimitPriceElement = null;
+        if (slLimitPriceInfo.limitPriceInputId) {
+          slLimitPriceElement = await page.evaluateHandle((id) => {
+            return document.getElementById(id);
+          }, slLimitPriceInfo.limitPriceInputId);
+          
+          const isValid = await page.evaluate(el => el !== null && el !== undefined, slLimitPriceElement);
+          if (!isValid) {
+            slLimitPriceElement = null;
+          }
+        }
+        
+        // Fallback: find by placeholder
+        if (!slLimitPriceElement) {
+          const allInputs = await page.$$('input');
+          for (const input of allInputs) {
+            const placeholder = await page.evaluate(el => (el.getAttribute('placeholder') || '').trim().toLowerCase(), input);
+            if ((placeholder.includes('sl limit price') || placeholder.includes('stop loss limit price') || 
+                 placeholder.includes('limit price')) && !placeholder.includes('trigger') && !placeholder.includes('tp')) {
+              const isVisible = await page.evaluate(el => {
+                const style = window.getComputedStyle(el);
+                return el.offsetParent !== null && 
+                       style.display !== 'none' && 
+                       style.visibility !== 'hidden' &&
+                       !el.disabled && 
+                       !el.readOnly;
+              }, input);
+              
+              if (isVisible) {
+                slLimitPriceElement = input;
+                break;
+              }
+            }
+          }
+        }
+        
+        if (slLimitPriceElement) {
+          // Focus the input
+          await slLimitPriceElement.focus();
+          await delay(200);
+          
+          // Select all existing text
+          await page.keyboard.down('Control');
+          await page.keyboard.press('KeyA');
+          await page.keyboard.up('Control');
+          await delay(100);
+          
+          // Clear existing value
+          await page.keyboard.press('Backspace');
+          await delay(100);
+          
+          // Type the trigger price value character by character
+          await slLimitPriceElement.type(slLimitPriceInfo.triggerPriceValue, { delay: 50 });
+          await delay(200);
+          
+          console.log(`[${exchange.name}] ✅ Typed Trigger price (${slLimitPriceInfo.triggerPriceValue}) into SL limit price input`);
+        } else {
+          console.log(`[${exchange.name}] ⚠️  Could not find SL limit price input element to type into`);
+        }
+      }
+    } catch (error) {
+      console.log(`[${exchange.name}] ⚠️  Error filling SL limit price: ${error.message}`);
+    }
+    
+    // Wait for UI to update after filling all inputs
+    console.log(`[${exchange.name}] ⏳ Waiting for UI to update after filling all inputs...`);
+    await delay(500);
+    
+    // Find and click the Confirm button in TP/SL modal (this saves TP/SL settings)
+    console.log(`[${exchange.name}] 🔍 [TP/SL CONFIRM] Looking for Confirm button in TP/SL modal...`);
+    let confirmButtonClicked = false;
+    
+    // Try multiple times to find and click the Confirm button (it might be disabled initially)
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        // First verify TP/SL modal is still open
+        const modalStillOpen = await page.evaluate(() => {
+          const allElements = Array.from(document.querySelectorAll('*'));
+          for (const el of allElements) {
+            const text = (el.textContent || '').trim();
+            if (text === 'TP/SL' && el.offsetParent !== null) {
+              let parent = el.parentElement;
+              for (let i = 0; i < 10 && parent; i++) {
+                const style = window.getComputedStyle(parent);
+                if (style.display !== 'none' && style.visibility !== 'hidden' &&
+                  parent.offsetWidth > 0 && parent.offsetHeight > 0) {
+                  const parentText = (parent.textContent || '').toLowerCase();
+                  if (parentText.includes('take profit') && parentText.includes('stop loss')) {
+                    return true;
+                  }
+                }
+                parent = parent.parentElement;
+              }
+            }
+          }
+          return false;
+        });
+        
+        if (!modalStillOpen) {
+          console.log(`[${exchange.name}] ⚠️  [TP/SL CONFIRM] TP/SL modal is not open, cannot find Confirm button`);
+          break;
+        }
+        
+        const confirmButtonInfo = await page.evaluate(() => {
+          // Find TP/SL modal first
+          const allElements = Array.from(document.querySelectorAll('*'));
+          let tpslModal = null;
+          
+          for (const el of allElements) {
+            const text = (el.textContent || '').trim();
+            if (text === 'TP/SL' && el.offsetParent !== null) {
+              let parent = el.parentElement;
+              for (let i = 0; i < 10 && parent; i++) {
+                const style = window.getComputedStyle(parent);
+                if (style.display !== 'none' && style.visibility !== 'hidden' &&
+                  parent.offsetWidth > 0 && parent.offsetHeight > 0) {
+                  const parentText = (parent.textContent || '').toLowerCase();
+                  if (parentText.includes('take profit') && parentText.includes('stop loss')) {
+                    tpslModal = parent;
+                    break;
+                  }
+                }
+                parent = parent.parentElement;
+              }
+              if (tpslModal) break;
+            }
+          }
+          
+          if (!tpslModal) return { found: false, message: 'TP/SL modal not found' };
+          
+          // Find Confirm button within TP/SL modal only
+          const allButtons = Array.from(tpslModal.querySelectorAll('button'));
+          for (const button of allButtons) {
+            const text = (button.textContent || '').trim();
+            if (text === 'Confirm' && button.offsetParent !== null) {
+              const rect = button.getBoundingClientRect();
+              return {
+                found: true,
+                disabled: button.disabled,
+                id: button.id || '',
+                className: button.className || '',
+                x: rect.x + rect.width / 2,
+                y: rect.y + rect.height / 2
+              };
+            }
+          }
+          return { found: false, message: 'Confirm button not found in TP/SL modal' };
+        });
+        
+        if (confirmButtonInfo.found) {
+          if (!confirmButtonInfo.disabled) {
+            // Button is enabled, click it
+            console.log(`[${exchange.name}] ✅ [CONFIRM BUTTON] Found enabled Confirm button, clicking...`);
+            
+            // Try to get element handle by ID first
+            let confirmButton = null;
+            if (confirmButtonInfo.id) {
+              try {
+                const handle = await page.evaluateHandle((id) => {
+                  return document.getElementById(id);
+                }, confirmButtonInfo.id);
+                const isValid = await page.evaluate(el => el !== null && el !== undefined, handle);
+                if (isValid) {
+                  confirmButton = handle.asElement();
+                }
+              } catch (e) {
+                // ID might contain special characters, fall back to coordinate click
+              }
+            }
+            
+            if (confirmButton) {
+              await confirmButton.evaluate(el => el.scrollIntoView({ behavior: 'smooth', block: 'center' }));
+              await delay(100);
+              await confirmButton.click();
+            } else {
+              // Fallback: click by coordinates
+              await page.mouse.click(confirmButtonInfo.x, confirmButtonInfo.y);
+            }
+            
+            console.log(`[${exchange.name}] ✅ [TP/SL CONFIRM] Clicked Confirm button in TP/SL modal`);
+            confirmButtonClicked = true;
+            
+            // Wait for modal to close after clicking Confirm
+            await delay(500);
+            break;
+          } else {
+            console.log(`[${exchange.name}] ⏳ [TP/SL CONFIRM] Confirm button found but is disabled, waiting... (attempt ${attempt + 1}/5)`);
+            await delay(300);
+          }
+        } else {
+          console.log(`[${exchange.name}] ⏳ [TP/SL CONFIRM] Confirm button not found yet: ${confirmButtonInfo?.message || 'unknown'}, waiting... (attempt ${attempt + 1}/5)`);
+          await delay(300);
+        }
+      } catch (error) {
+        console.log(`[${exchange.name}] ⚠️  [TP/SL CONFIRM] Error finding Confirm button (attempt ${attempt + 1}/5): ${error.message}`);
+        await delay(300);
       }
     }
+    
+    if (!confirmButtonClicked) {
+      console.log(`[${exchange.name}] ⚠️  [TP/SL CONFIRM] Could not click Confirm button after all attempts`);
+    } else {
+      console.log(`[${exchange.name}] ✅ [TP/SL CONFIG] TP/SL settings confirmed and modal should be closed`);
+    }
+  } else {
+    console.log(`[${exchange.name}] ⚠️  TP/SL modal did not open after clicking Advanced button`);
   }
 
-  return { success: tpFilled || slFilled, tp: tpFilled, sl: slFilled };
-}
+  // Don't press Enter on TP/SL inputs as it might trigger form validation that clears values
+  // Instead, just wait a bit for the UI to process the values
+  console.log(`[${exchange.name}] Waiting for TP/SL values to be processed by UI...`);
+  await delay(500);
 
+  return { success: true };
+}
 
 /**
  * Execute trade for GRVT
@@ -657,11 +2816,11 @@ export async function executeTradeGrvt(
     await setLeverageGrvt(page, leverage, exchange);
   }
 
-  // If limit order without price, fetch aggressive price based on ORDER_AGGRESSIVENESS
+  // If limit order without price, fetch current market price
   if (orderType === "limit" && !price) {
-    price = await getAggressivePrice(page, exchange, side);
+    price = await getCurrentMarketPrice(page, exchange);
     if (!price) {
-      console.log(`[${exchange.name}] Could not fetch market price for limit order`);
+      console.log(`[${exchange.name}] ❌ Could not fetch market price for limit order`);
       return { success: false, error: "Could not fetch market price" };
     }
   }
@@ -775,10 +2934,6 @@ export async function executeTradeGrvt(
           // Ensure button is in viewport before clicking
           const isInViewport = await page.evaluate((el) => {
             const rect = el.getBoundingClientRect();
-            // Fallback: if rect has zero dimensions (minimized), check offsetParent
-            if (rect.width === 0 && rect.height === 0) {
-              return el.offsetParent !== null;
-            }
             return (
               rect.top >= 0 &&
               rect.left >= 0 &&
@@ -786,15 +2941,15 @@ export async function executeTradeGrvt(
               rect.right <= (window.innerWidth || document.documentElement.clientWidth)
             );
           }, orderTypeElement);
-
+          
           if (!isInViewport) {
             console.log(`[${exchange.name}] ${orderType.toUpperCase()} button is not in viewport, scrolling it into view...`);
-            await page.evaluate(el => el.scrollIntoView({ behavior: 'smooth', block: 'center' }), orderTypeElement);
+            await orderTypeElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
             await delay(500); // Wait for scroll to complete
           }
-
+          
           console.log(`[${exchange.name}] ✅ Found ${orderType.toUpperCase()} button in CreateOrderPanel (text: "${buttonInfo.text}"), clicking...`);
-          await safeClick(page, orderTypeElement);
+          await orderTypeElement.click();
           console.log(`[${exchange.name}] Selected ${orderType.toUpperCase()} order`);
           orderTypeResult = true;
           await delay(300);
@@ -817,17 +2972,11 @@ export async function executeTradeGrvt(
       if (result) {
         orderTypeResult = true;
       } else {
-        console.log(`[${exchange.name}] ⚠️  Failed to select order type tab via fallback`);
+        console.log(`[${exchange.name}] ⚠️  Failed to select order type tab, but continuing...`);
       }
     }
   } catch (error) {
-    console.log(`[${exchange.name}] ⚠️  Error selecting order type tab: ${error.message}`);
-  }
-
-  // CRITICAL: If Limit was requested but not selected, abort to prevent Market order
-  if (!orderTypeResult && orderType === 'limit') {
-    console.log(`[${exchange.name}] ❌ Failed to select LIMIT order type — aborting to prevent Market order`);
-    return { success: false, error: "Failed to select Limit order type on GRVT" };
+    console.log(`[${exchange.name}] ⚠️  Error selecting order type tab: ${error.message}, continuing...`);
   }
   await delay(200); // Small delay for tab to activate
 
@@ -853,11 +3002,7 @@ export async function executeTradeGrvt(
 
     for (const input of panelInputs) {
       const rect = await input.boundingBox();
-      // When minimized, boundingBox() returns null — use DOM visibility check as fallback
-      if (!rect) {
-        const isDomVisible = await page.evaluate(el => el.offsetParent !== null && !el.disabled, input);
-        if (!isDomVisible) continue;
-      }
+      if (!rect) continue;
 
       const inputInfo = await page.evaluate((el) => {
         // Find label
@@ -943,24 +3088,6 @@ export async function executeTradeGrvt(
             break;
           }
         }
-      } else {
-        // Minimized: boundingBox() returns null — try DOM-based fallback using placeholder/label
-        console.log(`[${exchange.name}] [METHOD 1] boundingBox() returned null (minimized?), trying DOM-based price input search...`);
-        for (const input of panelInputs) {
-          if (input === sizeInput) continue;
-          const isDomVisible = await page.evaluate(el => el.offsetParent !== null && !el.disabled, input);
-          if (!isDomVisible) continue;
-          const inputInfo = await page.evaluate(el => ({
-            placeholder: (el.placeholder || '').toLowerCase(),
-            parentText: (el.parentElement?.textContent || '').toLowerCase().substring(0, 100)
-          }), input);
-          if (inputInfo.placeholder.includes('price') || inputInfo.parentText.includes('price')) {
-            priceInput = input;
-            priceInputMethod = 'METHOD 1: CreateOrderPanel (DOM-based fallback)';
-            console.log(`[${exchange.name}] ✅ [${priceInputMethod}] Found Price input via DOM fallback`);
-            break;
-          }
-        }
       }
     }
     console.log(`[${exchange.name}] [METHOD 1] Result: Quantity=${sizeInput ? 'FOUND' : 'NOT FOUND'}, Price=${priceInput ? 'FOUND' : 'NOT FOUND'}`);
@@ -1007,12 +3134,12 @@ export async function executeTradeGrvt(
     const currentValue = await page.evaluate((el) => el.value || '', input);
     console.log(`[${exchange.name}] Current ${inputName} value: "${currentValue}"`);
 
-    // Method 1: Focus and select all (DOM-level)
-    await page.evaluate(el => el.focus(), input);
+    // Method 1: Focus and select all
+    await input.focus();
     await delay(300);
 
-    // Method 2: Select all text (DOM-level, replaces coordinate-based triple-click)
-    await page.evaluate(el => { el.focus(); el.select(); }, input);
+    // Method 2: Triple click to select all
+    await input.click({ clickCount: 3 });
     await delay(200);
 
     // Method 3: Select all with Ctrl+A
@@ -1064,12 +3191,12 @@ export async function executeTradeGrvt(
     const valueStr = String(value);
     console.log(`[${exchange.name}] Filling ${inputName} with: "${valueStr}"`);
 
-    // Focus the input first (DOM-level)
-    await page.evaluate(el => el.focus(), input);
+    // Focus the input first
+    await input.focus();
     await delay(200);
 
-    // Select all existing text (DOM-level, replaces coordinate-based triple-click)
-    await page.evaluate(el => { el.focus(); el.select(); }, input);
+    // Triple-click to select all existing text
+    await input.click({ clickCount: 3 });
     await delay(100);
 
     // Delete selected text
@@ -1104,7 +3231,7 @@ export async function executeTradeGrvt(
 
     // Now type the new value (only if input is cleared)
     if (!clearedValueCheck || clearedValueCheck.trim() === '') {
-      await safeType(page, input, valueStr, { delay: 30 });
+      await input.type(valueStr, { delay: 30 });
       await delay(300);
     } else {
       // If still not cleared, use direct JavaScript assignment
@@ -1129,13 +3256,13 @@ export async function executeTradeGrvt(
     // If still empty, try one more time with focus and type
     if (!finalValue || finalValue.trim() === '') {
       console.log(`[${exchange.name}] ${inputName} still empty, trying one more time with focus and type...`);
-      await page.evaluate(el => el.focus(), input);
+      await input.focus();
       await delay(200);
-      await page.evaluate(el => { el.focus(); el.select(); }, input);
+      await input.click({ clickCount: 3 });
       await delay(100);
       await page.keyboard.press('Backspace');
       await delay(100);
-      await safeType(page, input, valueStr, { delay: 50 });
+      await input.type(valueStr, { delay: 50 });
       await delay(500);
       finalValue = await page.evaluate((el) => el.value || '', input);
       console.log(`[${exchange.name}] ${inputName} value after retry: "${finalValue}"`);
@@ -1334,7 +3461,7 @@ export async function executeTradeGrvt(
     const coinsOption = await findByText(page, "Number of Coins", ["button", "div", "span", "option"]);
     if (coinsOption) {
       console.log(`[${exchange.name}] Selecting "Number of Coins" option...`);
-      await safeClick(page, coinsOption);
+      await coinsOption.click();
       await delay(500);
     } else {
       console.log(`[${exchange.name}] ⚠️  Could not find "Number of Coins" option, trying to click dropdown...`);
@@ -1354,12 +3481,12 @@ export async function executeTradeGrvt(
 
       const dropdownElement = dropdownHandle.asElement();
       if (dropdownElement) {
-        await safeClick(page, dropdownElement);
+        await dropdownElement.click();
         await delay(500);
         // Try to find and click "Number of Coins" after opening
         const coinsOptionAfterOpen = await findByText(page, "Number of Coins", ["button", "div", "span", "option"]);
         if (coinsOptionAfterOpen) {
-          await safeClick(page, coinsOptionAfterOpen);
+          await coinsOptionAfterOpen.click();
           await delay(500);
         }
       }
@@ -1489,10 +3616,98 @@ export async function executeTradeGrvt(
   
   await clickConfirmButton(page, buySellBtn, buttonText, exchange, side);
 
-  // GRVT auto-confirms orders on Buy/Sell click — NO separate confirm modal.
-  // Previously searched for "Confirm" button and clicked it, causing DOUBLE ORDERS
-  // (the found "Confirm" triggered a second order placement). Removed in Change #86.
-  await delay(300);
+  // Step 6: Wait for modal to open and click Confirm button in the modal
+  console.log(`[${exchange.name}] ===== STARTING CONFIRM BUTTON FINDING PROCESS =====`);
+  console.log(`[${exchange.name}] Waiting 500ms for confirmation modal to open...`);
+  await delay(500);
+
+  // Check if a modal opened and find the Confirm button
+  console.log(`[${exchange.name}] Looking for Confirm button in the modal...`);
+
+  // METHOD 1: Try to find Confirm button in modal with exact match (this is the only method that works based on logs)
+  console.log(`[${exchange.name}] [CONFIRM METHOD 1] Attempting exact text match: "Confirm"`);
+  const confirmModalBtn = await findByExactText(page, "Confirm", ["button", "div", "span"]);
+
+  // Summary of Confirm button finding
+  console.log(`[${exchange.name}] ===== CONFIRM BUTTON FINDING SUMMARY =====`);
+  if (confirmModalBtn) {
+    console.log(`[${exchange.name}] ✅ Confirm Button: FOUND via METHOD 1: Exact text match (findByExactText)`);
+  } else {
+    console.log(`[${exchange.name}] ❌ Confirm Button: NOT FOUND`);
+  }
+  console.log(`[${exchange.name}] =========================================`);
+
+  if (confirmModalBtn) {
+    // Verify the button is in a modal (check if it's visible and likely in a modal)
+    const isInModal = await page.evaluate((btn) => {
+      // Check if button is in a modal/dialog
+      let parent = btn.parentElement;
+      for (let i = 0; i < 10 && parent; i++) {
+        const role = parent.getAttribute('role');
+        const className = parent.className || '';
+        if (role === 'dialog' ||
+          className.toLowerCase().includes('modal') ||
+          className.toLowerCase().includes('dialog')) {
+          return true;
+        }
+        parent = parent.parentElement;
+      }
+      return false;
+    }, confirmModalBtn);
+
+    if (isInModal) {
+      console.log(`[${exchange.name}] ✅ Found Confirm button in modal (via METHOD 1: Exact text match (findByExactText)), clicking...`);
+      
+      // ⏱️ TIMING: Track final Confirm button click (order submission)
+      const confirmButtonClickTime = Date.now();
+      
+      try {
+        await confirmModalBtn.click();
+        console.log(`[${exchange.name}] ✅ Clicked Confirm button in modal (direct click)`);
+        
+        // ⏱️ TIMING: Log total time metrics
+        if (thresholdMetTime) {
+          const totalTime = confirmButtonClickTime - thresholdMetTime;
+          const formFillTime = buySellButtonClickTime - formFillStartTime;
+          const buttonClickTime = confirmButtonClickTime - buySellButtonClickTime;
+          
+          console.log(`\n[${exchange.name}] ⏱️  [TIMING METRICS] ${sideLabel} Order Submission Complete:`);
+          console.log(`[${exchange.name}]    Account: ${email}`);
+          console.log(`[${exchange.name}]    Total time (threshold → submit): ${(totalTime / 1000).toFixed(2)}s`);
+          console.log(`[${exchange.name}]    Form fill time: ${(formFillTime / 1000).toFixed(2)}s`);
+          console.log(`[${exchange.name}]    Button click time: ${(buttonClickTime / 1000).toFixed(2)}s`);
+          console.log(`[${exchange.name}]    Timestamp: ${new Date(confirmButtonClickTime).toISOString()}\n`);
+        }
+        
+        await delay(1000); // Wait for order to be processed
+      } catch (error) {
+        console.log(`[${exchange.name}] ⚠️  Direct click failed, trying JavaScript click: ${error.message}`);
+        await confirmModalBtn.evaluate((el) => el.click());
+        console.log(`[${exchange.name}] ✅ Clicked Confirm button via JavaScript`);
+        
+        // ⏱️ TIMING: Log total time metrics (for JS click fallback)
+        if (thresholdMetTime) {
+          const totalTime = Date.now() - thresholdMetTime;
+          const formFillTime = buySellButtonClickTime - formFillStartTime;
+          const buttonClickTime = Date.now() - buySellButtonClickTime;
+          
+          console.log(`\n[${exchange.name}] ⏱️  [TIMING METRICS] ${sideLabel} Order Submission Complete (JS click):`);
+          console.log(`[${exchange.name}]    Account: ${email}`);
+          console.log(`[${exchange.name}]    Total time (threshold → submit): ${(totalTime / 1000).toFixed(2)}s`);
+          console.log(`[${exchange.name}]    Form fill time: ${(formFillTime / 1000).toFixed(2)}s`);
+          console.log(`[${exchange.name}]    Button click time: ${(buttonClickTime / 1000).toFixed(2)}s\n`);
+        }
+        
+        await delay(1000);
+      }
+    } else {
+      console.log(`[${exchange.name}] ⚠️  Found Confirm button (via METHOD 1) but it's not in a modal, may have already been processed`);
+      await delay(1000);
+    }
+  } else {
+    console.log(`[${exchange.name}] ⚠️  Could not find Confirm button in modal, order may have been processed without confirmation`);
+    await delay(1000);
+  }
 
   // Verify order placement (use grvtSize instead of qty parameter)
    return await verifyOrderPlacement(page, exchange, side, grvtSize);

@@ -3,10 +3,9 @@ import { delay } from '../utils/helpers.js';
 import { cancelAllOrders } from '../trading/orders.js';
 import { clickOrdersTab } from '../ui/tabs.js';
 import { handleSetLeverage } from '../trading/leverage.js';
-import { safeClick, safeType } from '../utils/safeActions.js';
 
 // Ensure environment variables are loaded
-dotenv.config();
+dotenv.config({ path: process.env.DOTENV_CONFIG_PATH || ".env" });
 
 // Extended Exchange pre/post-trade flow: cancel orders, positions, TP/SL, close positions, set leverage
 // This runs both BEFORE and AFTER trade execution for Extended Exchange
@@ -34,7 +33,7 @@ async function extendedExchangePrePostTradeFlow(page, email) {
           return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
         }, ordersTab);
         if (isVisible) {
-          await safeClick(page, ordersTab);
+          await ordersTab.click();
           ordersTabClicked = true;
           console.log(`[${email}] ✅ Clicked Orders tab`);
           await delay(1500);
@@ -115,7 +114,7 @@ async function extendedExchangePrePostTradeFlow(page, email) {
           return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
         }, positionsTab);
         if (isVisible) {
-          await safeClick(page, positionsTab);
+          await positionsTab.click();
           positionsTabClicked = true;
           console.log(`[${email}] ✅ Clicked Positions tab`);
           await delay(2000);
@@ -359,21 +358,21 @@ async function extendedExchangePrePostTradeFlow(page, email) {
                 }
                 
                 if (inputElement) {
-                  await safeClick(page, inputElement);
+                  await inputElement.click({ delay: 100 });
                   await delay(300);
-                  await page.evaluate(el => { el.focus(); el.select(); }, inputElement);
+                  await inputElement.click({ clickCount: 3 });
                   await page.keyboard.press('Backspace');
                   await delay(200);
-                  await safeType(page, inputElement, stopLossValue, { delay: 50 });
+                  await inputElement.type(stopLossValue, { delay: 50 });
                   await inputElement.evaluate((el, val) => {
                     el.dispatchEvent(new Event('input', { bubbles: true }));
                     el.dispatchEvent(new Event('change', { bubbles: true }));
                     el.dispatchEvent(new Event('blur', { bubbles: true }));
                   }, stopLossValue);
-
+                  
                   console.log(`[${email}] ✅ Successfully filled stop loss input with value: ${stopLossValue}`);
                   await delay(100);
-
+                  
                   // Find and click Confirm button in modal
                   console.log(`[${email}] Looking for Confirm button in modal...`);
                   const confirmButton = await page.evaluate(() => {
@@ -764,12 +763,12 @@ async function extendedExchangePrePostTradeFlow(page, email) {
                   }
                   
                   if (inputElement) {
-                    await safeClick(page, inputElement);
+                    await inputElement.click({ delay: 100 });
                     await delay(300);
-                    await page.evaluate(el => { el.focus(); el.select(); }, inputElement);
+                    await inputElement.click({ clickCount: 3 });
                     await page.keyboard.press('Backspace');
                     await delay(200);
-                    await safeType(page, inputElement, stopLossValue, { delay: 50 });
+                    await inputElement.type(stopLossValue, { delay: 50 });
                     await inputElement.evaluate((el, val) => {
                       el.dispatchEvent(new Event('input', { bubbles: true }));
                       el.dispatchEvent(new Event('change', { bubbles: true }));

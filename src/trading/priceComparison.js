@@ -1,13 +1,5 @@
-import { getCurrentMarketPrice, getBestBidAsk } from './executeBase.js';
+import { getCurrentMarketPrice } from './executeBase.js';
 import { delay } from '../utils/helpers.js';
-
-// Track whether each exchange page has been stabilized (first-call-only flag)
-const stabilizedExchanges = new Set();
-
-// Track price history per exchange for staleness detection
-// If the exact same price is returned too many times, page might be frozen
-const priceHistory = new Map(); // exchangeName -> { price, count, firstSeen }
-const STALE_PRICE_THRESHOLD = 20; // Flag after 20 identical consecutive prices
 
 /**
  * Compare prices from multiple exchanges and find highest and lowest
@@ -27,20 +19,19 @@ export async function comparePricesFromExchanges(exchangeAccounts) {
     try {
       console.log(`[${exchangeConfig.name}] Preparing to fetch price for ${email}...`);
       
-      // Wait for page to load — FULL stabilization only on first call per exchange
-      const isFirstCall = !stabilizedExchanges.has(exchangeConfig.name);
-
-      if (isFirstCall && (exchangeConfig.name === 'Kraken' || exchangeConfig.name === 'GRVT' || exchangeConfig.name === 'Extended Exchange')) {
-        console.log(`[${exchangeConfig.name}] First price fetch — waiting for page to fully load...`);
-
+      // Wait for page to load, especially important for Kraken, GRVT, and Extended Exchange
+      if (exchangeConfig.name === 'Kraken' || exchangeConfig.name === 'GRVT' || exchangeConfig.name === 'Extended Exchange') {
+        console.log(`[${exchangeConfig.name}] Waiting for page to fully load...`);
+        
         // Wait for page to be ready
         let pageReady = false;
         for (let i = 0; i < 10; i++) {
           pageReady = await page.evaluate(() => {
             return document.readyState === 'complete';
           });
-
+          
           if (pageReady) {
+            // Also check if trading elements are visible
             const hasTradingElements = await page.evaluate(() => {
               const text = document.body.innerText.toLowerCase();
               const hasPrice = text.includes('$') || document.querySelectorAll('[class*="price"], [class*="ticker"]').length > 0;
@@ -52,7 +43,7 @@ export async function comparePricesFromExchanges(exchangeAccounts) {
               );
               return hasPrice || hasButtons;
             });
-
+            
             if (hasTradingElements) {
               console.log(`[${exchangeConfig.name}] ✅ Page loaded and trading elements visible`);
               break;
@@ -64,64 +55,33 @@ export async function comparePricesFromExchanges(exchangeAccounts) {
             await delay(500);
           }
         }
-
-        // Additional wait for specific exchanges (only on first call)
+        
+        // Additional wait for specific exchanges (they might need more time to load price data)
         if (exchangeConfig.name === 'Kraken') {
-          console.log(`[${exchangeConfig.name}] First-time stabilization wait for Kraken...`);
+          console.log(`[${exchangeConfig.name}] Additional wait for Kraken page to stabilize...`);
           await delay(3000);
         } else if (exchangeConfig.name === 'GRVT') {
           await delay(2000);
         } else if (exchangeConfig.name === 'Extended Exchange') {
-          console.log(`[${exchangeConfig.name}] First-time stabilization wait for Extended Exchange...`);
+          console.log(`[${exchangeConfig.name}] Additional wait for Extended Exchange page to stabilize...`);
           await delay(2000);
         }
-
-        stabilizedExchanges.add(exchangeConfig.name);
-        console.log(`[${exchangeConfig.name}] Page stabilized (subsequent calls will skip long waits)`);
-      } else if (isFirstCall) {
-        // First call for non-special exchanges
-        await delay(500);
-        stabilizedExchanges.add(exchangeConfig.name);
-      }
-      // Subsequent calls: no stabilization delay needed — pages already loaded
-      
-      // Try bid/ask first for accurate orderbook-based pricing, fall back to DOM price
-      let price = null;
-      let bidAskData = null;
-      const bidAsk = await getBestBidAsk(page, exchangeConfig);
-      if (bidAsk && bidAsk.mid) {
-        price = bidAsk.mid;
-        bidAskData = { bestBid: bidAsk.bestBid, bestAsk: bidAsk.bestAsk };
-        console.log(`[${exchangeConfig.name}] ✓ Price from orderbook: mid=$${price.toLocaleString()} (bid=$${bidAsk.bestBid?.toLocaleString()}, ask=$${bidAsk.bestAsk?.toLocaleString()})`);
+        
+        console.log(`[${exchangeConfig.name}] Page loaded, fetching price...`);
       } else {
-        price = await getCurrentMarketPrice(page, exchangeConfig);
-        if (price) {
-          console.log(`[${exchangeConfig.name}] ✓ Price from DOM: $${price.toLocaleString()} (orderbook unavailable)`);
-        }
+        // For other exchanges, just a small delay
+        await delay(1000);
       }
+      
+      const price = await getCurrentMarketPrice(page, exchangeConfig);
       const fetchTime = Date.now() - startTime;
-
+      
       if (price) {
-        // Staleness detection: track if same price repeats too many times
-        const histKey = exchangeConfig.name;
-        const prev = priceHistory.get(histKey);
-        if (prev && prev.price === price) {
-          prev.count++;
-          if (prev.count >= STALE_PRICE_THRESHOLD && prev.count % STALE_PRICE_THRESHOLD === 0) {
-            const staleDuration = ((Date.now() - prev.firstSeen) / 1000).toFixed(0);
-            console.log(`[${exchangeConfig.name}] ⚠️  STALE PRICE WARNING: $${price.toLocaleString()} unchanged for ${prev.count} consecutive fetches (${staleDuration}s) — page may be frozen`);
-            // Reset stabilization flag to force re-stabilization on next cycle
-            stabilizedExchanges.delete(exchangeConfig.name);
-          }
-        } else {
-          priceHistory.set(histKey, { price, count: 1, firstSeen: Date.now() });
-        }
-
+        console.log(`[${exchangeConfig.name}] ✓ Price: $${price.toLocaleString()} (fetched in ${fetchTime}ms)`);
         return {
           exchange: exchangeConfig.name,
           email,
           price,
-          bidAsk: bidAskData, // null if fell back to DOM price
           fetchTime,
           success: true
         };

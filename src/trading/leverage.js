@@ -1,10 +1,9 @@
 import dotenv from 'dotenv';
 import { delay } from '../utils/helpers.js';
 import { findByExactText } from '../utils/helpers.js';
-import { safeClick, safeType } from '../utils/safeActions.js';
 
 // Ensure environment variables are loaded
-dotenv.config();
+dotenv.config({ path: process.env.DOTENV_CONFIG_PATH || ".env" });
 
 async function setLeverage(page, leverage) {
     console.log(`\n=== Setting Leverage to ${leverage}x ===`);
@@ -319,7 +318,7 @@ async function setLeverage(page, leverage) {
         
         if (cancelBtnElement) {
           try {
-            await safeClick(page, cancelBtnElement);
+            await cancelBtnElement.click();
             console.log(`✓ Clicked Cancel to close leverage modal`);
             await delay(1500);
           } catch (error) {
@@ -363,10 +362,10 @@ async function setLeverage(page, leverage) {
         };
       }
   
-      // Focus and select all to position cursor (DOM-level, minimize-safe)
-      await page.evaluate(el => { el.focus(); el.select(); }, leverageInput);
+      // Triple-click to select all and position cursor
+      await leverageInput.click({ clickCount: 3 });
       await delay(200);
-
+  
       // Get current value
       let currentValue = await page.evaluate(() => {
         const input = document.querySelector('input[data-leverage-input="true"]');
@@ -384,10 +383,10 @@ async function setLeverage(page, leverage) {
         console.log(`✓ Leverage is already set to ${leverage}x, no change needed`);
         // Still need to close modal - will be handled by Confirm button check below
       } else {
-        // Select all text (DOM-level focus+select, minimize-safe)
-        await page.evaluate(el => { el.focus(); el.select(); }, leverageInput);
+        // Select all text (triple-click or Ctrl+A)
+        await leverageInput.click({ clickCount: 3 });
         await delay(200);
-
+        
         // Alternative: Try Ctrl+A (works on all platforms)
         await page.keyboard.down('Control');
         await page.keyboard.press('a');
@@ -426,8 +425,8 @@ async function setLeverage(page, leverage) {
         // If the value doesn't match, try typing with "x"
         if (typedLeverage !== leverage) {
           console.log(`⚠️  Value mismatch, trying with "x" suffix...`);
-          // Clear and retry with "x" (DOM-level, minimize-safe)
-          await page.evaluate(el => { el.focus(); el.select(); }, leverageInput);
+          // Clear and retry with "x"
+          await leverageInput.click({ clickCount: 3 });
           await delay(100);
           await page.keyboard.press("Backspace");
           await delay(200);
@@ -499,10 +498,10 @@ async function setLeverage(page, leverage) {
         
         if (cancelBtnElement) {
           try {
-            await safeClick(page, cancelBtnElement);
+            await cancelBtnElement.click();
             console.log("✓ Clicked Cancel button to close leverage modal");
             await delay(1500);
-
+            
             // Verify modal is closed
             const modalClosed = await page.evaluate(() => {
               const modal = document.querySelector('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"]');
@@ -541,8 +540,8 @@ async function setLeverage(page, leverage) {
           await confirmBtnElement.evaluate(el => el.scrollIntoView({ behavior: 'smooth', block: 'center' }));
           await delay(300);
           
-          // Click the button (DOM-level, minimize-safe)
-          await safeClick(page, confirmBtnElement);
+          // Click the button
+          await confirmBtnElement.click();
           console.log("✓ Clicked Confirm button");
           await delay(2000); // Wait for modal to close and settings to apply
           
@@ -708,17 +707,17 @@ async function handleSetLeverage(page, email) {
       }
       
       if (inputElement) {
-        // Focus the input (DOM-level, minimize-safe)
-        await safeClick(page, inputElement);
+        // Click and focus the input
+        await inputElement.click({ delay: 100 });
         await delay(200);
-
-        // Clear existing value (DOM-level focus+select, minimize-safe)
-        await page.evaluate(el => { el.focus(); el.select(); }, inputElement);
+        
+        // Clear existing value
+        await inputElement.click({ clickCount: 3 }); // Triple click to select all
         await page.keyboard.press('Backspace');
         await delay(100);
-
-        // Type the leverage value (DOM-level, minimize-safe)
-        await safeType(page, inputElement, leverageValue, { delay: 50 });
+        
+        // Type the leverage value
+        await inputElement.type(leverageValue, { delay: 50 });
         await delay(200);
         
         // Press Enter

@@ -18,26 +18,34 @@ async function prompt(question) {
 }
 
 // Prompt user to choose trading mode
-async function chooseTradingMode() {
-    console.log(`\n========================================`);
-    console.log(`Select Trading Mode:`);
-    console.log(`========================================`);
-    console.log(`1. Buy from Paradex, Sell from Paradex (Both accounts on Paradex)`);
-    console.log(`2. Buy from Paradex, Sell from Extended Exchange`);
-    console.log(`3. Multi-Exchange Mode (Kraken, GRVT, Extended)`);
-    console.log(`\n--- Option 3: Multi-Exchange Modes ---`);
-    console.log(`3. All 3 Exchanges (Kraken, GRVT, Extended)`);
-    console.log(`3d. Kraken + GRVT (2 Exchanges)`);
-    console.log(`3e. Kraken + Extended (2 Exchanges)`);
-    console.log(`3f. GRVT + Extended (2 Exchanges)`);
-    console.log(`\n--- Option 3: Testing Modes ---`);
-    console.log(`3a. Test Kraken Exchange Only (BUY + SELL)`);
-    console.log(`3b. Test GRVT Exchange Only (BUY + SELL)`);
-    console.log(`3c. Test Extended Exchange Only (BUY + SELL)`);
-    console.log(`========================================\n`);
-    
-    const answer = await prompt(`Enter option (1, 2, 3, 3d, 3e, 3f, 3a, 3b, or 3c): `);
-    const mode = answer.trim();
+// If modeInput is provided (from Electron UI), skip readline prompt
+async function chooseTradingMode(modeInput) {
+    let mode;
+    if (modeInput !== undefined && modeInput !== null) {
+      // Programmatic mode (from Electron UI)
+      mode = String(modeInput).trim();
+    } else {
+      // Interactive CLI mode
+      console.log(`\n========================================`);
+      console.log(`Select Trading Mode:`);
+      console.log(`========================================`);
+      console.log(`1. Buy from Paradex, Sell from Paradex (Both accounts on Paradex)`);
+      console.log(`2. Buy from Paradex, Sell from Extended Exchange`);
+      console.log(`3. Multi-Exchange Mode (Kraken, GRVT, Extended)`);
+      console.log(`\n--- Option 3: Multi-Exchange Modes ---`);
+      console.log(`3. All 3 Exchanges (Kraken, GRVT, Extended)`);
+      console.log(`3d. Kraken + GRVT (2 Exchanges)`);
+      console.log(`3e. Kraken + Extended (2 Exchanges)`);
+      console.log(`3f. GRVT + Extended (2 Exchanges)`);
+      console.log(`\n--- Option 3: Testing Modes ---`);
+      console.log(`3a. Test Kraken Exchange Only (BUY + SELL)`);
+      console.log(`3b. Test GRVT Exchange Only (BUY + SELL)`);
+      console.log(`3c. Test Extended Exchange Only (BUY + SELL)`);
+      console.log(`========================================\n`);
+
+      const answer = await prompt(`Enter option (1, 2, 3, 3d, 3e, 3f, 3a, 3b, or 3c): `);
+      mode = answer.trim();
+    }
     
     if (mode === '1') {
       return {
