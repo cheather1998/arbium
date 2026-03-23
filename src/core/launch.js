@@ -101,6 +101,13 @@ async function launchAccount(accountConfig, exchangeConfig) {
         }
       }
   
+      // Remove stale lock file from previous crashed sessions
+      const lockFile = path.join(profileDir, 'SingletonLock');
+      if (fs.existsSync(lockFile)) {
+        console.log(`[${email}] Removing stale browser lock: ${lockFile}`);
+        try { fs.unlinkSync(lockFile); } catch { /* ignore */ }
+      }
+
       const chromePath = findChromePath();
       const browser = await puppeteer.launch({
         headless: HEADLESS,
