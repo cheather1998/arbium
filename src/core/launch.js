@@ -58,8 +58,10 @@ function findChromePath() {
     }
   }
 
-  console.warn('[Chrome] No Chrome found — Puppeteer will try its default');
-  return undefined;
+  // No Chrome found anywhere
+  const err = new Error('CHROME_NOT_FOUND');
+  err.code = 'CHROME_NOT_FOUND';
+  throw err;
 }
 
 async function launchAccount(accountConfig, exchangeConfig) {

@@ -37,6 +37,7 @@ export default function App() {
   const [config, setConfig] = useState({});
   const [version, setVersion] = useState('');
   const [setupComplete, setSetupComplete] = useState(() => isOnboardingDone());
+  const [showChromeModal, setShowChromeModal] = useState(false);
   const maxLogs = 500;
 
   const addLog = useCallback((entry) => {
@@ -80,12 +81,18 @@ export default function App() {
       addLog({ type: 'info', message: 'Bot stopped.' });
     });
 
+    const cleanupChrome = api.onChromeNotFound(() => {
+      setShowChromeModal(true);
+      setBotRunning(false);
+    });
+
     return () => {
       clearInterval(updateInterval);
       cleanupLog();
       cleanupStatus();
       cleanupStarted();
       cleanupStopped();
+      cleanupChrome();
     };
   }, [addLog]);
 
@@ -161,9 +168,40 @@ export default function App() {
     );
   }
 
+  // Chrome not found modal
+  const chromeModal = showChromeModal && (
+    <div className="modal-overlay">
+      <div className="modal-card" style={{ maxWidth: 440, textAlign: 'center' }}>
+        <div style={{ fontSize: 48, marginBottom: 12 }}>🌐</div>
+        <h2 style={{ margin: '0 0 8px' }}>Google Chrome Required</h2>
+        <p style={{ color: 'var(--text-secondary)', margin: '0 0 20px', lineHeight: 1.5 }}>
+          Arbium needs Google Chrome to run the trading bot.
+          Please download and install Chrome, then restart Arbium.
+        </p>
+        <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
+          <button
+            className="btn btn-primary"
+            onClick={() => {
+              if (api) api.openExternal('https://www.google.com/chrome/');
+            }}
+          >
+            Download Chrome
+          </button>
+          <button
+            className="btn btn-secondary"
+            onClick={() => setShowChromeModal(false)}
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
   // Main dashboard
   return (
     <div className="app-container">
+      {chromeModal}
       <header className="app-header">
         <img src={logoSvg} alt="Arbium" style={{ height: 22 }} />
       </header>

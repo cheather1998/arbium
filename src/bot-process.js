@@ -253,8 +253,14 @@ process.on('message', async (msg) => {
     try {
       await runBot(msg.mode, msg.config);
     } catch (err) {
-      log('error', `Fatal error: ${err.message}`);
-      status({ state: 'error', message: `Fatal: ${err.message}` });
+      if (err.code === 'CHROME_NOT_FOUND' || err.message === 'CHROME_NOT_FOUND') {
+        log('error', 'Google Chrome is not installed.');
+        if (process.send) process.send({ type: 'chrome-not-found' });
+        status({ state: 'error', message: 'Google Chrome not found' });
+      } else {
+        log('error', `Fatal error: ${err.message}`);
+        status({ state: 'error', message: `Fatal: ${err.message}` });
+      }
       stopped();
     }
   } else if (msg.type === 'stop') {

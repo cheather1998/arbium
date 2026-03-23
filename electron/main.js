@@ -107,6 +107,7 @@ function startBot(mode, config) {
   botProcess.on('message', (msg) => {
     if (msg.type === 'status') sendToUI('bot:status', msg.data);
     else if (msg.type === 'log') sendToUI('bot:log', { type: msg.level || 'info', message: msg.message });
+    else if (msg.type === 'chrome-not-found') sendToUI('bot:chrome-not-found', {});
     else if (msg.type === 'stopped') { sendToUI('bot:stopped', {}); botProcess = null; }
   });
 

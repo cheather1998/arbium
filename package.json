@@ -1,6 +1,6 @@
 {
   "name": "paradex-ui-bot",
-  "version": "3.0.2",
+  "version": "3.0.3",
   "description": "Paradex Multi-Exchange Trading Bot",
   "main": "electron/main.js",
   "type": "module",

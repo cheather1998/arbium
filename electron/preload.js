@@ -27,6 +27,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('bot:stopped', handler);
     return () => ipcRenderer.removeListener('bot:stopped', handler);
   },
+  onChromeNotFound: (callback) => {
+    const handler = (_event, data) => callback(data);
+    ipcRenderer.on('bot:chrome-not-found', handler);
+    return () => ipcRenderer.removeListener('bot:chrome-not-found', handler);
+  },
 
   // Account verification
   verifyAccount: (exchange, email) => ipcRenderer.invoke('verify:start', { exchange, email }),
