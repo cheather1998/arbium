@@ -1,5 +1,5 @@
 import dotenv from 'dotenv';
-dotenv.config({ path: process.env.DOTENV_CONFIG_PATH || '.env' });
+dotenv.config();
 
 // Multiple accounts configuration - read from environment variable
 const getAccountsFromEnv = () => {

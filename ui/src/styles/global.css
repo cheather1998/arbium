@@ -242,6 +242,17 @@ h1, h2, h3 {
   border-color: rgba(108, 255, 166, 0.25);
 }
 
+.status-banner.error {
+  background: var(--red-bg);
+  border-color: rgba(254, 111, 111, 0.25);
+}
+
+.status-pulse.error-pulse {
+  background: var(--red);
+  box-shadow: 0 0 8px var(--red);
+  animation: pulse 1s infinite;
+}
+
 .status-banner-left {
   display: flex;
   align-items: center;

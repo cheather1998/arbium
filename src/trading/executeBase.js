@@ -1,5 +1,6 @@
 import { delay, findByText, findByExactText } from '../utils/helpers.js';
 import { verifyOrderPlaced } from './orders.js';
+import { safeClick, safeType, safeClearAndType } from '../utils/safeActions.js';
 
 /**
  * Shared base functions for trade execution across all exchanges
@@ -119,6 +120,367 @@ export async function getCurrentMarketPrice(page, exchangeConfig = null) {
 }
 
 /**
+ * Fetch best bid and best ask prices from the exchange order book.
+ * Used for GRVT to place limit orders at best bid (buy) or best ask (sell) for Maker rebates.
+ * Returns { bestBid, bestAsk, mid } or null if order book cannot be detected.
+ */
+export async function getBestBidAsk(page, exchangeConfig = null) {
+  const exchangeName = exchangeConfig?.name || 'Unknown Exchange';
+  const isKraken = exchangeName.toLowerCase().includes('kraken');
+  console.log(`[${exchangeName}] Fetching best bid/ask from order book...`);
+
+  try {
+    const bidAskData = await page.evaluate((isKrakenExchange) => {
+      // Strategy 1: Look for order book container with common selectors
+      const orderbookSelectors = [
+        '[class*="orderbook" i]',
+        '[class*="OrderBook"]',
+        '[class*="order-book"]',
+        '[class*="order_book"]',
+        '[data-testid*="orderbook"]',
+        '[data-testid*="order-book"]',
+        '[data-sentry-element*="OrderBook"]',
+        '[class*="depth"]',
+        '[id*="orderbook" i]',
+        '[class*="book" i]',
+      ];
+
+      let orderbookContainer = null;
+      for (const selector of orderbookSelectors) {
+        try {
+          const els = document.querySelectorAll(selector);
+          for (const el of els) {
+            if (el && el.offsetParent !== null && el.offsetHeight > 80) {
+              // Verify it contains price-like numbers
+              const text = el.textContent || '';
+              if (/\d{2,3},\d{3}/.test(text) || /\d{5,6}/.test(text)) {
+                orderbookContainer = el;
+                break;
+              }
+            }
+          }
+          if (orderbookContainer) break;
+        } catch (e) { continue; }
+      }
+
+      // Strategy 2: Look for ask/bid sections by text content
+      if (!orderbookContainer) {
+        const allDivs = document.querySelectorAll('div, section, aside, table');
+        for (const div of allDivs) {
+          if (div.offsetParent === null || div.offsetHeight < 80 || div.offsetWidth < 50) continue;
+          const text = div.textContent || '';
+          const hasAsk = text.includes('Ask') || text.includes('Sell');
+          const hasBid = text.includes('Bid') || text.includes('Buy');
+          const hasPrices = /\d{2,3},\d{3}/.test(text) || /\d{5,6}/.test(text);
+          if (hasAsk && hasBid && hasPrices) {
+            orderbookContainer = div;
+            break;
+          }
+        }
+      }
+
+      // Strategy 3 (Kraken-specific): Find the orderbook by looking for a dense price cluster
+      // Kraken Pro uses obfuscated classes but renders a visible orderbook with colored rows
+      if (!orderbookContainer && isKrakenExchange) {
+        // Look for containers with many elements containing BTC-range prices
+        const candidates = document.querySelectorAll('div, section');
+        let bestCandidate = null;
+        let bestPriceCount = 0;
+
+        for (const div of candidates) {
+          if (div.offsetParent === null || div.offsetHeight < 100 || div.offsetWidth < 80) continue;
+          // Don't search the entire page or very large containers
+          if (div.offsetHeight > 1200 || div.childElementCount > 500) continue;
+
+          const innerText = div.textContent || '';
+          const priceMatches = innerText.match(/\b\d{2,3},\d{3}(?:\.\d{1,2})?\b/g);
+          if (priceMatches && priceMatches.length >= 6 && priceMatches.length > bestPriceCount) {
+            // Check that prices cluster around a similar value (orderbook prices are close together)
+            const prices = priceMatches.map(p => parseFloat(p.replace(',', '')));
+            const range = Math.max(...prices) - Math.min(...prices);
+            const avg = prices.reduce((a, b) => a + b, 0) / prices.length;
+            // Orderbook prices should be within ~2% of each other
+            if (range / avg < 0.02) {
+              bestCandidate = div;
+              bestPriceCount = priceMatches.length;
+            }
+          }
+        }
+        if (bestCandidate) {
+          orderbookContainer = bestCandidate;
+        }
+      }
+
+      if (!orderbookContainer) {
+        return null;
+      }
+
+      // Extract all price-like values from the order book
+      // BTC prices will be in range $1,000 - $500,000
+      const priceRegex = /\$?([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{1,2})?)/g;
+
+      // Get all rows/elements that contain prices — broader selectors for styled-component UIs
+      const rows = orderbookContainer.querySelectorAll(
+        'tr, [class*="row" i], [class*="Row"], [class*="level" i], [class*="Level"], [class*="price" i], li, [role="row"], [role="listitem"]'
+      );
+
+      const askPrices = [];
+      const bidPrices = [];
+
+      // Helper: check element and ancestors for color signals
+      const getColorSignal = (el) => {
+        let current = el;
+        for (let depth = 0; depth < 4 && current; depth++) {
+          const style = window.getComputedStyle(current);
+          const color = style.color;
+          const bgColor = style.backgroundColor;
+          const className = (current.className || '').toString();
+
+          // Check text color - parse RGB values
+          const rgbMatch = color.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+          if (rgbMatch) {
+            const [, r, g, b] = rgbMatch.map(Number);
+            if (r > 150 && g < 100 && b < 100) return 'ask';  // red text
+            if (g > 150 && r < 100) return 'bid';               // green text
+            if (r > 200 && g < 80) return 'ask';                // strong red
+            if (g > 200 && r < 80) return 'bid';                // strong green
+          }
+
+          // Check background color
+          const bgMatch = bgColor.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+          if (bgMatch) {
+            const [, r, g, b] = bgMatch.map(Number);
+            if (r > 100 && g < 60 && b < 60) return 'ask';
+            if (g > 100 && r < 60 && b < 60) return 'bid';
+          }
+
+          // Check class names
+          if (/ask|sell|red|negative|short/i.test(className)) return 'ask';
+          if (/bid|buy|green|positive|long/i.test(className)) return 'bid';
+
+          current = current.parentElement;
+        }
+        return null;
+      };
+
+      for (const row of rows) {
+        if (!row.offsetParent) continue;
+
+        const text = row.textContent || '';
+        const matches = text.match(priceRegex);
+        if (!matches) continue;
+
+        for (const match of matches) {
+          const priceStr = match.replace(/[$,]/g, '');
+          const price = parseFloat(priceStr);
+          if (price < 1000 || price > 500000) continue;
+
+          const signal = getColorSignal(row);
+
+          if (signal === 'ask') {
+            askPrices.push(price);
+          } else if (signal === 'bid') {
+            bidPrices.push(price);
+          } else {
+            // Fallback: Use position in container
+            const rect = row.getBoundingClientRect();
+            const containerRect = orderbookContainer.getBoundingClientRect();
+            const midY = containerRect.top + containerRect.height / 2;
+
+            if (rect.top < midY) {
+              askPrices.push(price);
+            } else {
+              bidPrices.push(price);
+            }
+          }
+        }
+      }
+
+      // Strategy 4: If no rows found via selectors, scan all child elements with prices
+      // This handles Kraken's hashed class names that don't match any pattern
+      if (askPrices.length === 0 && bidPrices.length === 0) {
+        const allChildren = orderbookContainer.querySelectorAll('*');
+        for (const child of allChildren) {
+          if (!child.offsetParent || child.children.length > 3) continue;
+          const text = (child.textContent || '').trim();
+          // Only look at leaf-ish elements with short text (price cells)
+          if (text.length > 30 || text.length < 3) continue;
+
+          const matches = text.match(priceRegex);
+          if (!matches) continue;
+
+          for (const match of matches) {
+            const priceStr = match.replace(/[$,]/g, '');
+            const price = parseFloat(priceStr);
+            if (price < 1000 || price > 500000) continue;
+
+            const signal = getColorSignal(child);
+
+            if (signal === 'ask') {
+              askPrices.push(price);
+            } else if (signal === 'bid') {
+              bidPrices.push(price);
+            } else {
+              const rect = child.getBoundingClientRect();
+              const containerRect = orderbookContainer.getBoundingClientRect();
+              const midY = containerRect.top + containerRect.height / 2;
+              if (rect.top < midY) {
+                askPrices.push(price);
+              } else {
+                bidPrices.push(price);
+              }
+            }
+          }
+        }
+      }
+
+      if (askPrices.length === 0 && bidPrices.length === 0) {
+        return null;
+      }
+
+      const bestAsk = askPrices.length > 0 ? Math.min(...askPrices) : null;
+      const bestBid = bidPrices.length > 0 ? Math.max(...bidPrices) : null;
+
+      // If bid >= ask, color/position detection is inverted — reclassify using price gap
+      if (bestBid !== null && bestAsk !== null && bestBid >= bestAsk) {
+        const allPrices = [...new Set([...askPrices, ...bidPrices])].sort((a, b) => a - b);
+        if (allPrices.length >= 2) {
+          // Find the largest gap between consecutive prices — this is the bid/ask boundary
+          let maxGap = 0, gapIdx = 0;
+          for (let i = 1; i < allPrices.length; i++) {
+            const gap = allPrices[i] - allPrices[i - 1];
+            if (gap > maxGap) { maxGap = gap; gapIdx = i; }
+          }
+          const reBids = allPrices.slice(0, gapIdx);   // lower prices = bids
+          const reAsks = allPrices.slice(gapIdx);        // higher prices = asks
+          if (reBids.length > 0 && reAsks.length > 0) {
+            const newBestBid = Math.max(...reBids);
+            const newBestAsk = Math.min(...reAsks);
+            if (newBestBid < newBestAsk) {
+              return {
+                bestBid: newBestBid,
+                bestAsk: newBestAsk,
+                mid: (newBestBid + newBestAsk) / 2,
+                bidCount: reBids.length,
+                askCount: reAsks.length,
+                reclassified: true,
+              };
+            }
+          }
+        }
+      }
+
+      const mid = (bestBid && bestAsk) ? (bestBid + bestAsk) / 2 : null;
+
+      return {
+        bestBid,
+        bestAsk,
+        mid,
+        askCount: askPrices.length,
+        bidCount: bidPrices.length,
+      };
+    }, isKraken);
+
+    if (bidAskData && (bidAskData.bestBid || bidAskData.bestAsk)) {
+      if (bidAskData.reclassified) {
+        console.log(`[${exchangeName}] ⚠️ Order book color/position detection was inverted — reclassified by price gap:`);
+      } else {
+        console.log(`[${exchangeName}] Order book detected:`);
+      }
+      console.log(`  Best Bid: $${bidAskData.bestBid?.toLocaleString() || 'N/A'} (${bidAskData.bidCount} levels)`);
+      console.log(`  Best Ask: $${bidAskData.bestAsk?.toLocaleString() || 'N/A'} (${bidAskData.askCount} levels)`);
+      console.log(`  Mid: $${bidAskData.mid?.toLocaleString() || 'N/A'}`);
+
+      // Sanity check: bid should be less than ask (should be rare after reclassification)
+      if (bidAskData.bestBid && bidAskData.bestAsk && bidAskData.bestBid >= bidAskData.bestAsk) {
+        console.log(`[${exchangeName}] WARNING: Best bid ($${bidAskData.bestBid}) >= best ask ($${bidAskData.bestAsk}). Reclassification also failed. Returning null.`);
+        return null;
+      }
+
+      // Sanity check: spread should be reasonable (< 1% of price)
+      if (bidAskData.bestBid && bidAskData.bestAsk) {
+        const spread = bidAskData.bestAsk - bidAskData.bestBid;
+        const spreadPct = spread / bidAskData.bestBid;
+        if (spreadPct > 0.01) {
+          console.log(`[${exchangeName}] WARNING: Spread is ${(spreadPct * 100).toFixed(2)}% ($${spread.toFixed(2)}). Unusually wide. Returning null.`);
+          return null;
+        }
+      }
+
+      return bidAskData;
+    } else {
+      console.log(`[${exchangeName}] Could not detect order book bid/ask prices.`);
+      return null;
+    }
+  } catch (error) {
+    console.error(`[${exchangeName}] Error fetching bid/ask prices:`, error.message);
+    return null;
+  }
+}
+
+/**
+ * Get aggressive price based on ORDER_AGGRESSIVENESS config.
+ * - taker: BUY at bestAsk (cross spread), SELL at bestBid (cross spread) — fills immediately
+ * - maker: BUY at bestBid (passive), SELL at bestAsk (passive) — earns maker rebate
+ * - mid: use mid price (legacy)
+ * Falls back to mid price if bid/ask detection fails.
+ */
+export async function getAggressivePrice(page, exchangeConfig, side) {
+  const exchangeName = exchangeConfig?.name || 'Unknown';
+
+  try {
+    const aggressiveness = (process.env.ORDER_AGGRESSIVENESS || '').toLowerCase();
+
+    // Resolve mode: ORDER_AGGRESSIVENESS takes priority, fallback to GRVT_ORDER_MODE
+    let mode;
+    if (aggressiveness === 'taker' || aggressiveness === 'maker' || aggressiveness === 'mid') {
+      mode = aggressiveness;
+    } else {
+      const grvtMode = (process.env.GRVT_ORDER_MODE || 'mid').toLowerCase();
+      mode = grvtMode === 'best_bidask' ? 'maker' : 'mid';
+    }
+
+    if (mode === 'mid') {
+      const price = await getCurrentMarketPrice(page, exchangeConfig);
+      if (price) console.log(`[${exchangeName}] MID price: $${price.toLocaleString()} (side: ${side})`);
+      return price;
+    }
+
+    const bidAsk = await getBestBidAsk(page, exchangeConfig);
+
+    if (!bidAsk) {
+      console.log(`[${exchangeName}] Bid/Ask detection failed, falling back to mid price...`);
+      return await getCurrentMarketPrice(page, exchangeConfig);
+    }
+
+    let price;
+    if (mode === 'taker') {
+      // Cross the spread: BUY at bestAsk (lifts the ask), SELL at bestBid (hits the bid)
+      price = side === 'buy' ? bidAsk.bestAsk : bidAsk.bestBid;
+      if (price) {
+        console.log(`[${exchangeName}] TAKER ${side.toUpperCase()}: $${price.toLocaleString()} (crossing spread, bid=${bidAsk.bestBid}, ask=${bidAsk.bestAsk})`);
+      }
+    } else {
+      // Passive: BUY at bestBid (join the bid), SELL at bestAsk (join the ask)
+      price = side === 'buy' ? bidAsk.bestBid : bidAsk.bestAsk;
+      if (price) {
+        console.log(`[${exchangeName}] MAKER ${side.toUpperCase()}: $${price.toLocaleString()} (passive, bid=${bidAsk.bestBid}, ask=${bidAsk.bestAsk})`);
+      }
+    }
+
+    if (!price) {
+      console.log(`[${exchangeName}] ${mode.toUpperCase()} price not available, falling back to mid...`);
+      price = bidAsk.mid || await getCurrentMarketPrice(page, exchangeConfig);
+    }
+
+    return price;
+  } catch (error) {
+    console.error(`[${exchangeName}] Error in getAggressivePrice:`, error.message);
+    return await getCurrentMarketPrice(page, exchangeConfig);
+  }
+}
+
+/**
  * Select Buy or Sell button
  */
 export async function selectBuyOrSell(page, side, exchange) {
@@ -140,7 +502,7 @@ export async function selectBuyOrSell(page, side, exchange) {
     }
     
     if (sellBtn) {
-      await sellBtn.click();
+      await safeClick(page, sellBtn);
       console.log(`[${exchange.name}] Selected SELL`);
       await delay(300);
       return true;
@@ -163,7 +525,7 @@ export async function selectBuyOrSell(page, side, exchange) {
     }
     
     if (buyBtn) {
-      await buyBtn.click();
+      await safeClick(page, buyBtn);
       console.log(`[${exchange.name}] Selected BUY`);
       await delay(300);
       return true;
@@ -201,7 +563,7 @@ export async function selectOrderType(page, orderType, exchange) {
           console.log(`[${exchange.name}] ⚠️  Found button but text contains deposit/withdraw (${buttonInfo.text}), skipping to avoid navigation...`);
         } else {
           console.log(`[${exchange.name}] Found Limit button, clicking...`);
-          await limitBtn.click();
+          await safeClick(page, limitBtn);
           console.log(`[${exchange.name}] Selected LIMIT order`);
           await delay(300);
           
@@ -241,7 +603,7 @@ export async function selectOrderType(page, orderType, exchange) {
           console.log(`[${exchange.name}] ⚠️  Found button but text contains deposit/withdraw (${buttonInfo.text}), skipping to avoid navigation...`);
         } else {
           console.log(`[${exchange.name}] Found Market button, clicking...`);
-          await marketBtn.click();
+          await safeClick(page, marketBtn);
           console.log(`[${exchange.name}] Selected MARKET order`);
           await delay(300);
           
@@ -275,21 +637,10 @@ export async function findSizeAndPriceInputs(page, orderType) {
 
   console.log(`Found ${inputs.length} text input elements on page`);
 
-  // Get screen width for percentage-based filtering (works for all screen sizes)
-  const screenWidth = await page.evaluate(() => window.innerWidth);
-  const rightSideThreshold = screenWidth * 0.4; // Right 60% of screen (relaxed from 50% for better compatibility)
-
   for (const input of inputs) {
-    const rect = await input.boundingBox();
-    if (!rect) continue;
-
-    // Look for inputs in the right panel (trading panel is on the right side)
-    // Use percentage-based approach for screen-size independence
-    // Skip inputs on the far left (likely navigation/menu)
-    if (rect.x < rightSideThreshold) {
-      console.log(`  Skipping input at x=${Math.round(rect.x)} (left side of screen)`);
-      continue;
-    }
+    // Minimize-safe: use DOM-level visibility check instead of boundingBox coordinates
+    const isInputVisible = await page.evaluate(el => el.offsetParent !== null && !el.disabled, input);
+    if (!isInputVisible) continue;
 
     const inputInfo = await page.evaluate((el) => {
       // Get all text content around this input
@@ -349,13 +700,9 @@ export async function findSizeAndPriceInputs(page, orderType) {
       };
     }, input);
 
-    console.log(`Input at (${Math.round(rect.x)}, ${Math.round(rect.y)})`);
-    console.log(
-      `  ID: "${inputInfo.id}", Name: "${inputInfo.name}", Placeholder: "${inputInfo.placeholder}"`
-    );
-    console.log(
-      `  Label: "${inputInfo.labelText}", Sibling: "${inputInfo.siblingText}", Parent: "${inputInfo.parentText.substring(0, 60)}"`
-    );
+    console.log(`  ID: "${inputInfo.id}", Name: "${inputInfo.name}", Placeholder: "${inputInfo.placeholder}"`);
+    console.log(`  Label: "${inputInfo.labelText}", Sibling: "${inputInfo.siblingText}", Parent: "${inputInfo.parentText.substring(0, 60)}"`);
+
     console.log(`  Current value: "${inputInfo.value}"`);
 
     // Check if this is the Size input (case-insensitive for better matching)
@@ -413,42 +760,50 @@ export async function findSizeAndPriceInputs(page, orderType) {
     }
   }
   
-  // For GRVT: If we found size input but not price input, look for input positioned near size input
+  // For GRVT: If we found size input but not price input, search by placeholder/label
   if (sizeInput && !priceInput && orderType === "limit") {
-    console.log("⚠️  Price input not found via text search, trying position-based search...");
-    const sizeRect = await sizeInput.boundingBox();
-    if (sizeRect) {
-      for (const input of inputs) {
-        if (input === sizeInput) continue; // Skip the size input itself
-        const rect = await input.boundingBox();
-        if (!rect) continue;
-        
-        // Check if input is on the same row (Y within 50px) and close horizontally (within 400px)
-        const sameRow = Math.abs(rect.y - sizeRect.y) < 50;
-        const closeHorizontally = Math.abs(rect.x - sizeRect.x) < 400 && rect.x !== sizeRect.x;
-        
-        if (sameRow && closeHorizontally) {
-          // This is likely the Price input - verify it's not disabled/readonly
-          const isEnabled = await page.evaluate((el) => {
-            return el.offsetParent !== null && !el.disabled && !el.readOnly;
-          }, input);
-          
-          if (isEnabled) {
-            priceInput = input;
-            console.log("✓ Found price input via position-based search (near quantity input)!");
-            break;
+    console.log("⚠️  Price input not found via text search, trying placeholder/label search...");
+    for (const input of inputs) {
+      if (input === sizeInput) continue;
+      const info = await page.evaluate(el => ({
+        visible: el.offsetParent !== null && !el.disabled && !el.readOnly,
+        ph: (el.placeholder || '').toLowerCase(),
+        label: (() => {
+          const labels = document.querySelectorAll('label');
+          for (const l of labels) {
+            if (l.control === el || l.contains(el)) return (l.textContent || '').toLowerCase();
           }
+          return '';
+        })(),
+        value: (el.value || '').toLowerCase()
+      }), input);
+      if (!info.visible) continue;
+      if (info.ph.includes('price') || info.label.includes('price') || info.value.includes('mid')) {
+        priceInput = input;
+        console.log("✓ Found price input via placeholder/label search!");
+        break;
+      }
+    }
+    // Last resort: take first visible non-size input
+    if (!priceInput) {
+      for (const input of inputs) {
+        if (input === sizeInput) continue;
+        const isEnabled = await page.evaluate(el => el.offsetParent !== null && !el.disabled && !el.readOnly, input);
+        if (isEnabled) {
+          priceInput = input;
+          console.log("✓ Found price input (first available non-size input)!");
+          break;
         }
       }
     }
   }
 
-  // Fallback 1: If size input not found, look for input with "BTC" in value or nearby text (right side only)
+  // Fallback 1: If size input not found, look for input with "BTC" in value or nearby text
   if (!sizeInput) {
-    console.log("⚠️  Size input not found with standard methods, trying fallback 1 (looking for input with BTC on right side)...");
+    console.log("⚠️  Size input not found with standard methods, trying fallback 1 (looking for input with BTC)...");
     for (const input of inputs) {
-      const rect = await input.boundingBox();
-      if (!rect || rect.x < rightSideThreshold) continue;
+      const isVisible = await page.evaluate(el => el.offsetParent !== null && !el.disabled, input);
+      if (!isVisible) continue;
 
       const inputInfo = await page.evaluate((el) => {
         const value = el.value || "";
@@ -488,29 +843,26 @@ export async function findSizeAndPriceInputs(page, orderType) {
         sizeInput = input;
         console.log("✓ Found size input via BTC fallback!");
         
-        // After finding size input, try to find price input nearby (for GRVT)
+        // After finding size input, try to find price input (for GRVT)
         if (!priceInput && orderType === "limit") {
-          const sizeRect = await sizeInput.boundingBox();
-          if (sizeRect) {
-            for (const otherInput of inputs) {
-              if (otherInput === sizeInput) continue;
-              const otherRect = await otherInput.boundingBox();
-              if (!otherRect || otherRect.x < rightSideThreshold) continue;
-              
-              const sameRow = Math.abs(otherRect.y - sizeRect.y) < 50;
-              const closeHorizontally = Math.abs(otherRect.x - sizeRect.x) < 400 && otherRect.x !== sizeRect.x;
-              
-              if (sameRow && closeHorizontally) {
-                const isEnabled = await page.evaluate((el) => {
-                  return el.offsetParent !== null && !el.disabled && !el.readOnly;
-                }, otherInput);
-                
-                if (isEnabled) {
-                  priceInput = otherInput;
-                  console.log("✓ Found price input via position-based search (near quantity from BTC fallback)!");
-                  break;
+          for (const otherInput of inputs) {
+            if (otherInput === sizeInput) continue;
+            const otherInfo = await page.evaluate(el => ({
+              visible: el.offsetParent !== null && !el.disabled && !el.readOnly,
+              ph: (el.placeholder || '').toLowerCase(),
+              label: (() => {
+                const labels = document.querySelectorAll('label');
+                for (const l of labels) {
+                  if (l.control === el || l.contains(el)) return (l.textContent || '').toLowerCase();
                 }
-              }
+                return '';
+              })()
+            }), otherInput);
+            if (!otherInfo.visible) continue;
+            if (otherInfo.ph.includes('price') || otherInfo.label.includes('price')) {
+              priceInput = otherInput;
+              console.log("✓ Found price input via text search (from BTC fallback)!");
+              break;
             }
           }
         }
@@ -523,8 +875,8 @@ export async function findSizeAndPriceInputs(page, orderType) {
   if (!sizeInput) {
     console.log("⚠️  Size input still not found, trying fallback 2 (searching all inputs without position filter)...");
     for (const input of inputs) {
-      const rect = await input.boundingBox();
-      if (!rect) continue;
+      const isVisible = await page.evaluate(el => el.offsetParent !== null && !el.disabled, input);
+      if (!isVisible) continue;
 
       const inputInfo = await page.evaluate((el) => {
         const value = el.value || "";
@@ -592,76 +944,70 @@ export async function findSizeAndPriceInputs(page, orderType) {
 export async function enterPrice(page, priceInput, price, orderType) {
   if (orderType === "limit" && price) {
     if (priceInput) {
-      console.log(`Clearing and entering price: ${price}`);
-      
-      // Get current value
-      const currentValue = await page.evaluate((el) => el.value || '', priceInput);
-      console.log(`Current price value: "${currentValue}"`);
-      
-      // Focus the input
-      await priceInput.focus();
+      const priceStr = String(price);
+      console.log(`Entering price: ${priceStr}`);
+
+      // Method 1: Select all + type (replaces selected text, works with React controlled inputs)
+      // IMPORTANT: No delays or extra steps between select and type — React re-renders can clear the selection
+      await page.evaluate(el => { el.focus(); el.select(); }, priceInput);
+      await page.keyboard.type(priceStr, { delay: 50 });
       await delay(200);
-      
-      // Method 1: Triple click to select all, then Backspace
-      await priceInput.click({ clickCount: 3 });
-      await delay(200);
-      await page.keyboard.press("Backspace");
-      await delay(200);
-      
-      // Verify it's cleared
-      let clearedValue = await page.evaluate((el) => el.value || '', priceInput);
-      console.log(`Price value after clearing: "${clearedValue}"`);
-      
-      // If not cleared, use JavaScript to clear
-      if (clearedValue && clearedValue.trim() !== '') {
-        console.log(`Price not fully cleared, using JavaScript to clear...`);
-        await page.evaluate((el) => {
-          el.value = '';
+
+      let finalValue = await page.evaluate((el) => el.value || '', priceInput);
+
+      // Verify: value should match what we typed
+      if (finalValue !== priceStr) {
+        console.log(`⚠️  Price mismatch: got "${finalValue}", expected "${priceStr}". Trying React native setter...`);
+        // Method 2: React native value setter (bypasses React controlled component)
+        await page.evaluate((el, val) => {
+          const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+          nativeSetter.call(el, val);
           el.dispatchEvent(new Event('input', { bubbles: true }));
           el.dispatchEvent(new Event('change', { bubbles: true }));
-        }, priceInput);
+        }, priceInput, priceStr);
         await delay(200);
-        clearedValue = await page.evaluate((el) => el.value || '', priceInput);
-        console.log(`Price value after JavaScript clear: "${clearedValue}"`);
+
+        finalValue = await page.evaluate((el) => el.value || '', priceInput);
+        if (finalValue !== priceStr) {
+          console.log(`⚠️  React setter also failed: got "${finalValue}". Trying Cmd/Ctrl+A + type...`);
+          // Method 3: Keyboard select-all + type (Meta on macOS, Control on others)
+          const modKey = process.platform === 'darwin' ? 'Meta' : 'Control';
+          await page.evaluate(el => el.focus(), priceInput);
+          await page.keyboard.down(modKey);
+          await page.keyboard.press('a');
+          await page.keyboard.up(modKey);
+          await page.keyboard.type(priceStr, { delay: 50 });
+          await delay(200);
+          finalValue = await page.evaluate((el) => el.value || '', priceInput);
+          if (finalValue !== priceStr) {
+            console.log(`⚠️  Method 3 also failed: got "${finalValue}", expected "${priceStr}"`);
+          }
+        }
       }
-      
-      // Type the new price value
-      const priceStr = String(price);
-      console.log(`Typing price value: "${priceStr}"`);
-      await priceInput.type(priceStr, { delay: 50 });
-      await delay(300);
-      
-      // Verify the value was set
-      const finalValue = await page.evaluate((el) => el.value || '', priceInput);
-      console.log(`Final price value: "${finalValue}"`);
-      
-      // Trigger input/change events to ensure UI updates
-      await page.evaluate((el) => {
-        el.dispatchEvent(new Event('input', { bubbles: true }));
-        el.dispatchEvent(new Event('change', { bubbles: true }));
-        el.dispatchEvent(new Event('blur', { bubbles: true }));
-      }, priceInput);
-      await delay(200);
-      
-      console.log(`✅ Price entered: ${price}`);
+
+      console.log(`✅ Price entered: ${finalValue}`);
     } else {
       console.log(`⚠️  Price input not provided, trying fallback...`);
+      // Fallback: find price input by placeholder (minimize-safe, no boundingBox)
       const allInputs = await page.$$("input");
       for (const inp of allInputs) {
-        const rect = await inp.boundingBox();
-        if (rect && rect.x > 1000 && rect.y > 150 && rect.y < 300) {
-          await inp.focus();
-          await delay(200);
-          await inp.click({ clickCount: 3 });
+        const ph = await page.evaluate(el => (el.placeholder || '').toLowerCase(), inp);
+        if (ph.includes('price') || ph.includes('mid')) {
+          // Use select+type to replace content (works with React controlled inputs)
+          await page.evaluate(el => { el.focus(); el.select(); }, inp);
           await delay(100);
-          await page.keyboard.press("Backspace");
+          await page.keyboard.type(String(price), { delay: 50 });
           await delay(200);
-          await page.evaluate((el) => {
-            el.value = '';
-            el.dispatchEvent(new Event('input', { bubbles: true }));
-          }, inp);
-          await delay(200);
-          await inp.type(String(price), { delay: 50 });
+          const fallbackValue = await page.evaluate(el => el.value || '', inp);
+          if (fallbackValue !== String(price)) {
+            // React native setter fallback
+            await page.evaluate((el, val) => {
+              const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+              nativeSetter.call(el, val);
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+            }, inp, String(price));
+          }
           console.log(`Entered price: ${price} (fallback)`);
           break;
         }
@@ -690,15 +1036,15 @@ export async function enterSize(page, sizeInput, qty, exchange) {
   const currentValue = await page.evaluate((el) => el.value || '', sizeInput);
   console.log(`[${exchange.name}] Current size value in input: "${currentValue}"`);
 
-  // Method 1: Triple click to select all, then Backspace to clear, then type new value
-  console.log(`[${exchange.name}] Method 1: Triple click + Backspace + Type new value...`);
-  await sizeInput.focus();
+  // Method 1: Select all + Backspace + Type new value (minimize-safe)
+  console.log(`[${exchange.name}] Method 1: Select all + Backspace + Type new value...`);
+  await page.evaluate(el => el.focus(), sizeInput);
   await delay(200);
-  
-  // Triple click to select all text (platform-independent)
-  await sizeInput.click({ clickCount: 3 });
+
+  // Select all text (minimize-safe: DOM-level)
+  await page.evaluate(el => { el.focus(); el.select(); }, sizeInput);
   await delay(200);
-  
+
   // Press Backspace to delete selected text
   await page.keyboard.press("Backspace");
   await delay(200);
@@ -720,9 +1066,10 @@ export async function enterSize(page, sizeInput, qty, exchange) {
     console.log(`[${exchange.name}] Value after JavaScript clear: "${clearedValue}"`);
   }
   
-  // Type the new value from env
+  // Type the new value from env (minimize-safe)
   console.log(`[${exchange.name}] Typing new size value: "${desiredQtyStr}"...`);
-  await sizeInput.type(desiredQtyStr, { delay: 50 });
+  await page.evaluate(el => el.focus(), sizeInput);
+  await page.keyboard.type(desiredQtyStr, { delay: 50 });
   await delay(300);
   
   // Trigger input/change events to ensure UI updates
@@ -746,8 +1093,8 @@ export async function enterSize(page, sizeInput, qty, exchange) {
   if (!isMatch) {
     console.log(`[${exchange.name}] ⚠️  First attempt failed (expected: "${desiredQtyStr}", got: "${actualValue}"), trying alternative method...`);
 
-    // Method 2: Focus, clear with JS, then type
-    await sizeInput.focus();
+    // Method 2: Focus, clear with JS, then type (minimize-safe)
+    await page.evaluate(el => el.focus(), sizeInput);
     await delay(200);
 
     // Clear using JavaScript
@@ -757,15 +1104,16 @@ export async function enterSize(page, sizeInput, qty, exchange) {
       el.dispatchEvent(new Event("change", { bubbles: true }));
     }, sizeInput);
     await delay(200);
-    
-    // Triple click again to ensure selection
-    await sizeInput.click({ clickCount: 3 });
+
+    // Select all + Backspace (minimize-safe)
+    await page.evaluate(el => { el.focus(); el.select(); }, sizeInput);
     await delay(100);
     await page.keyboard.press("Backspace");
     await delay(100);
 
-    // Type again
-    await sizeInput.type(desiredQtyStr, { delay: 50 });
+    // Type again (minimize-safe)
+    await page.evaluate(el => el.focus(), sizeInput);
+    await page.keyboard.type(desiredQtyStr, { delay: 50 });
     await delay(300);
     
     // Trigger events
@@ -909,34 +1257,39 @@ export async function clickConfirmButton(page, confirmBtn, confirmText, exchange
     console.log(`⚠️  Button might be covered by another element, trying to click anyway...`);
   }
   
-  // Use JavaScript click as fallback if element might be covered
-  // First try Puppeteer's click, which handles some coverage cases
-  try {
-    await confirmBtn.click({ delay: 100 });
-    console.log(`✓ Successfully clicked "${confirmText}" button`);
-  } catch (clickError) {
-    console.log(`⚠️  Puppeteer click failed: ${clickError.message}, trying JavaScript click...`);
-    // Fallback to JavaScript click
-    await confirmBtn.evaluate((btn) => {
-      btn.scrollIntoView({ behavior: 'instant', block: 'center' });
-      btn.click();
-    });
-    console.log(`✓ Successfully clicked "${confirmText}" button (via JavaScript)`);
-  }
-  await delay(2000); // Wait for order submission to process
+  // Use DOM-level click (minimize-safe — no coordinate dependency)
+  // NO RETRY — if page.evaluate throws after btn.click() executed (e.g., DOM changed by GRVT
+  // processing the order), retrying would click again and place a DUPLICATE order.
+  // DOM-level btn.click() is reliable; errors come from Puppeteer communication, not the click itself.
+  await page.evaluate(btn => {
+    btn.scrollIntoView({ behavior: 'instant', block: 'center' });
+    btn.click();
+  }, confirmBtn);
+  console.log(`✓ Successfully clicked "${confirmText}" button`);
+  await delay(500); // Wait for order submission to process
 }
 
 /**
  * Verify order was placed successfully
  */
 export async function verifyOrderPlacement(page, exchange, side, qty) {
-  // Check for error messages first
+  // Check for error messages first (filter out false positives from non-error UI elements)
   const errorMsg = await page.evaluate(() => {
     const errors = document.querySelectorAll(
       '[class*="error"], [class*="Error"]'
     );
     for (const err of errors) {
-      if (err.textContent) return err.textContent;
+      const text = (err.textContent || '').trim();
+      // Skip short texts (< 8 chars) — likely UI labels like "Mid|" not real errors
+      if (!text || text.length < 8) continue;
+      // Skip if element is not visible (minimize-safe: use offsetParent fallback)
+      const rect = err.getBoundingClientRect();
+      if ((rect.width === 0 || rect.height === 0) && err.offsetParent === null) continue;
+      // Skip known non-error patterns (price labels, separators)
+      if (/^(bid|ask|mid|last|mark)[\s|]/i.test(text)) continue;
+      // Skip HTML5 form validation messages (browser-native tooltips, not real trade errors)
+      if (/^please (complete|fill|match|enter)/i.test(text)) continue;
+      return text;
     }
     return null;
   });

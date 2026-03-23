@@ -2,6 +2,7 @@ import EXCHANGE_CONFIGS from '../config/exchanges.js';
 import { delay } from '../utils/helpers.js';
 import { findByText, findByExactText } from '../utils/helpers.js';
 import { hasExtendedExchangeCookies, saveCookies, clearExtendedExchangeCookies } from '../utils/cookies.js';
+import { safeClick, safeType } from '../utils/safeActions.js';
 
 async function isLoggedIn(page, exchangeConfig = null) {
     const exchange = exchangeConfig || EXCHANGE_CONFIGS.paradex; // Default to Paradex
@@ -143,7 +144,7 @@ async function isLoggedIn(page, exchangeConfig = null) {
             return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
           }, continueBtn);
           if (isVisible) {
-            await continueBtn.click();
+            await safeClick(page, continueBtn);
             continueClicked = true;
             console.log(`[${email}] Clicked Continue button (by text)`);
           }
@@ -157,7 +158,7 @@ async function isLoggedIn(page, exchangeConfig = null) {
               return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
             }, continueBtnByAttr);
             if (isVisible) {
-              await continueBtnByAttr.click();
+              await safeClick(page, continueBtnByAttr);
               continueClicked = true;
               console.log(`[${email}] Clicked Continue button (by attribute)`);
             }
@@ -224,7 +225,7 @@ async function isLoggedIn(page, exchangeConfig = null) {
             return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
           }, connectWalletBtn);
           if (isVisible) {
-            await connectWalletBtn.click();
+            await safeClick(page, connectWalletBtn);
             connectButtonClicked = true;
             console.log(`[${email}] Clicked Connect Wallet button`);
           }
@@ -238,7 +239,7 @@ async function isLoggedIn(page, exchangeConfig = null) {
               return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
             }, startTradingBtn);
             if (isVisible) {
-              await startTradingBtn.click();
+              await safeClick(page, startTradingBtn);
               connectButtonClicked = true;
               console.log(`[${email}] Clicked Start Trading button`);
             }
@@ -294,53 +295,22 @@ async function isLoggedIn(page, exchangeConfig = null) {
         return true; // Return true to allow manual completion
       }
   
-      // For Kraken and GRVT: wait for the user to log in manually in the browser window
-      if (exchange.name === 'Kraken' || exchange.name === 'GRVT') {
-        console.log(`[${email}] ${exchange.name} - checking if already logged in...`);
-        const alreadyLoggedIn = await isLoggedIn(page, exchange);
-        if (alreadyLoggedIn) {
-          console.log(`[${email}] ✅ ${exchange.name} - Already logged in`);
-          await saveCookies(page, cookiesPath, email);
-          return true;
-        }
-
-        console.log(`[${email}] ⚠️  ${exchange.name} - Not logged in. Please log in manually in the browser window...`);
-        console.log(`[${email}] Waiting up to 3 minutes for manual login...`);
-
-        // Poll for login success - wait up to 3 minutes (60 checks × 3s)
-        const maxWaitAttempts = 60;
-        for (let i = 0; i < maxWaitAttempts; i++) {
-          await delay(3000);
-          try {
-            const loggedIn = await isLoggedIn(page, exchange);
-            if (loggedIn) {
-              console.log(`[${email}] ✅ ${exchange.name} - Login detected!`);
-              await saveCookies(page, cookiesPath, email);
-              return true;
-            }
-          } catch (err) {
-            // Ignore transient errors during page transitions
-          }
-          if ((i + 1) % 10 === 0) {
-            console.log(`[${email}] Still waiting for ${exchange.name} login... (${(i + 1) * 3}s elapsed)`);
-          }
-        }
-
-        console.log(`[${email}] ⚠️  ${exchange.name} - Login not detected after 3 minutes. Browser stays open.`);
-        return false;
-      }
-
-      // For other non-Paradex exchanges, same wait logic
+      // Check if this exchange needs email login (only Paradex uses email login)
+      // Kraken and GRVT might use different authentication methods
       if (exchange.name !== 'Paradex') {
         console.log(`[${email}] ${exchange.name} - checking if already logged in...`);
+        // For non-Paradex exchanges (Kraken, GRVT), check if already logged in
+        // They might use cookies or different auth methods
         const alreadyLoggedIn = await isLoggedIn(page, exchange);
         if (alreadyLoggedIn) {
           console.log(`[${email}] ✅ ${exchange.name} - Already logged in`);
           await saveCookies(page, cookiesPath, email);
           return true;
         } else {
-          console.log(`[${email}] ⚠️  ${exchange.name} - Not logged in, please log in manually`);
-          return false;
+          console.log(`[${email}] ⚠️  ${exchange.name} - Not logged in, but no specific login flow implemented`);
+          console.log(`[${email}] Please log in manually in the browser window`);
+          // Keep browser open for manual login
+          return false; // Return false so browser stays open
         }
       }
   
@@ -371,7 +341,7 @@ async function isLoggedIn(page, exchangeConfig = null) {
       if (exchange.selectors.loginButton) {
         const loginBtnByAttr = await page.$(exchange.selectors.loginButton);
         if (loginBtnByAttr) {
-          await loginBtnByAttr.click();
+          await safeClick(page, loginBtnByAttr);
           loginClicked = true;
           console.log(`[${email}] Clicked Log in button (by data attribute)`);
         }
@@ -381,7 +351,7 @@ async function isLoggedIn(page, exchangeConfig = null) {
       if (!loginClicked) {
         const loginBtnByText = await findByText(page, "Log in", ["button"]);
         if (loginBtnByText) {
-          await loginBtnByText.click();
+          await safeClick(page, loginBtnByText);
           loginClicked = true;
           console.log(`[${email}] Clicked Log in button (by text)`);
         }
@@ -448,7 +418,7 @@ async function isLoggedIn(page, exchangeConfig = null) {
           'button[data-dd-action-name="Connect wallet"]'
         );
         if (loginBtn2ByAttr) {
-          await loginBtn2ByAttr.click();
+          await safeClick(page, loginBtn2ByAttr);
           loginBtn2Clicked = true;
           console.log(
             `[${email}] Clicked Log in button (second click - by data attribute)`
@@ -458,7 +428,7 @@ async function isLoggedIn(page, exchangeConfig = null) {
         if (!loginBtn2Clicked) {
           const loginBtn2ByText = await findByText(page, "Log in", ["button"]);
           if (loginBtn2ByText) {
-            await loginBtn2ByText.click();
+            await safeClick(page, loginBtn2ByText);
             loginBtn2Clicked = true;
             console.log(
               `[${email}] Clicked Log in button (second click - by text)`
@@ -630,7 +600,7 @@ async function isLoggedIn(page, exchangeConfig = null) {
         }
   
         if (socialBtn) {
-          await socialBtn.click();
+          await safeClick(page, socialBtn);
           console.log(`[${email}] Clicked Email or Social button`);
           await delay(2000); // Wait for email input to appear
         } else {
@@ -785,11 +755,11 @@ async function isLoggedIn(page, exchangeConfig = null) {
         if (emailInput) {
           console.log(`[${email}] Proceeding to enter email...`);
           // Clear and enter email
-          await emailInput.click({ clickCount: 3 }); // Triple click to select all
+          await page.evaluate(el => { el.focus(); el.select(); }, emailInput); // DOM-level select all
           await delay(200);
           await page.keyboard.press("Backspace"); // Clear any existing text
           await delay(200);
-          await emailInput.type(email, { delay: 50 });
+          await safeType(page, emailInput, email, { delay: 50 });
           console.log(`[${email}] Entered email: ${email}`);
   
           // Trigger input events for React forms
@@ -826,7 +796,7 @@ async function isLoggedIn(page, exchangeConfig = null) {
                 return el.offsetParent !== null;
               }, submitBtn);
               if (isEnabled) {
-                await submitBtn.click();
+                await safeClick(page, submitBtn);
                 console.log(`[${email}] Clicked "${buttonText}" button`);
                 submitClicked = true;
                 break;
@@ -914,7 +884,7 @@ async function isLoggedIn(page, exchangeConfig = null) {
       for (const input of otpInputs) {
         const maxLength = await page.evaluate((el) => el.maxLength, input);
         if (maxLength === 1 && otpIndex < 6) {
-          await input.type(otp[otpIndex], { delay: 100 });
+          await safeType(page, input, otp[otpIndex], { delay: 100 });
           otpIndex++;
         }
       }

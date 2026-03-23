@@ -61,6 +61,13 @@ export default function App() {
       setCheckingUpdate(false);
     }).catch(() => setCheckingUpdate(false));
 
+    // Periodic update check every 5 minutes while app is running
+    const updateInterval = setInterval(() => {
+      api.checkForUpdates().then((result) => {
+        if (result.updateRequired) setUpdateInfo(result);
+      }).catch(() => {});
+    }, 5 * 60 * 1000);
+
     api.readConfig().then((result) => {
       if (result.success) setConfig(result.config);
     });
@@ -74,6 +81,7 @@ export default function App() {
     });
 
     return () => {
+      clearInterval(updateInterval);
       cleanupLog();
       cleanupStatus();
       cleanupStarted();

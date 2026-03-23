@@ -8,7 +8,7 @@ import { HEADLESS } from '../config/headless.js';
 import { comparePricesFromExchanges } from '../trading/priceComparison.js';
 
 // Ensure environment variables are loaded
-dotenv.config({ path: process.env.DOTENV_CONFIG_PATH || ".env" });
+dotenv.config();
 
 let isShuttingDown = false;
 
@@ -19,8 +19,8 @@ async function main() {
     console.log(`Number of accounts: ${ACCOUNTS.length}`);
     console.log(`========================================\n`);
   
-    // Prompt user to choose trading mode (or use provided mode)
-    const tradingMode = await chooseTradingMode(main._modeInput);
+    // Prompt user to choose trading mode
+    const tradingMode = await chooseTradingMode();
     console.log(`\n✓ Selected: ${tradingMode.description}\n`);
   
     // Handle test modes (3a, 3b, 3c) - Single exchange testing
@@ -649,13 +649,4 @@ async function main() {
     });
   }
 
-  /**
-   * Entry point for Electron subprocess.
-   * Accepts a mode value directly, bypassing readline prompt.
-   */
-  async function mainWithMode(mode) {
-    main._modeInput = mode;
-    return main();
-  }
-
-  export { main, mainWithMode };
+  export { main };

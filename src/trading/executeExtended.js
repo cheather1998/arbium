@@ -10,9 +10,10 @@ import {
   clickConfirmButton,
   verifyOrderPlacement
 } from './executeBase.js';
+import { safeClick, safeType, safeClearAndType } from '../utils/safeActions.js';
 import dotenv from 'dotenv';
 
-dotenv.config({ path: process.env.DOTENV_CONFIG_PATH || ".env" });
+dotenv.config();
 
 /**
  * Extended Exchange specific trade execution logic
@@ -84,17 +85,8 @@ export async function setLeverageExtended(page, leverage, exchange) {
       }
       
       if (inputElement) {
-        // Click and focus the input
-        await inputElement.click({ delay: 100 });
-        await delay(200);
-        
-        // Clear existing value
-        await inputElement.click({ clickCount: 3 });
-        await page.keyboard.press('Backspace');
-        await delay(100);
-        
-        // Type the leverage value
-        await inputElement.type(leverageValue, { delay: 50 });
+        // Clear existing value and type the leverage value (DOM-level, minimize-safe)
+        await safeClearAndType(page, inputElement, leverageValue, { delay: 50 });
         await delay(200);
         
         // Press Enter
@@ -194,41 +186,41 @@ export async function findConfirmButtonExtended(page, side, exchange) {
     
     let sellButtonsOnRight = [];
     for (const btn of allButtons) {
-      const btnText = await page.evaluate((el) => el.textContent?.trim(), btn);
-      const rect = await btn.boundingBox();
-      const isVisible = await page.evaluate((el) => {
-        return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
-      }, btn);
-      
-      // Check if it's the "Sell" button, visible, and in the right 40% of screen
-      if (btnText === "Sell" && isVisible && rect && rect.x >= rightSideThreshold) {
-        // Check if button is near footer
-        const buttonInfo = await page.evaluate((el) => {
-          const rect = el.getBoundingClientRect();
-          const viewportHeight = window.innerHeight;
-          return {
-            isNearFooter: rect.bottom > viewportHeight * 0.8,
-            viewportHeight
-          };
-        }, btn);
-        const isDisabled = await page.evaluate((el) => {
-          return el.disabled || el.getAttribute('aria-disabled') === 'true' || 
-                 el.classList.contains('disabled') || el.style.pointerEvents === 'none';
-        }, btn);
-        
-        sellButtonsOnRight.push({
-          text: btnText,
+      // Use DOM-level getBoundingClientRect (minimize-safe) instead of Puppeteer boundingBox
+      const btnInfo = await page.evaluate((el) => {
+        const text = el.textContent?.trim();
+        const isVisible = (el.offsetParent !== null || el.offsetWidth > 0 || el.offsetHeight > 0);
+        const rect = el.getBoundingClientRect();
+        const hasRect = rect.width > 0 || rect.height > 0 || el.offsetParent !== null;
+        const viewportHeight = window.innerHeight;
+        const isDisabled = el.disabled || el.getAttribute('aria-disabled') === 'true' ||
+                     el.classList.contains('disabled') || el.style.pointerEvents === 'none';
+        return {
+          text,
+          isVisible,
+          hasRect,
           x: Math.round(rect.x),
           y: Math.round(rect.y),
+          isNearFooter: rect.bottom > viewportHeight * 0.8,
+          isDisabled
+        };
+      }, btn);
+
+      // Check if it's the "Sell" button, visible, and in the right 40% of screen
+      if (btnInfo.text === "Sell" && btnInfo.isVisible && btnInfo.hasRect && btnInfo.x >= rightSideThreshold) {
+        sellButtonsOnRight.push({
+          text: btnInfo.text,
+          x: btnInfo.x,
+          y: btnInfo.y,
           onRight: true,
-          disabled: isDisabled,
-          isNearFooter: buttonInfo.isNearFooter
+          disabled: btnInfo.isDisabled,
+          isNearFooter: btnInfo.isNearFooter
         });
-        
-        if (!isDisabled) {
+
+        if (!btnInfo.isDisabled) {
           confirmBtn = btn;
-          console.log(`[${exchange.name}] ✓ Method 1 SUCCESS: Found Sell button at (${Math.round(rect.x)}, ${Math.round(rect.y)}) in right 40%`);
-          if (buttonInfo.isNearFooter) {
+          console.log(`[${exchange.name}] ✓ Method 1 SUCCESS: Found Sell button at (${btnInfo.x}, ${btnInfo.y}) in right 40%`);
+          if (btnInfo.isNearFooter) {
             console.log(`[${exchange.name}] ⚠️  Button is near footer, will scroll into view before clicking`);
           }
           break;
@@ -247,22 +239,27 @@ export async function findConfirmButtonExtended(page, side, exchange) {
       console.log(`[${exchange.name}] Method 2: Trying findByExactText("Sell") and filtering by right 40%...`);
       const foundBtn = await findByExactText(page, "Sell", ["button", "div", "span"]);
       if (foundBtn) {
-        const isVisible = await page.evaluate((el) => {
-          return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+        // Use DOM-level checks (minimize-safe) instead of Puppeteer boundingBox
+        const btnCheck = await page.evaluate((el) => {
+          const isVisible = el.offsetParent !== null || el.offsetWidth > 0 || el.offsetHeight > 0;
+          const rect = el.getBoundingClientRect();
+          const isDisabled = el.disabled || el.getAttribute('aria-disabled') === 'true' ||
+                       el.classList.contains('disabled') || el.style.pointerEvents === 'none';
+          return {
+            isVisible,
+            x: Math.round(rect.x),
+            y: Math.round(rect.y),
+            hasRect: rect.width > 0 || rect.height > 0 || el.offsetParent !== null,
+            isDisabled
+          };
         }, foundBtn);
-        const rect = await foundBtn.boundingBox();
-        
-        console.log(`[${exchange.name}] Method 2: Found button - visible: ${isVisible}, x: ${Math.round(rect?.x || 0)}, threshold: ${rightSideThreshold}`);
-        
-        if (isVisible && rect && rect.x >= rightSideThreshold) {
-          const isDisabled = await page.evaluate((el) => {
-            return el.disabled || el.getAttribute('aria-disabled') === 'true' || 
-                   el.classList.contains('disabled') || el.style.pointerEvents === 'none';
-          }, foundBtn);
-          
-          if (!isDisabled) {
+
+        console.log(`[${exchange.name}] Method 2: Found button - visible: ${btnCheck.isVisible}, x: ${btnCheck.x}, threshold: ${rightSideThreshold}`);
+
+        if (btnCheck.isVisible && btnCheck.hasRect && btnCheck.x >= rightSideThreshold) {
+          if (!btnCheck.isDisabled) {
             confirmBtn = foundBtn;
-            console.log(`[${exchange.name}] ✓ Method 2 SUCCESS: Found Sell button via findByExactText at (${Math.round(rect.x)}, ${Math.round(rect.y)})`);
+            console.log(`[${exchange.name}] ✓ Method 2 SUCCESS: Found Sell button via findByExactText at (${btnCheck.x}, ${btnCheck.y})`);
           } else {
             console.log(`[${exchange.name}] Method 2: Found button but it's disabled`);
           }
@@ -279,32 +276,34 @@ export async function findConfirmButtonExtended(page, side, exchange) {
       console.log(`[${exchange.name}] Method 3: Trying findByText("Sell") and filtering by right 40%...`);
       confirmBtn = await findByText(page, "Sell", ["button"]);
       if (confirmBtn) {
-        const isVisible = await page.evaluate((el) => {
-          return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+        // Use DOM-level checks (minimize-safe) instead of Puppeteer boundingBox
+        const btnCheck = await page.evaluate((el) => {
+          const isVisible = el.offsetParent !== null || el.offsetWidth > 0 || el.offsetHeight > 0;
+          const rect = el.getBoundingClientRect();
+          const isDisabled = el.disabled || el.getAttribute('aria-disabled') === 'true' ||
+                       el.classList.contains('disabled') || el.style.pointerEvents === 'none';
+          return {
+            isVisible,
+            x: Math.round(rect.x),
+            y: Math.round(rect.y),
+            hasRect: rect.width > 0 || rect.height > 0 || el.offsetParent !== null,
+            isDisabled
+          };
         }, confirmBtn);
-        if (!isVisible) {
+
+        if (!btnCheck.isVisible) {
           console.log(`[${exchange.name}] Method 3: Found button but it's not visible`);
           confirmBtn = null;
-        } else {
-          const rect = await confirmBtn.boundingBox();
-          
-          // Check if it's in the right 40%
-          if (rect && rect.x >= rightSideThreshold) {
-            const isDisabled = await page.evaluate((el) => {
-              return el.disabled || el.getAttribute('aria-disabled') === 'true' || 
-                     el.classList.contains('disabled') || el.style.pointerEvents === 'none';
-            }, confirmBtn);
-            
-            if (!isDisabled) {
-              console.log(`[${exchange.name}] ✓ Method 3 SUCCESS: Found Sell button via findByText at (${Math.round(rect.x)}, ${Math.round(rect.y)}) in right 40%`);
-            } else {
-              console.log(`[${exchange.name}] Method 3: Found button but it's disabled`);
-              confirmBtn = null;
-            }
+        } else if (btnCheck.hasRect && btnCheck.x >= rightSideThreshold) {
+          if (!btnCheck.isDisabled) {
+            console.log(`[${exchange.name}] ✓ Method 3 SUCCESS: Found Sell button via findByText at (${btnCheck.x}, ${btnCheck.y}) in right 40%`);
           } else {
-            console.log(`[${exchange.name}] Method 3: Found Sell button but it's not in right 40% (x: ${Math.round(rect?.x || 0)}, threshold: ${rightSideThreshold}), skipping...`);
+            console.log(`[${exchange.name}] Method 3: Found button but it's disabled`);
             confirmBtn = null;
           }
+        } else {
+          console.log(`[${exchange.name}] Method 3: Found Sell button but it's not in right 40% (x: ${btnCheck.x}, threshold: ${rightSideThreshold}), skipping...`);
+          confirmBtn = null;
         }
       } else {
         console.log(`[${exchange.name}] Method 3: findByText returned null`);
@@ -567,8 +566,8 @@ export async function handleTpSlExtended(page, exchange, price = null, side = 'b
       await delay(500); // Small delay to ensure inputs are visible
     } else {
       console.log(`[${exchange.name}] TP/SL checkbox is not checked, clicking it...`);
-      // Click using Puppeteer's click method for reliability
-      await checkboxElement.click();
+      // Click using DOM-level click for minimize compatibility
+      await safeClick(page, checkboxElement);
       await delay(1000); // Wait for inputs to appear after checkbox is clicked
       console.log(`[${exchange.name}] ✅ TP/SL checkbox clicked successfully`);
     }
@@ -683,22 +682,16 @@ export async function handleTpSlExtended(page, exchange, price = null, side = 'b
       console.log(`[${exchange.name}] ✅ Found TP Price input, filling calculated value: ${tpValueStr}`);
       
       // Clear the input first using multiple methods to ensure it's empty
-      await tpInputElement.focus();
+      await page.evaluate(el => el.focus(), tpInputElement);
       await delay(200);
-      
-      // Method 1: Triple-click to select all
-      await tpInputElement.click({ clickCount: 3 });
-      await delay(100);
-      
-      // Method 2: Ctrl+A and Delete
-      await page.keyboard.down('Control');
-      await page.keyboard.press('a');
-      await page.keyboard.up('Control');
+
+      // Method 1: DOM-level select all + Delete (minimize-safe)
+      await page.evaluate(el => { el.focus(); el.select(); }, tpInputElement);
       await delay(100);
       await page.keyboard.press('Delete');
       await delay(100);
-      
-      // Method 3: JavaScript clear
+
+      // Method 2: JavaScript clear
       await page.evaluate((el) => {
         el.value = '';
         el.dispatchEvent(new Event('input', { bubbles: true }));
@@ -741,10 +734,9 @@ export async function handleTpSlExtended(page, exchange, price = null, side = 'b
       // So we'll use integer values for TP/SL inputs
       console.log(`[${exchange.name}] Using integer value (rounded up): ${intValue} (original: ${tpValueStr})`);
       
-      // Now set the new value
-      await tpInputElement.focus();
-      await delay(200);
+      // Now set the new value (DOM-level, minimize-safe)
       await page.evaluate((el, value) => {
+        el.focus();
         el.value = value;
         el.dispatchEvent(new Event('input', { bubbles: true }));
         el.dispatchEvent(new Event('change', { bubbles: true }));
@@ -768,22 +760,18 @@ export async function handleTpSlExtended(page, exchange, price = null, side = 'b
         console.log(`[${exchange.name}] ⚠️  Retrying by typing the value...`);
         
         try {
-          // Retry with aggressive clearing
-          await tpInputElement.focus();
+          // Retry with aggressive clearing (DOM-level, minimize-safe)
+          await page.evaluate(el => el.focus(), tpInputElement);
           await delay(200);
-          
-          // Aggressive clear: Triple-click + Ctrl+A + Delete
-          await tpInputElement.click({ clickCount: 3 });
-          await delay(100);
-          await page.keyboard.down('Control');
-          await page.keyboard.press('a');
-          await page.keyboard.up('Control');
+
+          // Aggressive clear: DOM select all + Delete + Backspace
+          await page.evaluate(el => { el.focus(); el.select(); }, tpInputElement);
           await delay(100);
           await page.keyboard.press('Delete');
           await delay(100);
           await page.keyboard.press('Backspace');
           await delay(100);
-          
+
           // JavaScript clear
           await page.evaluate((el) => {
             el.value = '';
@@ -791,7 +779,7 @@ export async function handleTpSlExtended(page, exchange, price = null, side = 'b
             el.dispatchEvent(new Event('change', { bubbles: true }));
           }, tpInputElement);
           await delay(200);
-          
+
           // Verify cleared
           const clearedCheck = await page.evaluate((el) => el.value || '', tpInputElement);
           if (clearedCheck && clearedCheck.trim() !== '') {
@@ -803,11 +791,9 @@ export async function handleTpSlExtended(page, exchange, price = null, side = 'b
             }, tpInputElement);
             await delay(200);
           }
-          
-          // Now type the value
-          await tpInputElement.focus();
-          await delay(200);
-          await tpInputElement.type(intValue, { delay: 50 });
+
+          // Now type the value (DOM-level focus, minimize-safe)
+          await safeType(page, tpInputElement, intValue, { delay: 50 });
           await delay(500);
           
           await page.evaluate((el) => {
@@ -968,10 +954,10 @@ export async function handleTpSlExtended(page, exchange, price = null, side = 'b
       const slValueStr = calculatedStopLoss.toFixed(2);
       console.log(`[${exchange.name}] ✅ Found SL Price input, filling calculated value: ${slValueStr}`);
       
-      // Method 1: Clear first, then set value
-      await slInputElement.focus();
+      // Method 1: Clear first, then set value (DOM-level, minimize-safe)
+      await page.evaluate(el => el.focus(), slInputElement);
       await delay(200);
-      
+
       // Clear existing value
       await page.evaluate((el) => {
         el.value = '';
@@ -1004,22 +990,16 @@ export async function handleTpSlExtended(page, exchange, price = null, side = 'b
       console.log(`[${exchange.name}] Using integer value (rounded down): ${intValue} (original: ${slValueStr})`);
       
       // Clear the input first using multiple methods to ensure it's empty
-      await slInputElement.focus();
+      await page.evaluate(el => el.focus(), slInputElement);
       await delay(200);
-      
-      // Method 1: Triple-click to select all
-      await slInputElement.click({ clickCount: 3 });
-      await delay(100);
-      
-      // Method 2: Ctrl+A and Delete
-      await page.keyboard.down('Control');
-      await page.keyboard.press('a');
-      await page.keyboard.up('Control');
+
+      // Method 1: DOM-level select all + Delete (minimize-safe)
+      await page.evaluate(el => { el.focus(); el.select(); }, slInputElement);
       await delay(100);
       await page.keyboard.press('Delete');
       await delay(100);
-      
-      // Method 3: JavaScript clear
+
+      // Method 2: JavaScript clear
       await page.evaluate((el) => {
         el.value = '';
         el.dispatchEvent(new Event('input', { bubbles: true }));
@@ -1039,10 +1019,9 @@ export async function handleTpSlExtended(page, exchange, price = null, side = 'b
         await delay(200);
       }
       
-      // Now set the new value
-      await slInputElement.focus();
-      await delay(200);
+      // Now set the new value (DOM-level, minimize-safe)
       await page.evaluate((el, value) => {
+        el.focus();
         el.value = value;
         el.dispatchEvent(new Event('input', { bubbles: true }));
         el.dispatchEvent(new Event('change', { bubbles: true }));
@@ -1066,22 +1045,18 @@ export async function handleTpSlExtended(page, exchange, price = null, side = 'b
         console.log(`[${exchange.name}] ⚠️  Retrying by typing the value...`);
         
         try {
-          // Retry with aggressive clearing
-          await slInputElement.focus();
+          // Retry with aggressive clearing (DOM-level, minimize-safe)
+          await page.evaluate(el => el.focus(), slInputElement);
           await delay(200);
-          
-          // Aggressive clear: Triple-click + Ctrl+A + Delete
-          await slInputElement.click({ clickCount: 3 });
-          await delay(100);
-          await page.keyboard.down('Control');
-          await page.keyboard.press('a');
-          await page.keyboard.up('Control');
+
+          // Aggressive clear: DOM select all + Delete + Backspace
+          await page.evaluate(el => { el.focus(); el.select(); }, slInputElement);
           await delay(100);
           await page.keyboard.press('Delete');
           await delay(100);
           await page.keyboard.press('Backspace');
           await delay(100);
-          
+
           // JavaScript clear
           await page.evaluate((el) => {
             el.value = '';
@@ -1089,7 +1064,7 @@ export async function handleTpSlExtended(page, exchange, price = null, side = 'b
             el.dispatchEvent(new Event('change', { bubbles: true }));
           }, slInputElement);
           await delay(200);
-          
+
           // Verify cleared
           const clearedCheck = await page.evaluate((el) => el.value || '', slInputElement);
           if (clearedCheck && clearedCheck.trim() !== '') {
@@ -1101,11 +1076,9 @@ export async function handleTpSlExtended(page, exchange, price = null, side = 'b
             }, slInputElement);
             await delay(200);
           }
-          
-          // Now type the value
-          await slInputElement.focus();
-          await delay(200);
-          await slInputElement.type(intValue, { delay: 50 });
+
+          // Now type the value (DOM-level focus, minimize-safe)
+          await safeType(page, slInputElement, intValue, { delay: 50 });
           await delay(500);
           
           await page.evaluate((el) => {
@@ -1173,7 +1146,7 @@ export async function handleTpSlExtended(page, exchange, price = null, side = 'b
   // Focus on the last filled input (SL if both filled, TP if only TP filled) before pressing Enter
   if (lastFilledInput) {
     console.log(`[${exchange.name}] Focusing on last filled TP/SL input before pressing Enter...`);
-    await lastFilledInput.focus();
+    await page.evaluate(el => el.focus(), lastFilledInput);
     await delay(200);
   }
   

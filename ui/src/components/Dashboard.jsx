@@ -25,15 +25,21 @@ const EXCHANGE_LINKS = [
   { name: 'GRVT', url: 'https://grvt.io/exchange/perpetual/BTC-USDT' },
 ];
 
+const BOT_STATE_MAP = {
+  setting_up: { label: 'Setting Up', color: 'var(--yellow)' },
+  running: { label: 'Running', color: 'var(--green)' },
+  error: { label: 'Error', color: 'var(--red)' },
+  paused: { label: 'Paused', color: 'var(--yellow)' },
+};
+
 export default function Dashboard({ status, botRunning, logs, onStart, onStop }) {
   const api = window.electronAPI;
   const prices = status.prices || {};
   const cycle = status.cycle || 0;
   const priceDiff = status.priceDiff ?? null;
-  const cycleTime = status.cycleTime ?? null;
   const tradesExecuted = status.tradesExecuted || 0;
-  const positions = status.positions || {};
-  const pnl = status.pnl ?? null;
+  const botState = status.botState || (botRunning ? 'running' : null);
+  const botMessage = status.botMessage || (botRunning ? 'Running correctly' : 'Idle');
 
   // Uptime counter
   const [uptime, setUptime] = useState(0);
@@ -72,22 +78,38 @@ export default function Dashboard({ status, botRunning, logs, onStart, onStop })
       .map((l) => ({ ...l, fix: getErrorFix(l.message) }));
   }, [logs]);
 
-  const speedLabel = cycleTime
-    ? cycleTime < 1000 ? `${cycleTime}ms` : `${(cycleTime / 1000).toFixed(1)}s`
-    : '--';
+  const stateInfo = BOT_STATE_MAP[botState] || { label: 'Idle', color: 'var(--text-muted)' };
+  const isRunningOk = botState === 'running';
+  const isSettingUp = botState === 'setting_up';
+  const isError = botState === 'error';
 
-  const cyclesPerMin = cycleTime && cycleTime > 0 ? Math.round(60000 / cycleTime) : null;
+  const handleOpenExchanges = () => {
+    if (api?.openExternal) {
+      api.openExternal('https://pro.kraken.com/app/trade/futures-btc-usd-perp');
+      api.openExternal('https://grvt.io/exchange/perpetual/BTC-USDT');
+    } else {
+      window.open('https://pro.kraken.com/app/trade/futures-btc-usd-perp', '_blank');
+      window.open('https://grvt.io/exchange/perpetual/BTC-USDT', '_blank');
+    }
+  };
 
   return (
     <div className="dashboard">
       {/* Status Banner */}
-      <div className={`status-banner ${botRunning ? 'running' : 'stopped'}`}>
+      <div className={`status-banner ${botRunning ? (isError ? 'error' : 'running') : 'stopped'}`}>
         <div className="status-banner-left">
-          <span className={`status-pulse ${botRunning ? 'active' : ''}`} />
+          <span className={`status-pulse ${botRunning ? (isError ? 'error-pulse' : 'active') : ''}`}
+            style={isSettingUp ? { background: 'var(--yellow)', boxShadow: '0 0 8px var(--yellow)', animation: 'pulse 1s infinite' } : undefined}
+          />
           <div>
             <span className="status-banner-title">
-              {botRunning ? 'Bot Running' : 'Bot Stopped'}
+              {botRunning ? stateInfo.label : 'Bot Stopped'}
             </span>
+            {botRunning && (
+              <span className="status-banner-uptime" style={isError ? { color: 'var(--red)' } : undefined}>
+                {botMessage}
+              </span>
+            )}
             {botRunning && (
               <span className="status-banner-uptime">Uptime: {formatUptime(uptime)}</span>
             )}
@@ -96,40 +118,43 @@ export default function Dashboard({ status, botRunning, logs, onStart, onStop })
         <span className="status-banner-mode">Kraken + GRVT Arbitrage</span>
       </div>
 
-      {/* Core Action Button */}
-      <div style={{ padding: '0 0 12px' }}>
+      {/* Core Action Buttons */}
+      <div style={{ padding: '0 0 12px', display: 'flex', gap: 8 }}>
         {botRunning ? (
           <button className="btn btn-danger" onClick={onStop}
-            style={{ width: '100%', padding: '14px', fontSize: 15, fontWeight: 600 }}>
+            style={{ flex: 1, padding: '14px', fontSize: 15, fontWeight: 600 }}>
             Stop Bot
           </button>
         ) : (
           <button className="btn btn-primary" onClick={onStart}
-            style={{ width: '100%', padding: '14px', fontSize: 15, fontWeight: 600 }}>
+            style={{ flex: 1, padding: '14px', fontSize: 15, fontWeight: 600 }}>
             Log In & Start Trading
           </button>
         )}
-        {!botRunning && (
-          <div style={{ fontSize: 12, color: 'var(--text-muted)', textAlign: 'center', marginTop: 6 }}>
-            Opens Kraken & GRVT in Chrome — log in, then trading starts automatically
+      </div>
+      {!botRunning && (
+        <div style={{ fontSize: 12, color: 'var(--text-muted)', textAlign: 'center', marginBottom: 12 }}>
+          Opens Kraken & GRVT in Chrome — log in, then trading starts automatically
+        </div>
+      )}
+
+      {/* View Exchanges Button */}
+      <div style={{ marginBottom: 16 }}>
+        <button
+          className="btn btn-outline"
+          onClick={handleOpenExchanges}
+          style={{ width: '100%', padding: '10px', fontSize: 13, gap: 8 }}
+        >
+          {'\u2197'} Open Kraken & GRVT to Check P&L
+        </button>
+        {botRunning && (
+          <div style={{ fontSize: 11, color: 'var(--yellow)', textAlign: 'center', marginTop: 6, lineHeight: 1.4 }}>
+            Warning: Do NOT click any UI elements in the trading bot's browser windows while the bot is running.
           </div>
         )}
       </div>
 
-      {/* Quick Links */}
-      <div className="quick-links">
-        {EXCHANGE_LINKS.map((ex) => (
-          <button
-            key={ex.name}
-            className="btn btn-sm btn-ghost"
-            onClick={() => api ? api.openExternal(ex.url) : window.open(ex.url, '_blank')}
-          >
-            <span>{'\u2197'}</span> {ex.name}
-          </button>
-        ))}
-      </div>
-
-      {/* Price Cards - Prominent */}
+      {/* Price Cards */}
       <div className="price-row">
         <div className="price-card">
           <div className="price-exchange">Kraken</div>
@@ -151,14 +176,9 @@ export default function Dashboard({ status, botRunning, logs, onStart, onStop })
         </div>
       </div>
 
-      {/* Stats Grid */}
+      {/* Stats Grid — no P&L */}
       <div className="card-title">Performance</div>
       <div className="dashboard-grid">
-        <div className="stat-card">
-          <div className="stat-label">Cycle Speed</div>
-          <div className="stat-value">{speedLabel}</div>
-          {cyclesPerMin && <div className="stat-sub">{cyclesPerMin} cycles/min</div>}
-        </div>
         <div className="stat-card">
           <div className="stat-label">Cycles</div>
           <div className="stat-value">{cycle || '--'}</div>
@@ -168,10 +188,8 @@ export default function Dashboard({ status, botRunning, logs, onStart, onStop })
           <div className="stat-value">{tradesExecuted || '--'}</div>
         </div>
         <div className="stat-card">
-          <div className="stat-label">P&L</div>
-          <div className={`stat-value ${pnl !== null ? (pnl >= 0 ? 'positive' : 'negative') : ''}`}>
-            {pnl !== null ? `${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}` : '--'}
-          </div>
+          <div className="stat-label">Uptime</div>
+          <div className="stat-value">{botRunning ? formatUptime(uptime) : '--'}</div>
         </div>
       </div>
 

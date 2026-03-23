@@ -1,9 +1,12 @@
 import EXCHANGE_CONFIGS from '../config/exchanges.js';
 import { delay, findByExactText, findByText, closeNotifyBarWrapperNotifications } from '../utils/helpers.js';
 import { handleSetLeverage } from './leverage.js';
+import { safeClick } from '../utils/safeActions.js';
+import { getCurrentMarketPrice } from './executeBase.js';
 
 async function closeAllPositions(page, percent = 100, exchangeConfig = null, closeAtMarket = false) {
     const exchange = exchangeConfig || EXCHANGE_CONFIGS.paradex; // Default to Paradex
+
     console.log(`\n=== Closing Position (${percent}%) on ${exchange.name} ${closeAtMarket ? '(Market)' : '(Limit)'} ===`);
   
     // Wait a moment for any previous actions to complete
@@ -18,9 +21,49 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null, clo
     // ============================================================================
     if (exchange.name === 'GRVT') {
       console.log(`[${exchange.name}] 🔵 GRVT-SPECIFIC CLOSE POSITION FLOW STARTING...`);
+
+      // Helper: dismiss any open modal (Cancel button, X button, or Escape key)
+      // Called before error returns to prevent modal from staying stuck open
+      const dismissGrvtModal = async () => {
+        try {
+          const dismissed = await page.evaluate(() => {
+            const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"], [class*="Dialog"]'));
+            for (const modal of modals) {
+              const style = window.getComputedStyle(modal);
+              if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
+              // Try Cancel button first
+              const buttons = Array.from(modal.querySelectorAll('button'));
+              const cancelBtn = buttons.find(btn => (btn.textContent || '').trim() === 'Cancel' && btn.offsetParent !== null);
+              if (cancelBtn) { cancelBtn.click(); return 'Cancel'; }
+              // Try X / close button
+              const closeBtn = buttons.find(btn => {
+                const text = (btn.textContent || '').trim().toLowerCase();
+                const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
+                return text === '×' || text === 'x' || ariaLabel.includes('close') || (btn.querySelector('svg') && text === '');
+              });
+              if (closeBtn) { closeBtn.click(); return 'X'; }
+            }
+            return null;
+          });
+          if (dismissed) {
+            console.log(`[${exchange.name}] ✅ Dismissed stuck modal via ${dismissed} button`);
+            await delay(500);
+          } else {
+            // Fallback: press Escape
+            await page.keyboard.press('Escape');
+            console.log(`[${exchange.name}] ✅ Dismissed stuck modal via Escape key`);
+            await delay(500);
+          }
+        } catch (e) {
+          console.log(`[${exchange.name}] ⚠️  Error dismissing modal: ${e.message}`);
+        }
+      };
       
-      // Step 0: Cancel all open orders before closing positions
-      console.log(`[${exchange.name}] Step 0: Canceling all open orders before closing positions...`);
+      // Step 0: SKIPPED — Order cancellation is already done by loop.js before calling closeAllPositions.
+      // Also, closing the position automatically cancels associated TP/SL trigger orders on GRVT.
+      // Previously this step took 6+ seconds navigating to Open orders tab, clicking Cancel all, waiting for confirm modal.
+      console.log(`[${exchange.name}] Step 0: Skipped (orders already canceled by loop.js, TP/SL auto-cancels on position close)`);
+      if (false) { // DISABLED — kept for reference only
       
       // Navigate to Open orders tab
       // GRVT structure: <div data-text="Open orders (1)" class="style_label__3WVdr...">Open orders (1)</div>
@@ -52,7 +95,7 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null, clo
           const allElements = Array.from(document.querySelectorAll('div, button, span, a'));
           for (const el of allElements) {
             const text = (el.textContent || '').trim();
-            const isVisible = el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+            const isVisible = el.offsetParent !== null || (el.offsetWidth > 0 && el.offsetHeight > 0);
             // Match "Open orders" or "Open orders (1)" or "Open orders (2)" etc.
             if (isVisible && text.toLowerCase().startsWith('open orders')) {
               el.click();
@@ -74,10 +117,10 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null, clo
         const openOrdersTab = await findByExactText(page, "Open orders", ["button", "div", "span", "a"]);
         if (openOrdersTab) {
           const isVisible = await page.evaluate((el) => {
-            return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+            return el.offsetParent !== null || (el.offsetWidth > 0 && el.offsetHeight > 0);
           }, openOrdersTab);
           if (isVisible) {
-            await openOrdersTab.click();
+            await safeClick(page, openOrdersTab);
             console.log(`[${exchange.name}] ✓ Clicked Open orders tab (exact text helper)`);
             openOrdersTabClicked = true;
             await delay(500);
@@ -90,10 +133,10 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null, clo
         const openOrdersTab2 = await findByText(page, "open orders", ["button", "div", "span", "a"]);
         if (openOrdersTab2) {
           const isVisible = await page.evaluate((el) => {
-            return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+            return el.offsetParent !== null || (el.offsetWidth > 0 && el.offsetHeight > 0);
           }, openOrdersTab2);
           if (isVisible) {
-            await openOrdersTab2.click();
+            await safeClick(page, openOrdersTab2);
             console.log(`[${exchange.name}] ✓ Clicked Open orders tab (text search helper)`);
             openOrdersTabClicked = true;
             await delay(500);
@@ -118,7 +161,7 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null, clo
       
       if (cancelAllOrdersBtn) {
         const isVisible = await page.evaluate((el) => {
-          return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+          return el.offsetParent !== null || (el.offsetWidth > 0 && el.offsetHeight > 0);
         }, cancelAllOrdersBtn);
         if (isVisible) {
           cancelAllOrdersBtnElement = cancelAllOrdersBtn;
@@ -130,7 +173,7 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null, clo
         const cancelAllOrdersBtn2 = await findByText(page, "Cancel all orders", ["button", "div", "span"]);
         if (cancelAllOrdersBtn2) {
           const isVisible = await page.evaluate((el) => {
-            return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+            return el.offsetParent !== null || (el.offsetWidth > 0 && el.offsetHeight > 0);
           }, cancelAllOrdersBtn2);
           if (isVisible) {
             cancelAllOrdersBtnElement = cancelAllOrdersBtn2;
@@ -140,49 +183,47 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null, clo
       
       // Strategy 3: Find by JavaScript evaluation (more robust for GRVT)
       if (!cancelAllOrdersBtnElement) {
-        const btnInfo = await page.evaluate(() => {
+        const btnHandle = await page.evaluateHandle(() => {
           const allElements = Array.from(document.querySelectorAll('button, div, span, a'));
           for (const el of allElements) {
             const text = (el.textContent || '').trim();
             if (text.toLowerCase().includes('cancel all orders') && el.offsetParent !== null) {
               const style = window.getComputedStyle(el);
               const rect = el.getBoundingClientRect();
-              const isDisabled = el.disabled || el.getAttribute('disabled') !== null || 
+              const isVisible = (rect.width > 0 && rect.height > 0) || el.offsetParent !== null;
+              const isDisabled = el.disabled || el.getAttribute('disabled') !== null ||
                                 style.pointerEvents === 'none' || style.cursor === 'not-allowed';
-              
-              if (style.display !== 'none' && 
+
+              if (style.display !== 'none' &&
                   style.visibility !== 'hidden' &&
-                  rect.width > 0 && 
-                  rect.height > 0 &&
+                  isVisible &&
                   !isDisabled) {
-                return {
-                  found: true,
-                  tagName: el.tagName,
-                  text: text.substring(0, 50),
-                  className: el.className || '',
-                  disabled: isDisabled,
-                  x: rect.left + rect.width / 2,
-                  y: rect.top + rect.height / 2
-                };
+                return el;
               }
             }
           }
-          return { found: false };
+          return null;
         });
-        
-        if (btnInfo.found) {
+
+        const btnElement = btnHandle.asElement();
+        if (btnElement) {
+          const btnInfo = await page.evaluate((el) => {
+            const isDisabled = el.disabled || el.getAttribute('disabled') !== null ||
+                              window.getComputedStyle(el).pointerEvents === 'none' ||
+                              window.getComputedStyle(el).cursor === 'not-allowed';
+            return {
+              tagName: el.tagName,
+              text: (el.textContent || '').trim().substring(0, 50),
+              disabled: isDisabled
+            };
+          }, btnElement);
+
           if (btnInfo.disabled) {
             console.log(`[${exchange.name}] ⚠️  "Cancel all orders" button found but is DISABLED - no orders to cancel`);
           } else {
             console.log(`[${exchange.name}] ✅ Found "Cancel all orders" button via JavaScript (${btnInfo.tagName}, text: "${btnInfo.text}")`);
-            // Click using coordinates with mouse events
-            await page.mouse.move(btnInfo.x, btnInfo.y);
-            await delay(200);
-            await page.mouse.down();
-            await delay(100);
-            await page.mouse.up();
-            await delay(100);
-            await page.mouse.click(btnInfo.x, btnInfo.y);
+            // Click using DOM-level click (minimize-safe)
+            await safeClick(page, btnElement);
             cancelAllOrdersBtnClicked = true;
             await delay(500);
           }
@@ -254,16 +295,16 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null, clo
           console.log(`[${exchange.name}] ⚠️  JavaScript click failed: ${error.message}`);
         }
         
-        // Method 2: Puppeteer click
+        // Method 2: DOM-level click (minimize-safe)
         if (!clickWorked) {
           try {
             await cancelAllOrdersBtnElement.evaluate((btn) => btn.scrollIntoView({ behavior: 'instant', block: 'center' }));
             await delay(200);
-            await cancelAllOrdersBtnElement.click();
+            await safeClick(page, cancelAllOrdersBtnElement);
             clickWorked = true;
-            console.log(`[${exchange.name}] ✅ Clicked "Cancel all orders" button using Puppeteer`);
+            console.log(`[${exchange.name}] ✅ Clicked "Cancel all orders" button using DOM click`);
           } catch (error) {
-            console.log(`[${exchange.name}] ⚠️  Puppeteer click failed: ${error.message}`);
+            console.log(`[${exchange.name}] ⚠️  DOM click failed: ${error.message}`);
           }
         }
         
@@ -280,8 +321,7 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null, clo
               if (style.display !== 'none' && 
                   style.visibility !== 'hidden' && 
                   style.opacity !== '0' &&
-                  modal.offsetWidth > 0 && 
-                  modal.offsetHeight > 0) {
+                  (modal.offsetWidth > 0 && modal.offsetHeight > 0 || modal.offsetParent !== null)) {
                 const modalText = (modal.textContent || '').toLowerCase();
                 if (modalText.includes('cancel') || modalText.includes('confirm') || modalText.includes('order')) {
                   return true;
@@ -407,11 +447,10 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null, clo
                        className.includes('style_btn'))) {
                     const style = window.getComputedStyle(btn);
                     const rect = btn.getBoundingClientRect();
-                    if (btn.offsetParent !== null &&
+                    const isVisible = (rect.width > 0 && rect.height > 0) || btn.offsetParent !== null;
+                    if (isVisible &&
                         style.display !== 'none' &&
-                        style.visibility !== 'hidden' &&
-                        rect.width > 0 &&
-                        rect.height > 0) {
+                        style.visibility !== 'hidden') {
                       return btn;
                     }
                   }
@@ -431,12 +470,11 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null, clo
               if (!btn) return false;
               const style = window.getComputedStyle(btn);
               const rect = btn.getBoundingClientRect();
-              return btn.offsetParent !== null &&
+              const isVisible = (rect.width > 0 && rect.height > 0) || btn.offsetParent !== null;
+              return isVisible &&
                      style.display !== 'none' &&
                      style.visibility !== 'hidden' &&
                      style.opacity !== '0' &&
-                     rect.width > 0 &&
-                     rect.height > 0 &&
                      !btn.disabled;
             }, confirmBtn);
             
@@ -518,42 +556,34 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null, clo
               console.log(`[${exchange.name}] ⚠️  JavaScript click with mouse events failed: ${error.message}`);
             }
             
-            // Strategy 2: Direct Puppeteer click with force option
+            // Strategy 2: DOM-level click (minimize-safe)
             if (!clickSuccess) {
               try {
                 await confirmBtn.evaluate((btn) => btn.scrollIntoView({ behavior: 'instant', block: 'center' }));
                 await delay(100);
-                await confirmBtn.click({ delay: 50 });
+                await safeClick(page, confirmBtn);
                 clickSuccess = true;
-                clickMethod = 'Puppeteer click';
+                clickMethod = 'DOM click';
                 console.log(`[${exchange.name}] ✅ Clicked Confirm button (${clickMethod})`);
               } catch (error) {
-                console.log(`[${exchange.name}] ⚠️  Puppeteer click failed: ${error.message}`);
+                console.log(`[${exchange.name}] ⚠️  DOM click failed: ${error.message}`);
               }
             }
             
-            // Strategy 3: Coordinate-based click
+            // Strategy 3: Direct DOM el.click() as fallback
             if (!clickSuccess) {
               try {
-                const coords = await page.evaluate((btn) => {
-                  if (!btn) return null;
-                  const rect = btn.getBoundingClientRect();
-                  return {
-                    x: rect.left + rect.width / 2,
-                    y: rect.top + rect.height / 2
-                  };
+                await page.evaluate((btn) => {
+                  if (!btn) return;
+                  btn.scrollIntoView({ behavior: 'instant', block: 'center' });
+                  btn.focus();
+                  btn.click();
                 }, confirmBtn);
-                
-                if (coords) {
-                  await page.mouse.move(coords.x, coords.y);
-                  await delay(100);
-                  await page.mouse.click(coords.x, coords.y);
-                  clickSuccess = true;
-                  clickMethod = 'Coordinate click';
-                  console.log(`[${exchange.name}] ✅ Clicked Confirm button (${clickMethod})`);
-                }
+                clickSuccess = true;
+                clickMethod = 'Direct DOM el.click()';
+                console.log(`[${exchange.name}] ✅ Clicked Confirm button (${clickMethod})`);
               } catch (error) {
-                console.log(`[${exchange.name}] ⚠️  Coordinate click failed: ${error.message}`);
+                console.log(`[${exchange.name}] ⚠️  Direct DOM click failed: ${error.message}`);
               }
             }
             
@@ -682,7 +712,7 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null, clo
         } else if (confirmBtn && !confirmBtnVisible) {
           console.log(`[${exchange.name}] ⚠️  Found Confirm button but it's not visible/clickable, trying to click anyway...`);
           try {
-            await confirmBtn.click();
+            await safeClick(page, confirmBtn);
             await delay(1000);
           } catch (error) {
             console.log(`[${exchange.name}] ⚠️  Error clicking Confirm button: ${error.message}`);
@@ -696,8 +726,10 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null, clo
         console.log(`[${exchange.name}] ⚠️  Cancel all orders button not clicked, proceeding to close positions...`);
       }
       
-      // IMPORTANT: Always proceed with close positions flow after order cancellation (or if no orders to cancel)
-      console.log(`[${exchange.name}] 🔵 Proceeding to close positions flow after order cancellation...`);
+      } // End of disabled Step 0 block
+
+      // Proceed directly to close positions flow (Step 0 skipped)
+      console.log(`[${exchange.name}] 🔵 Proceeding to close positions flow...`);
       
       // Now proceed with close positions flow
       // Navigate to Positions tab (GRVT uses similar structure to Open orders tab)
@@ -705,136 +737,82 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null, clo
       let positionsTabClicked = false;
       
       // Strategy 0: Find by tab item structure (GRVT specific: div with class containing "tabItem" containing span with "Positions")
-      const positionsClickedByStructure = await page.evaluate(() => {
-        // Look for divs with class containing "tabItem" or "tab-item"
+      // MUST use Puppeteer native click (elementHandle.click()) — produces isTrusted: true.
+      // GRVT's React tab component ignores isTrusted: false clicks from DOM el.click().
+
+      // Strategy 0: Find by tab item structure (tabItem class + Positions span)
+      const posTabH0 = await page.evaluateHandle(() => {
         const allDivs = Array.from(document.querySelectorAll('div'));
         for (const div of allDivs) {
           const divClass = (div.className || '').toLowerCase();
           if ((divClass.includes('tabitem') || divClass.includes('tab-item')) && div.offsetParent !== null) {
-            // Check if this div contains a span with "Positions" text
             const spans = Array.from(div.querySelectorAll('span'));
             for (const span of spans) {
               const spanText = (span.textContent || '').trim();
-              if (spanText.toLowerCase().startsWith('positions')) {
-                div.click();
-                return true;
-              }
+              if (spanText.toLowerCase().startsWith('positions')) return div;
             }
           }
         }
-        return false;
+        return null;
       });
-      
-      if (positionsClickedByStructure) {
+      const posTabEl0 = posTabH0.asElement();
+      if (posTabEl0) {
+        await posTabEl0.click();
         positionsTabClicked = true;
         console.log(`[${exchange.name}] ✓ Clicked Positions tab (via tab item structure)`);
         await delay(500);
       }
-      
+
       // Strategy 1: Find by data-text attribute containing "Positions"
       if (!positionsTabClicked) {
-        const positionsClickedByDataText = await page.evaluate(() => {
+        const posTabH1 = await page.evaluateHandle(() => {
           const allElements = Array.from(document.querySelectorAll('div, button, span, a'));
           for (const el of allElements) {
             const dataText = el.getAttribute('data-text');
-            if (dataText && dataText.toLowerCase().includes('positions') && el.offsetParent !== null) {
-              el.click();
-              return true;
-            }
+            if (dataText && dataText.toLowerCase().includes('positions') && el.offsetParent !== null) return el;
           }
-          return false;
+          return null;
         });
-        
-        if (positionsClickedByDataText) {
+        const posTabEl1 = posTabH1.asElement();
+        if (posTabEl1) {
+          await posTabEl1.click();
           positionsTabClicked = true;
           console.log(`[${exchange.name}] ✓ Clicked Positions tab (via data-text attribute)`);
           await delay(500);
         }
       }
-      
-      // Strategy 2: Find by text starting with "Positions" (handles "Positions (1)" format)
-      // GRVT structure: <div class="style_tabItem__..."><span class="style_label__...">Positions (1)</span></div>
+
+      // Strategy 2: Find span/button with SHORT text starting with "Positions" (max 30 chars)
+      // Prevents matching large container divs whose textContent starts with "Positions..."
       if (!positionsTabClicked) {
-        const positionsClickedByText = await page.evaluate(() => {
-          // First, try to find the span with "Positions" text and click its parent div
-          const allSpans = Array.from(document.querySelectorAll('span'));
-          for (const span of allSpans) {
-            const text = (span.textContent || '').trim();
-            const isVisible = span.offsetParent !== null && span.offsetWidth > 0 && span.offsetHeight > 0;
-            // Match "Positions" or "Positions (1)" or "Positions (2)" etc.
-            if (isVisible && text.toLowerCase().startsWith('positions')) {
-              // Check if parent is a tab item (has class containing "tabItem" or "tab-item")
-              const parent = span.parentElement;
-              if (parent) {
-                const parentClass = (parent.className || '').toLowerCase();
-                if (parentClass.includes('tabitem') || parentClass.includes('tab-item') || 
-                    parent.tagName.toLowerCase() === 'div') {
-                  parent.click();
-                  return true;
-                }
-              }
-              // Fallback: click the span itself
-              span.click();
-              return true;
-            }
-          }
-          
-          // Fallback: Find any element with "Positions" text
-          const allElements = Array.from(document.querySelectorAll('div, button, span, a'));
+        const posTabH2 = await page.evaluateHandle(() => {
+          const candidates = [];
+          const allElements = Array.from(document.querySelectorAll('span, button, a, div'));
           for (const el of allElements) {
             const text = (el.textContent || '').trim();
-            const isVisible = el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
-            // Match "Positions" or "Positions (1)" or "Positions (2)" etc.
-            if (isVisible && text.toLowerCase().startsWith('positions')) {
-              el.click();
-              return true;
+            const isVisible = el.offsetParent !== null || (el.offsetWidth > 0 && el.offsetHeight > 0);
+            if (isVisible && text.toLowerCase().startsWith('positions') && text.length < 30) {
+              const parentClass = (el.parentElement?.className || '').toLowerCase();
+              const isInTabBar = parentClass.includes('tab') || parentClass.includes('bar') ||
+                                 el.getAttribute('role') === 'tab';
+              candidates.push({ el, priority: isInTabBar ? 0 : 1, len: text.length });
             }
           }
-          return false;
+          candidates.sort((a, b) => a.priority - b.priority || a.len - b.len);
+          return candidates.length > 0 ? candidates[0].el : null;
         });
-        
-        if (positionsClickedByText) {
+        const posTabEl2 = posTabH2.asElement();
+        if (posTabEl2) {
+          await posTabEl2.click();
           positionsTabClicked = true;
-          console.log(`[${exchange.name}] ✓ Clicked Positions tab (via text content)`);
+          console.log(`[${exchange.name}] ✓ Clicked Positions tab (via short text match)`);
           await delay(500);
         }
       }
-      
-      // Strategy 3: Find by exact text "Positions" using helper functions
-      if (!positionsTabClicked) {
-        const positionsTab = await findByExactText(page, "Positions", ["button", "div", "span", "a"]);
-        if (positionsTab) {
-          const isVisible = await page.evaluate((el) => {
-            return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
-          }, positionsTab);
-          if (isVisible) {
-            await positionsTab.click();
-            console.log(`[${exchange.name}] ✓ Clicked Positions tab (exact text helper)`);
-            positionsTabClicked = true;
-            await delay(500);
-          }
-        }
-      }
-      
-      // Strategy 4: Find by text containing "positions" (case insensitive) using helper functions
-      if (!positionsTabClicked) {
-        const positionsTab2 = await findByText(page, "positions", ["button", "div", "span", "a"]);
-        if (positionsTab2) {
-          const isVisible = await page.evaluate((el) => {
-            return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
-          }, positionsTab2);
-          if (isVisible) {
-            await positionsTab2.click();
-            console.log(`[${exchange.name}] ✓ Clicked Positions tab (text search helper)`);
-            positionsTabClicked = true;
-            await delay(500);
-          }
-        }
-      }
-      
+
       if (!positionsTabClicked) {
         console.log(`[${exchange.name}] ⚠️  Could not find Positions tab, continuing anyway...`);
-        await delay(500); // Wait a bit for page to stabilize
+        await delay(500);
       }
       
       // Check if there are any open positions by looking for Close buttons in table
@@ -1023,19 +1001,19 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null, clo
         if (closeBtnElement && closeBtnElement.asElement()) {
           // Ensure Close button is in viewport before proceeding
           try {
-            await closeBtnElement.asElement().scrollIntoView({ behavior: 'smooth', block: 'center' });
+            await closeBtnElement.asElement().evaluate(el => el.scrollIntoView({ behavior: 'smooth', block: 'center' }));
             await delay(300);
-            
+
             // Verify element is still connected and visible
             const isVisible = await closeBtnElement.asElement().evaluate((btn) => {
               const rect = btn.getBoundingClientRect();
               const style = window.getComputedStyle(btn);
-              return btn.isConnected && 
-                     style.display !== 'none' && 
-                     style.visibility !== 'hidden' && 
+              const isVisibleByRect = (rect.width > 0 && rect.height > 0) || btn.offsetParent !== null;
+              return btn.isConnected &&
+                     style.display !== 'none' &&
+                     style.visibility !== 'hidden' &&
                      style.opacity !== '0' &&
-                     rect.width > 0 && 
-                     rect.height > 0;
+                     isVisibleByRect;
             });
             
             if (!isVisible) {
@@ -1046,31 +1024,32 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null, clo
             // Continue anyway, will try to re-find if click fails
           }
           
-          // Step 1.5: Close any other modals that might be open
-          console.log(`[${exchange.name}] Step 1.5: Checking for and closing any other open modals...`);
+          // Step 1.5: Close any NON-close-position modals that might be open
+          // Skip modals that contain "Close Position" text to avoid closing the very modal we need
+          console.log(`[${exchange.name}] Step 1.5: Checking for and closing any non-close-position modals...`);
           const closedOtherModals = await page.evaluate(() => {
             const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"], [class*="Dialog"]'));
             let closed = false;
             for (const modal of modals) {
               const style = window.getComputedStyle(modal);
-              if (style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') {
-                // Try to find and click close button (X) in modal
-                const closeButtons = Array.from(modal.querySelectorAll('button, [role="button"]'));
-                const closeBtn = closeButtons.find(btn => {
-                  const text = (btn.textContent || '').trim().toLowerCase();
-                  const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
-                  return text === '×' || text === 'x' || text === 'close' || 
-                         ariaLabel.includes('close') || 
-                         (btn.querySelector('svg') && text === '');
-                });
-                if (closeBtn) {
-                  closeBtn.click();
-                  closed = true;
-                } else {
-                  // Try pressing Escape key
-                  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape' }));
-                  closed = true;
-                }
+              if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
+
+              // Skip the Close Position modal itself — don't close what we're about to use
+              const modalText = (modal.textContent || '').toLowerCase();
+              if (modalText.includes('close position') || modalText.includes('confirm')) continue;
+
+              // Close other modals (TP/SL, notifications, etc.)
+              const closeButtons = Array.from(modal.querySelectorAll('button, [role="button"]'));
+              const closeBtn = closeButtons.find(btn => {
+                const text = (btn.textContent || '').trim().toLowerCase();
+                const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
+                return text === '×' || text === 'x' || text === 'cancel' ||
+                       ariaLabel.includes('close') ||
+                       (btn.querySelector('svg') && text === '');
+              });
+              if (closeBtn) {
+                closeBtn.click();
+                closed = true;
               }
             }
             return closed;
@@ -1082,13 +1061,13 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null, clo
           }
           
           console.log(`[${exchange.name}] Clicking Close button to open modal...`);
-          
+
           // Try to click the Close button with error handling for detached nodes
           try {
             // Ensure element is in viewport before clicking
-            await closeBtnElement.asElement().scrollIntoView({ behavior: 'smooth', block: 'center' });
+            await closeBtnElement.asElement().evaluate(el => el.scrollIntoView({ behavior: 'smooth', block: 'center' }));
             await delay(300);
-            await closeBtnElement.asElement().click();
+            await safeClick(page, closeBtnElement.asElement());
           } catch (error) {
             if (error.message && error.message.includes('detached')) {
               console.log(`[${exchange.name}] ⚠️  Close button became detached, re-finding and clicking...`);
@@ -1198,9 +1177,13 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null, clo
             await delay(500);
           }
           
-          // Step 5: Select Limit option in modal (skip if closeAtMarket is true - Market is selected by default)
-          if (!closeAtMarket) {
-            // Find and click Limit option in modal - ALWAYS select Limit before Confirm
+          // Step 5: Select order type in close modal
+          // When closeAtMarket=true: skip Limit selection, use Market (modal default)
+          // When closeAtMarket=false: select Limit to minimize taker fees
+          if (closeAtMarket) {
+            console.log(`[${exchange.name}] Step 5: Market close requested — using Market (modal default), skipping Limit selection`);
+          } else {
+            // Find and click Limit option in modal
             // Structure: <div class="style_toggleItem__ZIcFf">Limit</div> with data-active="false"
             // After click, it should have data-active="true" and class "style_active__vVGd1"
             console.log(`[${exchange.name}] Step 5: Looking for Limit option in modal using toggle structure...`);
@@ -1256,21 +1239,21 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null, clo
           
           if (limitButtonHandle && limitButtonHandle.asElement()) {
             console.log(`[${exchange.name}] ✅ Found Limit toggle button in modal, clicking to switch from Market to Limit...`);
-            await limitButtonHandle.asElement().click();
+            await safeClick(page, limitButtonHandle.asElement());
             await delay(500); // Wait for Limit option to activate
             limitSelected = true;
           } else {
             // Fallback: Try using helper functions
             console.log(`[${exchange.name}] ⚠️  Could not find Limit using toggle structure, trying helper functions...`);
             let limitOption = await findByExactText(page, "Limit", ["button", "div", "span", "a"]);
-            
+
             if (!limitOption) {
               limitOption = await findByText(page, "Limit", ["button", "div", "span", "a"]);
             }
-            
+
             if (limitOption) {
               console.log(`[${exchange.name}] ✅ Found Limit option using helper functions, clicking...`);
-              await limitOption.click();
+              await safeClick(page, limitOption);
               await delay(500);
               limitSelected = true;
             } else {
@@ -1332,11 +1315,11 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null, clo
               console.log(`[${exchange.name}] ⚠️  Limit clicked but not verified as selected, clicking again...`);
               // Click Limit again
               if (limitButtonHandle && limitButtonHandle.asElement()) {
-                await limitButtonHandle.asElement().click();
+                await safeClick(page, limitButtonHandle.asElement());
               } else {
                 const limitOption = await findByExactText(page, "Limit", ["button", "div", "span", "a"]);
                 if (limitOption) {
-                  await limitOption.click();
+                  await safeClick(page, limitOption);
                 }
               }
               await delay(500);
@@ -1366,8 +1349,13 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null, clo
               });
               
               if (stillNotSelected) {
-                console.log(`[${exchange.name}] ⚠️  CRITICAL: Limit still not selected after clicking! Cannot proceed to Confirm.`);
-                return { success: false, message: "Could not select Limit option in modal - still showing Market" };
+                if (closeAtMarket) {
+                  console.log(`[${exchange.name}] ⚠️  Limit not selected after clicking, falling back to Market close (closeAtMarket=true)`);
+                } else {
+                  console.log(`[${exchange.name}] ⚠️  CRITICAL: Limit still not selected after clicking! Cannot proceed to Confirm.`);
+                  await dismissGrvtModal();
+                  return { success: false, message: "Could not select Limit option in modal - still showing Market" };
+                }
               } else {
                 console.log(`[${exchange.name}] ✅ Limit verified as selected after second click (data-active="true")`);
               }
@@ -1375,21 +1363,101 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null, clo
               console.log(`[${exchange.name}] ✅ Limit option verified as selected (data-active="true" or style_active__vVGd1 class)`);
             }
           } else {
-            console.log(`[${exchange.name}] ⚠️  CRITICAL: Limit option not clicked! Cannot proceed to Confirm.`);
-            return { success: false, message: "Could not find or click Limit option in modal" };
+            if (closeAtMarket) {
+              console.log(`[${exchange.name}] ⚠️  Limit option not found, falling back to Market close (closeAtMarket=true)`);
+            } else {
+              console.log(`[${exchange.name}] ⚠️  CRITICAL: Limit option not clicked! Cannot proceed to Confirm.`);
+              await dismissGrvtModal();
+              return { success: false, message: "Could not find or click Limit option in modal" };
+            }
           }
-          
-          // Small delay after Limit selection before clicking Confirm
-          console.log(`[${exchange.name}] Waiting a moment after Limit selection before Confirm...`);
-          await delay(500); // Increased wait time after Limit selection
-          } else {
-            // Market close: Skip Limit selection (Market is selected by default)
-            console.log(`[${exchange.name}] Step 5: Skipping Limit selection - closing at Market (default selection)`);
-            await delay(300); // Small delay for modal to be ready
+
+          // Small delay after order type selection before clicking Confirm
+          console.log(`[${exchange.name}] Waiting a moment after order type selection before Confirm...`);
+          await delay(500);
+
+          // Step 5.5: Fill price input for Limit close order
+          // Without a price, the Limit order will fail to submit
+          console.log(`[${exchange.name}] Step 5.5: Filling price for Limit close order...`);
+          try {
+            // Get current market price from the page
+            const marketPrice = await getCurrentMarketPrice(page, exchange);
+            if (marketPrice && marketPrice > 0) {
+              // Keep 2 decimal places — GRVT may reject integer-only prices
+              const priceStr = String(parseFloat(marketPrice.toFixed(2)));
+              console.log(`[${exchange.name}] Market price: $${marketPrice.toLocaleString()}, using $${priceStr} for Limit close`);
+
+              // Find price input inside the close modal
+              const priceFilled = await page.evaluate((price) => {
+                const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"], [class*="Dialog"]'));
+                for (const modal of modals) {
+                  const style = window.getComputedStyle(modal);
+                  if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
+
+                  // Find input elements in the modal (price input for Limit orders)
+                  const inputs = Array.from(modal.querySelectorAll('input'));
+                  for (const input of inputs) {
+                    const type = input.type || 'text';
+                    if (type === 'checkbox' || type === 'radio' || type === 'hidden') continue;
+                    // Check placeholder or label for price-related text
+                    const placeholder = (input.placeholder || '').toLowerCase();
+                    const inputId = (input.id || '').toLowerCase();
+                    const inputName = (input.name || '').toLowerCase();
+                    // Look for price-related context in parent
+                    let parentText = '';
+                    let p = input.parentElement;
+                    for (let i = 0; i < 3 && p; i++) {
+                      parentText += ' ' + (p.textContent || '').toLowerCase();
+                      p = p.parentElement;
+                    }
+
+                    const isPriceInput = placeholder.includes('price') ||
+                      inputId.includes('price') || inputName.includes('price') ||
+                      parentText.includes('price') || parentText.includes('limit');
+
+                    if (isPriceInput && input.offsetParent !== null) {
+                      // Use React native value setter to fill the price
+                      const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+                      nativeSetter.call(input, price);
+                      input.dispatchEvent(new Event('input', { bubbles: true }));
+                      input.dispatchEvent(new Event('change', { bubbles: true }));
+                      return { filled: true, placeholder: input.placeholder || '', value: input.value };
+                    }
+                  }
+
+                  // Fallback: try the first visible text/number input in the modal
+                  for (const input of inputs) {
+                    const type = input.type || 'text';
+                    if (type === 'checkbox' || type === 'radio' || type === 'hidden') continue;
+                    if (input.offsetParent !== null) {
+                      const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+                      nativeSetter.call(input, price);
+                      input.dispatchEvent(new Event('input', { bubbles: true }));
+                      input.dispatchEvent(new Event('change', { bubbles: true }));
+                      return { filled: true, placeholder: input.placeholder || '', value: input.value, fallback: true };
+                    }
+                  }
+                }
+                return { filled: false };
+              }, priceStr);
+
+              if (priceFilled.filled) {
+                console.log(`[${exchange.name}] ✅ Price filled: $${priceStr}${priceFilled.fallback ? ' (fallback input)' : ''} (placeholder: "${priceFilled.placeholder}")`);
+              } else {
+                console.log(`[${exchange.name}] ⚠️  Could not find price input in modal — Limit order may fail`);
+              }
+            } else {
+              console.log(`[${exchange.name}] ⚠️  Could not get market price — Limit close may fail`);
+            }
+          } catch (priceError) {
+            console.log(`[${exchange.name}] ⚠️  Error filling price for Limit close: ${priceError.message}`);
           }
-          
+
+          await delay(300);
+          } // end of if (!closeAtMarket) block
+
           // Step 6: Find and click Confirm button in modal
-          console.log(`[${exchange.name}] Step 6: Looking for Confirm button in modal (${closeAtMarket ? 'Market' : 'Limit'} is selected)...`);
+          console.log(`[${exchange.name}] Step 6: Looking for Confirm button in modal...`);
           await delay(300); // Additional wait before looking for Confirm
           
           let confirmBtn = await findByExactText(page, "Confirm", ["button", "div", "span"]);
@@ -1418,7 +1486,7 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null, clo
             if (confirmInModal) {
               console.log(`[${exchange.name}] ✅ Found Confirm button in modal, clicking...`);
               try {
-                await confirmBtn.click();
+                await safeClick(page, confirmBtn);
                 console.log(`[${exchange.name}] ✅ Clicked Confirm button`);
                 
                 // Step 7: Wait for modal to close automatically after Confirm click
@@ -1428,22 +1496,34 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null, clo
                 const maxWaitIterations = 30; // Wait up to 9 seconds (30 * 300ms) for automatic close
                 for (let i = 0; i < maxWaitIterations; i++) {
                   await delay(300);
-                  modalClosed = await page.evaluate(() => {
+                  const modalState = await page.evaluate(() => {
                     const modals = document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"], [class*="dialog"], [class*="Dialog"]');
                     for (const modal of modals) {
                       const style = window.getComputedStyle(modal);
                       if (style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') {
-                        return false; // Modal still open
+                        // Check for error messages inside the modal
+                        const errorEls = Array.from(modal.querySelectorAll('[class*="error"], [class*="Error"], [class*="warning"], [role="alert"]'));
+                        const errors = errorEls
+                          .filter(el => el.offsetParent !== null && (el.textContent || '').trim().length > 3)
+                          .map(el => (el.textContent || '').trim().substring(0, 100));
+                        return { closed: false, errors };
                       }
                     }
-                    return true; // All modals closed automatically
+                    return { closed: true, errors: [] };
                   });
-                  
+
+                  modalClosed = modalState.closed;
+
                   if (modalClosed) {
                     console.log(`[${exchange.name}] ✅ Modal closed automatically - position close order placed (waited ${(i + 1) * 300}ms)`);
                     break;
                   }
-                  
+
+                  // Log errors if detected
+                  if (modalState.errors.length > 0 && i === 5) {
+                    console.log(`[${exchange.name}] ⚠️  Modal error detected: ${modalState.errors.join(' | ')}`);
+                  }
+
                   // Log progress every 3 seconds
                   if ((i + 1) % 10 === 0) {
                     console.log(`[${exchange.name}] ⏳ Still waiting for modal to close automatically... (${(i + 1) * 300}ms elapsed)`);
@@ -1469,6 +1549,7 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null, clo
                   
                   if (!modalClosed) {
                     console.log(`[${exchange.name}] ❌ CRITICAL: Modal still open after waiting! Cannot proceed to leverage setting.`);
+                    await dismissGrvtModal();
                     return { success: false, message: "Modal did not close automatically after Confirm click - cannot proceed" };
                   }
                 }
@@ -1521,19 +1602,22 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null, clo
                   
                   if (!modalClosed) {
                     console.log(`[${exchange.name}] ❌ CRITICAL: Modal still open after JavaScript click! Cannot proceed.`);
+                    await dismissGrvtModal();
                     return { success: false, message: "Modal did not close automatically after Confirm click - cannot proceed" };
                   }
                 }
-                
+
                 await delay(500);
                 console.log(`[${exchange.name}] ✅ Position close flow complete, modal closed automatically, ready for leverage setting`);
                 return { success: true, message: "Confirm clicked via JavaScript, modal closed automatically" };
               }
             } else {
               console.log(`[${exchange.name}] ⚠️  Found Confirm button but it's not in modal`);
+              await dismissGrvtModal();
             }
           } else {
             console.log(`[${exchange.name}] ⚠️  Could not find Confirm button in modal`);
+            await dismissGrvtModal();
           }
         } else {
           console.log(`[${exchange.name}] ⚠️  Could not get Close button element handle`);
@@ -1541,9 +1625,12 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null, clo
       } else {
         console.log(`[${exchange.name}] ⚠️  Could not find Close button in Actions column`);
       }
-      
-      // If GRVT flow failed, fall through to general flow (shouldn't happen if flow is correct)
-      console.log(`[${exchange.name}] ⚠️  GRVT-specific flow failed or incomplete, continuing with general flow...`);
+
+      // GRVT flow failed — dismiss any stuck modal and return failure
+      // Do NOT fall through to generic Paradex flow (wrong selectors, wastes time)
+      await dismissGrvtModal();
+      console.log(`[${exchange.name}] ❌ GRVT-specific close flow failed — returning failure`);
+      return { success: false, message: "GRVT close flow failed (Close button or Confirm not found)" };
     }
     
     // ============================================================================
@@ -1577,7 +1664,7 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null, clo
         "span",
       ]);
       if (positionsTab) {
-        await positionsTab.click();
+        await safeClick(page, positionsTab);
         console.log(`[Paradex] ✓ Clicked Positions tab - staying on Positions tab to find Limit button`);
         await delay(300); // Wait for positions to load
       } else {
@@ -1662,7 +1749,7 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null, clo
             const limitBtn = Array.from(closeCell.querySelectorAll('button')).find(
               btn => {
                 const text = btn.textContent?.trim();
-                const isVisible = btn.offsetParent !== null && btn.offsetWidth > 0 && btn.offsetHeight > 0;
+                const isVisible = btn.offsetParent !== null || (btn.offsetWidth > 0 && btn.offsetHeight > 0);
                 return isVisible && text === 'Limit';
               }
             );
@@ -2171,7 +2258,7 @@ async function closeAllPositions(page, percent = 100, exchangeConfig = null, clo
     }
   
     if (closeBtn && !closeBtnClicked) {
-      await closeBtn.click();
+      await safeClick(page, closeBtn);
       console.log("Clicked Close button");
     }
   
@@ -2306,7 +2393,7 @@ async function checkIfPositionsClosed(page) {
       "span",
     ]);
     if (positionsTab) {
-      await positionsTab.click();
+      await safeClick(page, positionsTab);
       await delay(1000);
     }
   
@@ -2353,7 +2440,7 @@ async function checkIfPositionsClosed(page) {
         "span",
       ]);
       if (positionsTab) {
-        await positionsTab.click();
+        await safeClick(page, positionsTab);
         await delay(1500); // Wait for page to update
       }
   
@@ -2677,7 +2764,7 @@ async function handleClosePositionsAndSetLeverage(page, email) {
         const allButtons = Array.from(document.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"]'));
         const closeAllBtn = allButtons.find(btn => {
           const text = btn.textContent?.trim();
-          const isVisible = btn.offsetParent !== null && btn.offsetWidth > 0 && btn.offsetHeight > 0;
+          const isVisible = btn.offsetParent !== null || (btn.offsetWidth > 0 && btn.offsetHeight > 0);
           return isVisible && (
             text === 'CLOSE ALL POSITIONS' || 
             text === 'Close All Positions' ||
@@ -2705,7 +2792,7 @@ async function handleClosePositionsAndSetLeverage(page, email) {
           const buttons = Array.from(modal.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"]'));
           const closePositionsBtn = buttons.find(btn => {
             const text = btn.textContent?.trim();
-            const isVisible = btn.offsetParent !== null && btn.offsetWidth > 0 && btn.offsetHeight > 0;
+            const isVisible = btn.offsetParent !== null || (btn.offsetWidth > 0 && btn.offsetHeight > 0);
             return isVisible && (text === 'Close Positions' || text.includes('Close Positions'));
           });
           if (closePositionsBtn) {
@@ -2740,114 +2827,81 @@ async function checkGrvtOpenPositions(page) {
     console.log(`[GRVT] Step 1: Navigating to Positions tab...`);
     let positionsTabClicked = false;
     
-    // Strategy 1: Find by data-text attribute containing "Positions"
-    const positionsClickedByDataText = await page.evaluate(() => {
-      const allElements = Array.from(document.querySelectorAll('div, button, span, a'));
-      for (const el of allElements) {
-        const dataText = el.getAttribute('data-text');
-        if (dataText && dataText.toLowerCase().includes('positions') && el.offsetParent !== null) {
-          el.click();
-          return true;
+    // MUST use Puppeteer native click (elementHandle.click()) — produces isTrusted: true.
+    // IMPORTANT: textContent includes ALL child text, so container divs can match
+    // "Positions..." even though they're not the tab. Must filter by text length.
+
+    // Strategy 1: Find GRVT tab structure — div with tabItem class containing "Positions" span
+    const posTabHandle1 = await page.evaluateHandle(() => {
+      const allDivs = Array.from(document.querySelectorAll('div'));
+      for (const div of allDivs) {
+        const divClass = (div.className || '').toLowerCase();
+        if ((divClass.includes('tabitem') || divClass.includes('tab-item') || divClass.includes('tab_item')) && div.offsetParent !== null) {
+          const spans = Array.from(div.querySelectorAll('span'));
+          for (const span of spans) {
+            if ((span.textContent || '').trim().toLowerCase().startsWith('positions')) return div;
+          }
         }
       }
-      return false;
+      return null;
     });
-    
-    if (positionsClickedByDataText) {
+    const posTab1 = posTabHandle1.asElement();
+    if (posTab1) {
+      await posTab1.click();
       positionsTabClicked = true;
-      console.log(`[GRVT] ✓ Clicked Positions tab (via data-text attribute)`);
+      console.log(`[GRVT] ✓ Clicked Positions tab (via tabItem structure)`);
       await delay(500);
     }
-    
-    // Strategy 2: Find by text starting with "Positions" (handles "Positions (1)" format)
+
+    // Strategy 2: Find by data-text attribute containing "Positions"
     if (!positionsTabClicked) {
-      const positionsClickedByText = await page.evaluate(() => {
+      const posTabHandle2 = await page.evaluateHandle(() => {
         const allElements = Array.from(document.querySelectorAll('div, button, span, a'));
         for (const el of allElements) {
-          const text = (el.textContent || '').trim();
-          const isVisible = el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
-          // Match "Positions" or "Positions (1)" or "Positions (2)" etc.
-          if (isVisible && text.toLowerCase().startsWith('positions')) {
-            el.click();
-            return true;
-          }
+          const dataText = el.getAttribute('data-text');
+          if (dataText && dataText.toLowerCase().includes('positions') && el.offsetParent !== null) return el;
         }
-        return false;
+        return null;
       });
-      
-      if (positionsClickedByText) {
+      const posTab2 = posTabHandle2.asElement();
+      if (posTab2) {
+        await posTab2.click();
         positionsTabClicked = true;
-        console.log(`[GRVT] ✓ Clicked Positions tab (via text content)`);
+        console.log(`[GRVT] ✓ Clicked Positions tab (via data-text attribute)`);
         await delay(500);
       }
     }
-    
-    // Strategy 3: Find by exact text "Positions" using helper functions
+
+    // Strategy 3: Find span/button with SHORT text starting with "Positions" (max 30 chars)
     if (!positionsTabClicked) {
-      const positionsTab = await findByExactText(page, "Positions", ["button", "div", "span", "a"]);
-      if (positionsTab) {
-        const isVisible = await page.evaluate((el) => {
-          return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
-        }, positionsTab);
-        if (isVisible) {
-          await positionsTab.click();
-          console.log(`[GRVT] ✓ Clicked Positions tab (exact text helper)`);
-          positionsTabClicked = true;
-          await delay(500);
-        }
-      }
-    }
-    
-    // Strategy 4: Find by text containing "positions" (case insensitive) using helper functions
-    if (!positionsTabClicked) {
-      const positionsTab2 = await findByText(page, "positions", ["button", "div", "span", "a"]);
-      if (positionsTab2) {
-        const isVisible = await page.evaluate((el) => {
-          return el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
-        }, positionsTab2);
-        if (isVisible) {
-          await positionsTab2.click();
-          console.log(`[GRVT] ✓ Clicked Positions tab (text search helper)`);
-          positionsTabClicked = true;
-          await delay(500);
-        }
-      }
-    }
-    
-    if (!positionsTabClicked) {
-      console.log(`[GRVT] ⚠️  Could not find Positions tab using standard methods, trying alternative approach...`);
-      
-      // Alternative: Try to find and click by looking for tab that contains "Positions" text
-      const positionsTabAlt = await page.evaluate(() => {
-        // Look for elements that might be tabs
-        const allElements = Array.from(document.querySelectorAll('*'));
+      const posTabHandle3 = await page.evaluateHandle(() => {
+        const candidates = [];
+        const allElements = Array.from(document.querySelectorAll('span, button, a, div'));
         for (const el of allElements) {
           const text = (el.textContent || '').trim();
-          const isVisible = el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
-          // Match "Positions" or "Positions (1)" etc.
-          if (isVisible && text.toLowerCase().startsWith('positions')) {
-            // Make sure it's clickable (button, link, or has click handler)
-            const tagName = el.tagName.toLowerCase();
-            if (tagName === 'button' || tagName === 'a' || 
-                el.getAttribute('role') === 'button' ||
-                el.getAttribute('role') === 'tab' ||
-                window.getComputedStyle(el).cursor === 'pointer') {
-              el.click();
-              return true;
-            }
+          const isVisible = el.offsetParent !== null || (el.offsetWidth > 0 && el.offsetHeight > 0);
+          if (isVisible && text.toLowerCase().startsWith('positions') && text.length < 30) {
+            const parentClass = (el.parentElement?.className || '').toLowerCase();
+            const isInTabBar = parentClass.includes('tab') || parentClass.includes('bar') ||
+                               el.getAttribute('role') === 'tab';
+            candidates.push({ el, priority: isInTabBar ? 0 : 1, len: text.length });
           }
         }
-        return false;
+        candidates.sort((a, b) => a.priority - b.priority || a.len - b.len);
+        return candidates.length > 0 ? candidates[0].el : null;
       });
-      
-      if (positionsTabAlt) {
+      const posTab3 = posTabHandle3.asElement();
+      if (posTab3) {
+        await posTab3.click();
         positionsTabClicked = true;
-        console.log(`[GRVT] ✓ Clicked Positions tab (alternative method)`);
+        console.log(`[GRVT] ✓ Clicked Positions tab (via short text match)`);
         await delay(500);
-      } else {
-        console.log(`[GRVT] ⚠️  Could not find Positions tab, continuing anyway...`);
-        await delay(500); // Wait a bit for page to stabilize
       }
+    }
+
+    if (!positionsTabClicked) {
+      console.log(`[GRVT] ⚠️  Could not find Positions tab, continuing anyway...`);
+      await delay(500);
     }
     
     // Step 2: Wait for positions tab to load and verify TablePositions component appears
@@ -3013,16 +3067,24 @@ async function checkGrvtOpenPositions(page) {
             const isLong = rowText.includes('long');
             const isShort = rowText.includes('short');
             
+            // Extract position size from rowText (pattern: "10x0.002 btc" or "10x0.004 btc")
+            let positionSize = null;
+            const sizeMatch = rowText.match(/(\d+)x([\d.]+)\s*btc/i);
+            if (sizeMatch) {
+              positionSize = parseFloat(sizeMatch[2]);
+            }
+
             validPositions.push({
               text: btn.textContent?.trim() || 'Close',
               visible: btn.offsetParent !== null,
               side: isLong ? 'long' : (isShort ? 'short' : 'unknown'),
               isLong: isLong,
               isShort: isShort,
-              hasPositionData: hasPositionData
+              hasPositionData: hasPositionData,
+              size: positionSize
             });
-            
-            debugInfo.push(`Close #${closeButtonCount} VALID - Long: ${isLong}, Short: ${isShort}, HasPositionData: ${hasPositionData}, RowText: ${rowText.substring(0, 50)}`);
+
+            debugInfo.push(`Close #${closeButtonCount} VALID - Long: ${isLong}, Short: ${isShort}, HasPositionData: ${hasPositionData}, Size: ${positionSize} BTC, RowText: ${rowText.substring(0, 60)}`);
           } else {
             debugInfo.push(`Close #${closeButtonCount} SKIPPED - HasPositionData: ${hasPositionData}, IsPositionsPage: ${isPositionsPage}, IsInTablePositions: ${isInTablePositions}, IsInActionsColumn: ${isInActionsColumn}`);
           }
@@ -3032,12 +3094,19 @@ async function checkGrvtOpenPositions(page) {
       // Count long and short positions
       const longCount = validPositions.filter(pos => pos.isLong).length;
       const shortCount = validPositions.filter(pos => pos.isShort).length;
-      
+
+      // Sum total position size across all valid positions
+      // QA fix: If any position has null size (regex parse failed), return null instead of 0
+      // to distinguish "size 0" from "size unknown"
+      const hasParseFailure = validPositions.some(pos => pos.size === null || pos.size === undefined);
+      const totalSize = hasParseFailure ? null : validPositions.reduce((sum, pos) => sum + (pos.size || 0), 0);
+
       return {
         hasPositions: validPositions.length > 0,
         count: validPositions.length,
         longCount: longCount,
         shortCount: shortCount,
+        totalSize: totalSize,
         positions: validPositions,
         debug: debugInfo
       };
@@ -3049,13 +3118,14 @@ async function checkGrvtOpenPositions(page) {
     }
     
     if (positionResult.hasPositions) {
-      console.log(`[GRVT] ✅ Found ${positionResult.count} open position(s) - Long: ${positionResult.longCount}, Short: ${positionResult.shortCount}`);
+      console.log(`[GRVT] ✅ Found ${positionResult.count} open position(s) - Long: ${positionResult.longCount}, Short: ${positionResult.shortCount}${positionResult.totalSize ? `, Size: ${positionResult.totalSize} BTC` : ''}`);
       return {
         success: true,
         hasPositions: true,
         count: positionResult.count,
         longCount: positionResult.longCount,
         shortCount: positionResult.shortCount,
+        totalSize: positionResult.totalSize || null,
         positions: positionResult.positions,
         message: `Found ${positionResult.count} open position(s) - Long: ${positionResult.longCount}, Short: ${positionResult.shortCount}`
       };
@@ -3067,6 +3137,7 @@ async function checkGrvtOpenPositions(page) {
         count: 0,
         longCount: 0,
         shortCount: 0,
+        totalSize: null,
         positions: [],
         message: "No open positions found"
       };
@@ -3079,6 +3150,7 @@ async function checkGrvtOpenPositions(page) {
       count: 0,
       longCount: 0,
       shortCount: 0,
+      totalSize: null,
       positions: [],
       message: `Error: ${error.message}`
     };

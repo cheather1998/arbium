@@ -1,4 +1,5 @@
 import https from 'https';
+import os from 'os';
 import { gt, valid, coerce } from 'semver';
 
 const GITHUB_OWNER = 'cheather1998';
@@ -59,11 +60,27 @@ export async function checkForUpdates(currentVersion) {
 
     const updateRequired = gt(latestVersion, currentParsed);
 
+    // Pick the correct download URL based on platform
+    let downloadUrl = release.html_url || RELEASES_PAGE;
+    const assets = release.assets || [];
+    const platform = os.platform(); // 'darwin' for macOS, 'win32' for Windows
+
+    if (assets.length > 0) {
+      const dmgAsset = assets.find((a) => a.name.endsWith('.dmg'));
+      const exeAsset = assets.find((a) => a.name.endsWith('.exe'));
+
+      if (platform === 'darwin' && dmgAsset) {
+        downloadUrl = dmgAsset.browser_download_url;
+      } else if (platform === 'win32' && exeAsset) {
+        downloadUrl = exeAsset.browser_download_url;
+      }
+    }
+
     return {
       updateRequired,
       latestVersion,
       currentVersion: currentParsed,
-      downloadUrl: release.html_url || RELEASES_PAGE,
+      downloadUrl,
       releaseNotes: release.body || '',
     };
   } catch (err) {
