@@ -1,6 +1,7 @@
 import puppeteer from 'puppeteer-extra';
 import fs from 'fs';
 import path from 'path';
+import { execSync } from 'child_process';
 import EXCHANGE_CONFIGS from '../config/exchanges.js';
 import { delay, closeNotifyBarWrapperNotifications } from '../utils/helpers.js';
 import { loadCookies, saveCookies, hasExtendedExchangeCookies } from '../utils/cookies.js';
@@ -8,6 +9,58 @@ import { isLoggedIn, login } from '../auth/login.js';
 import { clickOrdersTab } from '../ui/tabs.js';
 import { startApiServer } from '../api/server.js';
 import { HEADLESS } from '../config/headless.js';
+
+/**
+ * Find a usable Chrome/Chromium executable.
+ * Priority: Puppeteer cache → System Chrome → null (let Puppeteer decide)
+ */
+function findChromePath() {
+  const isPackaged = process.env.ELECTRON_MODE === '1';
+  if (!isPackaged) return undefined; // Dev mode — Puppeteer handles it
+
+  // 1. Check Puppeteer cache (~/.cache/puppeteer/chrome/...)
+  const homeDir = process.env.HOME || process.env.USERPROFILE;
+  if (homeDir) {
+    const cacheDir = path.join(homeDir, '.cache', 'puppeteer', 'chrome');
+    try {
+      if (fs.existsSync(cacheDir)) {
+        const versions = fs.readdirSync(cacheDir).sort().reverse(); // newest first
+        for (const ver of versions) {
+          // macOS
+          const macPath = path.join(cacheDir, ver, 'chrome-mac-x64', 'Google Chrome for Testing.app', 'Contents', 'MacOS', 'Google Chrome for Testing');
+          if (fs.existsSync(macPath)) {
+            console.log(`[Chrome] Using Puppeteer cached Chrome: ${macPath}`);
+            return macPath;
+          }
+          // Windows
+          const winPath = path.join(cacheDir, ver, 'chrome-win64', 'chrome.exe');
+          if (fs.existsSync(winPath)) {
+            console.log(`[Chrome] Using Puppeteer cached Chrome: ${winPath}`);
+            return winPath;
+          }
+        }
+      }
+    } catch { /* ignore */ }
+  }
+
+  // 2. System Chrome
+  const systemPaths = [
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',                    // macOS
+    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',                       // Windows
+    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',                // Windows x86
+    '/usr/bin/google-chrome',                                                           // Linux
+    '/usr/bin/google-chrome-stable',                                                    // Linux
+  ];
+  for (const p of systemPaths) {
+    if (fs.existsSync(p)) {
+      console.log(`[Chrome] Using system Chrome: ${p}`);
+      return p;
+    }
+  }
+
+  console.warn('[Chrome] No Chrome found — Puppeteer will try its default');
+  return undefined;
+}
 
 async function launchAccount(accountConfig, exchangeConfig) {
     const { email, cookiesPath, profileDir, apiPort } = accountConfig;
@@ -46,9 +99,10 @@ async function launchAccount(accountConfig, exchangeConfig) {
         }
       }
   
+      const chromePath = findChromePath();
       const browser = await puppeteer.launch({
         headless: HEADLESS,
-        // executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+        ...(chromePath ? { executablePath: chromePath } : {}),
         userDataDir: profileDir,
         args: [
           "--start-maximized",
