@@ -1,11 +1,11 @@
-import { useMemo, useState, useEffect } from 'react';
+import { useMemo, useState, useEffect, useRef } from 'react';
 
 const ERROR_FIXES = [
   { pattern: /cookie|session|login|logged out|unauthorized/i, fix: 'Delete cookie files (paradex-cookies-*.json) and restart the bot to re-login.' },
   { pattern: /timeout|timed out|ETIMEDOUT/i, fix: 'Network timeout. Check your internet connection or try again later.' },
   { pattern: /wallet|connect.*wallet|metamask/i, fix: 'Wallet connection issue. Make sure your wallet extension is unlocked.' },
   { pattern: /leverage|margin/i, fix: 'Check if the exchange supports the configured leverage level. Try reducing leverage.' },
-  { pattern: /insufficient|balance|fund/i, fix: 'Insufficient balance. Deposit more funds to your exchange account.' },
+  { pattern: /insufficient|balance|fund|not enough/i, fix: 'Insufficient balance. Deposit more funds to your exchange account.' },
   { pattern: /price.*not found|no price|NaN/i, fix: 'Price data unavailable. Restart the bot to reload the exchange page.' },
   { pattern: /ECONNREFUSED|ENOTFOUND|network/i, fix: 'Network connection failed. Check your internet and firewall settings.' },
   { pattern: /browser.*crash|page.*closed|target.*closed/i, fix: 'Browser session crashed. Restart the bot to launch a new session.' },
@@ -33,8 +33,7 @@ const BOT_STATE_MAP = {
  */
 function parseLogsForMetrics(logs) {
   let cycle = 0;
-  let krakenTrades = 0;
-  let grvtTrades = 0;
+  // Trade counting moved to useRef in component (incremental, survives log truncation)
   let krakenPrice = null;
   let grvtPrice = null;
   let priceDiff = null;
@@ -117,24 +116,6 @@ function parseLogsForMetrics(logs) {
       }
     }
 
-    // Count trades per exchange from order placement logs
-    // "BUY order placed successfully" / "SELL order placed successfully" with email context
-    // Also detect from executeKraken/executeGrvt patterns
-    if (/order placed successfully/i.test(msg)) {
-      // Check surrounding context — the bot logs email with exchange info
-      if (/kraken/i.test(msg)) krakenTrades++;
-      else if (/grvt/i.test(msg)) grvtTrades++;
-    }
-    // Fallback: "Executing trades using quick fill (both GRVT and Kraken)"
-    if (/Step 6.*Executing trades.*both GRVT and Kraken/i.test(msg)) {
-      krakenTrades++;
-      grvtTrades++;
-    }
-    // Fallback: generic "Executing trades" (mode 1/2 — count as both)
-    if (/\[CYCLE.*Executing trades\.\.\./.test(msg)) {
-      krakenTrades++;
-      grvtTrades++;
-    }
 
     // === PREPARING / SETTING UP ===
     if (/Launching browser|Starting Multi-Exchange|opening.*browsers/i.test(msg)) {
@@ -239,9 +220,9 @@ function parseLogsForMetrics(logs) {
       botState = 'error';
       botMessage = 'Network timeout — check connection';
     }
-    if (/insufficient.*balance|Insufficient funds/i.test(msg)) {
+    if (/insufficient.*balance|Insufficient funds|not enough.*balance|not enough.*fund/i.test(msg)) {
       botState = 'error';
-      botMessage = 'Insufficient balance on exchange';
+      botMessage = 'Insufficient balance on exchange — deposit more funds';
     }
     if (log.type === 'error' && /Fatal|uncaught|MODULE_NOT_FOUND/i.test(msg)) {
       botState = 'error';
@@ -257,7 +238,7 @@ function parseLogsForMetrics(logs) {
     }
   }
 
-  return { cycle, krakenTrades, grvtTrades, krakenPrice, grvtPrice, priceDiff, botState, botMessage, latency };
+  return { cycle, krakenPrice, grvtPrice, priceDiff, botState, botMessage, latency };
 }
 
 export default function Dashboard({ status, botRunning, logs, onStart, onStop, config }) {
@@ -266,12 +247,46 @@ export default function Dashboard({ status, botRunning, logs, onStart, onStop, c
   // Parse logs for metrics
   const logMetrics = useMemo(() => parseLogsForMetrics(logs), [logs]);
 
+  // Persistent trade counters — survive log truncation
+  const tradeCountRef = useRef({ kraken: 0, grvt: 0, lastLogCount: 0 });
+
+  // Only count NEW logs (incremental), never re-parse old ones
+  useEffect(() => {
+    const tc = tradeCountRef.current;
+    const startIdx = tc.lastLogCount;
+    const newLogs = logs.slice(startIdx);
+
+    for (const log of newLogs) {
+      const msg = log.text || log.message || '';
+      if (/order placed successfully/i.test(msg)) {
+        if (/kraken/i.test(msg)) tc.kraken++;
+        else if (/grvt/i.test(msg)) tc.grvt++;
+      }
+      if (/Step 6.*Executing trades.*both GRVT and Kraken/i.test(msg)) {
+        tc.kraken++;
+        tc.grvt++;
+      }
+      if (/\[CYCLE.*Executing trades\.\.\./.test(msg)) {
+        tc.kraken++;
+        tc.grvt++;
+      }
+    }
+    tc.lastLogCount = logs.length;
+  }, [logs]);
+
+  // Reset counters when bot stops
+  useEffect(() => {
+    if (!botRunning) {
+      tradeCountRef.current = { kraken: 0, grvt: 0, lastLogCount: 0 };
+    }
+  }, [botRunning]);
+
   // Use status data if available, fall back to log-parsed data
   const prices = status.prices || {};
   const cycle = status.cycle || logMetrics.cycle || 0;
   const priceDiff = status.priceDiff ?? logMetrics.priceDiff;
-  const krakenTrades = logMetrics.krakenTrades || 0;
-  const grvtTrades = logMetrics.grvtTrades || 0;
+  const krakenTrades = tradeCountRef.current.kraken;
+  const grvtTrades = tradeCountRef.current.grvt;
   const krakenPrice = prices.kraken || logMetrics.krakenPrice;
   const grvtPrice = prices.grvt || logMetrics.grvtPrice;
   const botState = status.botState || logMetrics.botState || (botRunning ? 'running' : null);
@@ -311,9 +326,11 @@ export default function Dashboard({ status, botRunning, logs, onStart, onStop, c
     return `${s}s`;
   };
 
+  const CRITICAL_PATTERNS = /not enough|insufficient|balance.*error|order.*rejected|order.*failed|CRITICAL|fatal|browser.*crash|target.*closed|No accounts logged in/i;
+
   const recentErrors = useMemo(() => {
     return logs
-      .filter((l) => l.type === 'error')
+      .filter((l) => l.type === 'error' || (l.type === 'info' && CRITICAL_PATTERNS.test(l.message)))
       .slice(-5)
       .map((l) => ({ ...l, fix: getErrorFix(l.message) }));
   }, [logs]);
@@ -505,6 +522,11 @@ export default function Dashboard({ status, botRunning, logs, onStart, onStop, c
               </div>
             ))}
           </div>
+          {botRunning && (
+            <button className="btn dash-restart-btn" onClick={() => { onStop(); setTimeout(() => onStart(), 1500); }}>
+              Restart Bot
+            </button>
+          )}
         </div>
       )}
     </div>
