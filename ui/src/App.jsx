@@ -214,6 +214,7 @@ export default function App() {
             logs={logs}
             onStart={handleStart}
             onStop={handleStop}
+            config={config}
           />
         </div>
 

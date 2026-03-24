@@ -18,8 +18,11 @@ export default function ConfigPanel({ config, onSave, disabled, onSwitchAccount 
   }, [config]);
 
   const handleChange = (key, value) => {
-    setLocalConfig((prev) => ({ ...prev, [key]: value }));
+    const updated = { ...localConfig, [key]: value };
+    setLocalConfig(updated);
     setSaved(false);
+    // Auto-save on change
+    onSave(updated);
   };
 
   const handleSave = async () => {
@@ -63,15 +66,8 @@ export default function ConfigPanel({ config, onSave, disabled, onSwitchAccount 
   return (
     <div className="config-panel">
       {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+      <div style={{ marginBottom: 16 }}>
         <span className="card-title" style={{ margin: 0 }}>Settings</span>
-        <button
-          className={`btn btn-sm ${saved ? 'btn-success' : 'btn-primary'}`}
-          onClick={handleSave}
-          disabled={saving || disabled}
-        >
-          {saving ? 'Saving...' : saved ? '\u2713 Saved' : 'Save'}
-        </button>
       </div>
 
       {/* Trading Quantities */}
