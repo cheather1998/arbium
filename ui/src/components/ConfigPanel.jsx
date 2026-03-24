@@ -7,11 +7,29 @@ const QTY_FIELDS = [
 
 const LEVERAGE_STEPS = [1, 5, 10, 20, 30, 40, 50];
 
-export default function ConfigPanel({ config, onSave, disabled, onSwitchAccount }) {
+export default function ConfigPanel({ config, onSave, disabled, onSwitchAccount, btcPrice }) {
   const [localConfig, setLocalConfig] = useState({});
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [liveBtcPrice, setLiveBtcPrice] = useState(null);
+
+  // Fetch BTC price on mount for USD reference (independent of bot)
+  useEffect(() => {
+    const fetchPrice = async () => {
+      try {
+        const res = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd');
+        const data = await res.json();
+        if (data?.bitcoin?.usd) setLiveBtcPrice(data.bitcoin.usd);
+      } catch { /* ignore */ }
+    };
+    fetchPrice();
+    const interval = setInterval(fetchPrice, 60000); // refresh every 60s
+    return () => clearInterval(interval);
+  }, []);
+
+  // Use bot price if available, otherwise use fetched price
+  const refPrice = btcPrice || liveBtcPrice;
 
   useEffect(() => {
     setLocalConfig({ ...config });
@@ -73,21 +91,31 @@ export default function ConfigPanel({ config, onSave, disabled, onSwitchAccount 
       {/* Trading Quantities */}
       <div className="config-section-title">Trade Size</div>
 
-      {QTY_FIELDS.map((field) => (
-        <div className="config-group" key={field.key}>
-          <label className="config-label">{field.label}</label>
-          <input
-            className="config-input mono"
-            type="number"
-            step={field.step}
-            min="0"
-            placeholder={field.placeholder}
-            value={localConfig[field.key] || ''}
-            onChange={(e) => handleChange(field.key, e.target.value)}
-            disabled={disabled}
-          />
-        </div>
-      ))}
+      {QTY_FIELDS.map((field) => {
+        const btcVal = parseFloat(localConfig[field.key]) || 0;
+        const usdText = refPrice && btcVal
+          ? `$${(btcVal * refPrice).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD`
+          : null;
+
+        return (
+          <div className="config-group" key={field.key}>
+            <label className="config-label">{field.label}</label>
+            <div className="config-input-wrap">
+              <input
+                className="config-input mono"
+                type="number"
+                step={field.step}
+                min="0"
+                placeholder={field.placeholder}
+                value={localConfig[field.key] || ''}
+                onChange={(e) => handleChange(field.key, e.target.value)}
+                disabled={disabled}
+              />
+              {usdText && <span className="config-qty-usd">{usdText}</span>}
+            </div>
+          </div>
+        );
+      })}
 
       <div className="config-divider" />
 
@@ -132,81 +160,6 @@ export default function ConfigPanel({ config, onSave, disabled, onSwitchAccount 
         )}
       </div>
 
-      <div className="config-divider" />
-
-      {/* Advanced */}
-      <button
-        className="btn btn-sm btn-ghost"
-        onClick={() => setShowAdvanced(!showAdvanced)}
-        style={{ width: '100%', marginBottom: 8 }}
-      >
-        {showAdvanced ? 'Hide' : 'Show'} Advanced Settings
-      </button>
-
-      {showAdvanced && (
-        <div className="advanced-settings">
-          <div className="config-group">
-            <label className="config-label">Stop Loss ($)</label>
-            <input
-              className="config-input mono"
-              type="number"
-              step="0.1"
-              min="0"
-              value={localConfig.STOP_LOSS || ''}
-              onChange={(e) => handleChange('STOP_LOSS', e.target.value)}
-              disabled={disabled}
-            />
-          </div>
-          <div className="config-group">
-            <label className="config-label">Take Profit ($)</label>
-            <input
-              className="config-input mono"
-              type="number"
-              step="0.1"
-              min="0"
-              value={localConfig.TAKE_PROFIT || ''}
-              onChange={(e) => handleChange('TAKE_PROFIT', e.target.value)}
-              disabled={disabled}
-            />
-          </div>
-          <div className="config-group">
-            <label className="config-label">Opening Threshold ($)</label>
-            <input
-              className="config-input mono"
-              type="number"
-              step="0.5"
-              min="0"
-              value={localConfig.OPENING_THRESHOLD || ''}
-              onChange={(e) => handleChange('OPENING_THRESHOLD', e.target.value)}
-              disabled={disabled}
-            />
-          </div>
-          <div className="config-group">
-            <label className="config-label">Closing Threshold ($)</label>
-            <input
-              className="config-input mono"
-              type="number"
-              step="0.5"
-              min="0"
-              value={localConfig.CLOSING_THRESHOLD || ''}
-              onChange={(e) => handleChange('CLOSING_THRESHOLD', e.target.value)}
-              disabled={disabled}
-            />
-          </div>
-          <div className="config-group">
-            <label className="config-label">Trade Hold Time (ms)</label>
-            <input
-              className="config-input mono"
-              type="number"
-              step="1000"
-              min="1000"
-              value={localConfig.TRADE_TIME || ''}
-              onChange={(e) => handleChange('TRADE_TIME', e.target.value)}
-              disabled={disabled}
-            />
-          </div>
-        </div>
-      )}
 
       {onSwitchAccount && (
         <>

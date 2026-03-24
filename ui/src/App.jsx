@@ -160,7 +160,7 @@ export default function App() {
         <header className="app-header">
           <img src={logoSvg} alt="Arbium" style={{ height: 22 }} />
         </header>
-        <div style={{ flex: 1, overflowY: 'auto' }}>
+        <div style={{ flex: 1, overflow: 'hidden' }}>
           <Onboarding onComplete={() => { markOnboardingDone(); setSetupComplete(true); }} />
         </div>
         <StatusBar botRunning={false} version={version} status={{}} />
@@ -224,6 +224,7 @@ export default function App() {
             onSave={handleConfigSave}
             disabled={botRunning}
             onSwitchAccount={handleSwitchAccount}
+            btcPrice={status.prices?.kraken || status.prices?.grvt || null}
           />
           <LogViewer logs={logs} onClear={() => setLogs([])} />
         </div>

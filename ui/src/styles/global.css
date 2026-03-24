@@ -49,6 +49,17 @@ body {
   height: 100vh;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
+}
+
+html, body, #root {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+html::-webkit-scrollbar,
+body::-webkit-scrollbar,
+#root::-webkit-scrollbar {
+  display: none;
 }
 
 h1, h2, h3 {
@@ -113,8 +124,8 @@ h1, h2, h3 {
 
 .main-content {
   flex: 1;
-  overflow-y: auto;
-  padding: 24px;
+  overflow: hidden;
+  padding: 20px 24px;
 }
 
 .sidebar {
@@ -225,7 +236,8 @@ h1, h2, h3 {
 .dashboard {
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: 16px;
+  max-height: 100%;
 }
 
 /* --- Status --- */
@@ -233,7 +245,7 @@ h1, h2, h3 {
   display: flex;
   align-items: center;
   gap: 14px;
-  padding: 18px 20px;
+  padding: 14px 18px;
   border-radius: var(--radius-lg);
   background: var(--bg-secondary);
   transition: background 0.3s;
@@ -289,9 +301,10 @@ h1, h2, h3 {
 
 .dash-action-btn {
   flex: 1;
-  padding: 14px !important;
-  font-size: 15px !important;
+  padding: 12px !important;
+  font-size: 13px !important;
   font-weight: 600 !important;
+  font-family: 'Plus Jakarta Sans', sans-serif !important;
 }
 
 .dash-exchange-btn {
@@ -439,8 +452,10 @@ h1, h2, h3 {
 
 .dash-pnl-btn {
   width: 100%;
-  padding: 10px !important;
+  padding: 12px !important;
   font-size: 13px !important;
+  font-weight: 600 !important;
+  font-family: 'Plus Jakarta Sans', sans-serif !important;
   background: var(--bg-elevated) !important;
   border-color: transparent !important;
   color: var(--text-secondary) !important;
@@ -890,70 +905,120 @@ input[type="range"]::-webkit-slider-thumb:active {
   position: fixed;
   inset: 0;
   z-index: 9999;
-  background: rgba(0, 0, 0, 0.85);
+  background: rgba(0, 0, 0, 0.8);
   display: flex;
   align-items: center;
   justify-content: center;
-  backdrop-filter: blur(8px);
 }
 
 .update-modal {
   background: var(--bg-card);
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  padding: 32px;
-  max-width: 440px;
+  border-radius: 16px;
+  padding: 28px;
+  max-width: 360px;
   width: 90%;
   text-align: center;
 }
 
 .update-modal h2 {
   font-family: var(--font-heading);
-  font-size: 22px;
-  margin-bottom: 12px;
+  font-size: 19px;
+  font-weight: 600;
+  margin-bottom: 6px;
+  letter-spacing: -0.3px;
 }
 
-.update-modal p {
-  color: var(--text-secondary);
-  font-size: 14px;
-  margin-bottom: 8px;
+.update-subtitle {
+  color: var(--text-muted) !important;
+  font-size: 13px !important;
+  margin-bottom: 0 !important;
 }
 
 .update-modal .version-info {
   display: flex;
-  justify-content: center;
-  gap: 24px;
+  align-items: center;
+  gap: 12px;
   margin: 20px 0;
-  font-family: var(--font-mono);
 }
 
-.update-modal .version-info .current { color: var(--red); }
-.update-modal .version-info .latest { color: var(--green); }
+.update-modal .version-box {
+  background: var(--bg-primary);
+  border-radius: 10px;
+  padding: 12px 0;
+  flex: 1;
+}
 
 .update-modal .version-label {
-  font-size: 11px;
+  font-size: 10px;
   color: var(--text-muted);
   text-transform: uppercase;
+  letter-spacing: 0.8px;
+  margin-bottom: 4px;
+}
+
+.update-modal .version-number {
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.update-modal .version-number.current { color: var(--text-muted); }
+.update-modal .version-number.latest { color: var(--green); }
+
+.update-modal .version-arrow {
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  opacity: 0.4;
 }
 
 .update-modal .release-notes {
   background: var(--bg-primary);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 12px;
-  margin: 16px 0;
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin: 0 0 20px;
   text-align: left;
-  font-size: 13px;
+  font-size: 12px;
+  line-height: 1.65;
   color: var(--text-secondary);
-  max-height: 150px;
+  max-height: 120px;
   overflow-y: auto;
   white-space: pre-wrap;
 }
 
-.update-modal .btn {
-  margin-top: 8px;
-  font-size: 16px;
-  padding: 12px 32px;
+.update-download-btn {
+  width: 100%;
+  padding: 11px 24px;
+  font-size: 13.5px;
+  font-weight: 600;
+  font-family: var(--font-body);
+  color: #0a0a0a;
+  background: linear-gradient(135deg, #289EFF, #5DD4A8, #82FF15);
+  background-size: 200% 200%;
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: transform 0.15s ease, filter 0.15s ease;
+  letter-spacing: -0.2px;
+}
+
+.update-download-btn:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.05);
+}
+
+.update-download-btn:active {
+  transform: translateY(0);
+  filter: brightness(0.95);
+}
+
+.update-note {
+  font-size: 11px !important;
+  color: var(--text-muted) !important;
+  margin-top: 14px !important;
+  margin-bottom: 0 !important;
 }
 
 /* ============== Confirm Modal ============== */

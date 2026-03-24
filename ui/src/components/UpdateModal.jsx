@@ -9,18 +9,21 @@ export default function UpdateModal({ info }) {
     <div className="update-overlay">
       <div className="update-modal">
         <h2>Update Required</h2>
-        <p>A new version of Arbium is available.</p>
-        <p>You must update to continue using the application.</p>
+        <p className="update-subtitle">A new version of Arbium is ready to install.</p>
 
         <div className="version-info">
-          <div>
-            <div className="version-label">Current</div>
-            <div className="current">v{info.currentVersion}</div>
+          <div className="version-box">
+            <div className="version-label">Installed</div>
+            <div className="version-number current">v{info.currentVersion}</div>
           </div>
-          <div style={{ color: 'var(--text-muted)', alignSelf: 'center' }}>→</div>
-          <div>
+          <div className="version-arrow">
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+              <path d="M4 10h12m0 0l-4-4m4 4l-4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+          </div>
+          <div className="version-box">
             <div className="version-label">Latest</div>
-            <div className="latest">v{info.latestVersion}</div>
+            <div className="version-number latest">v{info.latestVersion}</div>
           </div>
         </div>
 
@@ -28,9 +31,10 @@ export default function UpdateModal({ info }) {
           <div className="release-notes">{info.releaseNotes}</div>
         )}
 
-        <button className="btn btn-primary" onClick={handleDownload}>
+        <button className="update-download-btn" onClick={handleDownload}>
           Download Update
         </button>
+        <p className="update-note">You must update to continue using Arbium.</p>
       </div>
     </div>
   );

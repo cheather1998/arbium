@@ -33,7 +33,8 @@ const BOT_STATE_MAP = {
  */
 function parseLogsForMetrics(logs) {
   let cycle = 0;
-  let tradesExecuted = 0;
+  let krakenTrades = 0;
+  let grvtTrades = 0;
   let krakenPrice = null;
   let grvtPrice = null;
   let priceDiff = null;
@@ -52,7 +53,13 @@ function parseLogsForMetrics(logs) {
       if (num > cycle) cycle = num;
     }
 
-    // Extract prices: "Highest: kraken at $87,432.50" / "Lowest: grvt at $87,410.00"
+    // Extract prices from multiple log formats:
+    // loop.js: "   Highest: Kraken at $87,432.5"
+    // loop.js: "   Lowest: GRVT at $87,410"
+    // priceComparison.js: "🔺 HIGHEST Kraken: $87,432.5"
+    // priceComparison.js: "   Highest: Kraken at $87,432.5"
+    // priceComparison.js: "[Kraken] ✓ Price: $87,432.5"
+
     const highMatch = msg.match(/Highest:\s+(\w+)\s+at\s+\$([\d,.]+)/);
     if (highMatch) {
       const exchange = highMatch[1].toLowerCase();
@@ -69,8 +76,27 @@ function parseLogsForMetrics(logs) {
       else if (exchange === 'grvt') grvtPrice = price;
     }
 
-    // Extract price difference: "Price difference: $22.50"
-    const diffMatch = msg.match(/Price difference:\s+\$([\d,.]+)/);
+    // Also extract from "[Kraken] ✓ Price: $87,432.5" format
+    const priceLogMatch = msg.match(/\[(Kraken|GRVT)\].*Price:\s+\$([\d,.]+)/i);
+    if (priceLogMatch) {
+      const exchange = priceLogMatch[1].toLowerCase();
+      const price = parseFloat(priceLogMatch[2].replace(/,/g, ''));
+      if (exchange === 'kraken') krakenPrice = price;
+      else if (exchange === 'grvt') grvtPrice = price;
+    }
+
+    // Also extract from "HIGHEST Kraken: $87,432.5" format
+    const resultMatch = msg.match(/(?:HIGHEST|LOWEST)\s+(\w+):\s+\$([\d,.]+)/);
+    if (resultMatch) {
+      const exchange = resultMatch[1].toLowerCase();
+      const price = parseFloat(resultMatch[2].replace(/,/g, ''));
+      if (exchange === 'kraken') krakenPrice = price;
+      else if (exchange === 'grvt') grvtPrice = price;
+    }
+
+    // Extract price difference from multiple formats:
+    // "Price difference: $22.50" or "Difference: $22.50"
+    const diffMatch = msg.match(/(?:Price )?[Dd]ifference:\s+\$([\d,.]+)/);
     if (diffMatch) {
       priceDiff = parseFloat(diffMatch[1].replace(/,/g, ''));
     }
@@ -91,9 +117,23 @@ function parseLogsForMetrics(logs) {
       }
     }
 
-    // Count trades: "Executing trades" or "Both positions opened successfully"
-    if (/Executing trades|Step 6.*Executing trades/.test(msg)) {
-      tradesExecuted++;
+    // Count trades per exchange from order placement logs
+    // "BUY order placed successfully" / "SELL order placed successfully" with email context
+    // Also detect from executeKraken/executeGrvt patterns
+    if (/order placed successfully/i.test(msg)) {
+      // Check surrounding context — the bot logs email with exchange info
+      if (/kraken/i.test(msg)) krakenTrades++;
+      else if (/grvt/i.test(msg)) grvtTrades++;
+    }
+    // Fallback: "Executing trades using quick fill (both GRVT and Kraken)"
+    if (/Step 6.*Executing trades.*both GRVT and Kraken/i.test(msg)) {
+      krakenTrades++;
+      grvtTrades++;
+    }
+    // Fallback: generic "Executing trades" (mode 1/2 — count as both)
+    if (/\[CYCLE.*Executing trades\.\.\./.test(msg)) {
+      krakenTrades++;
+      grvtTrades++;
     }
 
     // === PREPARING / SETTING UP ===
@@ -170,12 +210,12 @@ function parseLogsForMetrics(logs) {
       botMessage = 'Spread below threshold — waiting...';
     }
     if (/Price comparison failed|insufficient prices.*Retrying/i.test(msg)) {
-      botState = 'paused';
+      botState = 'running';
       botMessage = 'Price data unavailable — retrying...';
     }
     if (/Maximum attempts.*reached/i.test(msg)) {
-      botState = 'paused';
-      botMessage = 'Threshold not met after max attempts';
+      botState = 'running';
+      botMessage = 'Threshold not met after max attempts — restarting cycle...';
     }
 
     // === ERRORS ===
@@ -212,12 +252,12 @@ function parseLogsForMetrics(logs) {
       botMessage = 'Order rejected by exchange';
     }
     if (/positions still open after close/i.test(msg)) {
-      botState = 'paused';
+      botState = 'error';
       botMessage = 'Retrying to close remaining positions...';
     }
   }
 
-  return { cycle, tradesExecuted, krakenPrice, grvtPrice, priceDiff, botState, botMessage, latency };
+  return { cycle, krakenTrades, grvtTrades, krakenPrice, grvtPrice, priceDiff, botState, botMessage, latency };
 }
 
 export default function Dashboard({ status, botRunning, logs, onStart, onStop, config }) {
@@ -230,7 +270,8 @@ export default function Dashboard({ status, botRunning, logs, onStart, onStop, c
   const prices = status.prices || {};
   const cycle = status.cycle || logMetrics.cycle || 0;
   const priceDiff = status.priceDiff ?? logMetrics.priceDiff;
-  const tradesExecuted = status.tradesExecuted || logMetrics.tradesExecuted || 0;
+  const krakenTrades = logMetrics.krakenTrades || 0;
+  const grvtTrades = logMetrics.grvtTrades || 0;
   const krakenPrice = prices.kraken || logMetrics.krakenPrice;
   const grvtPrice = prices.grvt || logMetrics.grvtPrice;
   const botState = status.botState || logMetrics.botState || (botRunning ? 'running' : null);
@@ -239,24 +280,6 @@ export default function Dashboard({ status, botRunning, logs, onStart, onStop, c
 
   const [showConfirm, setShowConfirm] = useState(false);
   const [showSleepWarning, setShowSleepWarning] = useState(false);
-
-  // Stall detection — warn if no log activity for 60s while running
-  const [stalled, setStalled] = useState(false);
-  const lastLogCountRef = { current: 0 };
-
-  useEffect(() => {
-    if (!botRunning) { setStalled(false); return; }
-    lastLogCountRef.current = logs.length;
-    const stallTimer = setInterval(() => {
-      if (logs.length === lastLogCountRef.current && botRunning) {
-        setStalled(true);
-      } else {
-        setStalled(false);
-        lastLogCountRef.current = logs.length;
-      }
-    }, 60000);
-    return () => clearInterval(stallTimer);
-  }, [botRunning, logs.length]);
 
   // Uptime counter
   const [uptime, setUptime] = useState(0);
@@ -295,12 +318,8 @@ export default function Dashboard({ status, botRunning, logs, onStart, onStop, c
       .map((l) => ({ ...l, fix: getErrorFix(l.message) }));
   }, [logs]);
 
-  // Override state if stalled
-  const effectiveBotState = stalled ? 'paused' : botState;
-  const effectiveBotMessage = stalled ? 'No activity detected — bot may be stalled' : botMessage;
-
-  const stateInfo = BOT_STATE_MAP[effectiveBotState] || { label: 'Idle', color: 'var(--text-muted)', desc: 'Bot is not running' };
-  const isError = effectiveBotState === 'error';
+  const stateInfo = BOT_STATE_MAP[botState] || { label: 'Idle', color: 'var(--text-muted)', desc: 'Bot is not running' };
+  const isError = botState === 'error';
 
   const handleOpenExchanges = () => {
     if (api?.openExternal) {
@@ -377,7 +396,7 @@ export default function Dashboard({ status, botRunning, logs, onStart, onStop, c
       )}
 
       {/* Status Section */}
-      <div className={`dash-status ${botRunning ? (isError ? 'is-error' : effectiveBotState === 'paused' ? 'is-paused' : 'is-running') : 'is-idle'}`}>
+      <div className={`dash-status ${botRunning ? (isError ? 'is-error' : botState === 'paused' ? 'is-paused' : 'is-running') : 'is-idle'}`}>
         <div className="dash-status-indicator">
           <span className="dash-status-dot" style={{ background: stateInfo.color, boxShadow: botRunning ? `0 0 10px ${stateInfo.color}` : 'none' }} />
         </div>
@@ -386,7 +405,7 @@ export default function Dashboard({ status, botRunning, logs, onStart, onStop, c
             {botRunning ? stateInfo.label : 'Bot Stopped'}
           </span>
           <span className="dash-status-desc">
-            {botRunning ? (effectiveBotMessage || stateInfo.desc) : 'Configure settings and start trading'}
+            {botRunning ? (botMessage || stateInfo.desc) : 'Configure settings and start trading'}
           </span>
         </div>
         {botRunning && (
@@ -440,8 +459,13 @@ export default function Dashboard({ status, botRunning, logs, onStart, onStop, c
           </div>
           <div className="dash-stat-divider" />
           <div className="dash-stat">
-            <span className="dash-stat-value">{tradesExecuted || '—'}</span>
-            <span className="dash-stat-label">Trades</span>
+            <span className="dash-stat-value">{krakenTrades || '—'}</span>
+            <span className="dash-stat-label">Kraken Trades</span>
+          </div>
+          <div className="dash-stat-divider" />
+          <div className="dash-stat">
+            <span className="dash-stat-value">{grvtTrades || '—'}</span>
+            <span className="dash-stat-label">GRVT Trades</span>
           </div>
           <div className="dash-stat-divider" />
           <div className="dash-stat">
