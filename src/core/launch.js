@@ -58,7 +58,7 @@ function getChromePath() {
   return undefined;
 }
 
-async function launchAccount(accountConfig, exchangeConfig) {
+async function launchAccount(accountConfig, exchangeConfig, _isRetry = false) {
     const { email, cookiesPath, profileDir, apiPort } = accountConfig;
     const exchange = exchangeConfig || EXCHANGE_CONFIGS.paradex; // Default to Paradex
   
@@ -136,7 +136,7 @@ async function launchAccount(accountConfig, exchangeConfig) {
       }
       const browser = await puppeteer.launch(launchOptions);
   
-      const page = await browser.newPage();
+      let page = await browser.newPage();
   
       // Set default navigation timeout to 60 seconds (increased from default 30s)
       page.setDefaultNavigationTimeout(60000);
@@ -169,18 +169,43 @@ async function launchAccount(accountConfig, exchangeConfig) {
       // If new account, use referral URL; otherwise use regular trading URL
       const targetUrl = isNewAccount ? exchange.referralUrl : exchange.url;
   
-      try {
-        await page.goto(targetUrl, {
-          waitUntil: "domcontentloaded",
-          timeout: 120000,
-        });
-        if (isNewAccount) {
-          console.log(
-            `[${email}] Loaded with referral link: ${exchange.referralUrl}`
-          );
+      // Retry navigation up to 3 times to handle "Execution context was destroyed" errors
+      let navSuccess = false;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          await page.goto(targetUrl, {
+            waitUntil: "domcontentloaded",
+            timeout: 120000,
+          });
+          if (isNewAccount) {
+            console.log(
+              `[${email}] Loaded with referral link: ${exchange.referralUrl}`
+            );
+          }
+          navSuccess = true;
+          break;
+        } catch (error) {
+          const isContextDestroyed = error.message.includes('Execution context was destroyed') ||
+            error.message.includes('navigation');
+          if (isContextDestroyed && attempt < 3) {
+            console.log(`[${email}] Navigation interrupted (attempt ${attempt}/3), retrying in 3s...`);
+            await delay(3000);
+            // Page might have navigated — try to get a fresh page reference
+            const pages = await browser.pages();
+            if (pages.length > 0) {
+              // Use the last page (most recent)
+              const freshPage = pages[pages.length - 1];
+              if (freshPage !== page) {
+                page = freshPage;
+                page.setDefaultNavigationTimeout(60000);
+                page.setDefaultTimeout(120000);
+              }
+            }
+          } else {
+            console.log(`[${email}] Page load failed after ${attempt} attempt(s), attempting to continue...`);
+            break;
+          }
         }
-      } catch (error) {
-        console.log(`[${email}] Page load timeout, attempting to continue...`);
       }
   
       // If cookies were loaded, reload the page to ensure cookies are applied
@@ -353,8 +378,27 @@ async function launchAccount(accountConfig, exchangeConfig) {
         }
       }
     } catch (error) {
-      console.error(`\n✗ [${email}] Error during account launch:`, error.message);
-      return { email, success: false, error: error.message };
+      const msg = error.message || '';
+      const isRecoverable = msg.includes('Execution context was destroyed') ||
+        msg.includes('navigation') || msg.includes('Target closed');
+
+      if (isRecoverable && !_isRetry) {
+        console.log(`\n⚠ [${email}] Recoverable error during launch: ${msg}`);
+        console.log(`[${email}] Retrying account launch in 5 seconds...`);
+        await delay(5000);
+        try {
+          // Close old browser if still alive
+          try { await browser?.close(); } catch {}
+          // Retry once (pass _isRetry=true to prevent infinite recursion)
+          return await launchAccount(accountConfig, exchangeConfig, true);
+        } catch (retryError) {
+          console.error(`\n✗ [${email}] Retry also failed:`, retryError.message);
+          return { email, success: false, error: retryError.message };
+        }
+      }
+
+      console.error(`\n✗ [${email}] Error during account launch:`, msg);
+      return { email, success: false, error: msg };
     }
   }
 

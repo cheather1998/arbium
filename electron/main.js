@@ -130,9 +130,14 @@ function startBot(mode, config) {
 function stopBot() {
   if (botProcess) {
     botProcess.send({ type: 'stop' });
+    // Force kill after 3 seconds if not stopped gracefully
     setTimeout(() => {
-      if (botProcess) { botProcess.kill('SIGKILL'); botProcess = null; }
-    }, 10000);
+      if (botProcess) {
+        try { botProcess.kill('SIGKILL'); } catch {}
+        botProcess = null;
+        sendToUI('bot:stopped', {});
+      }
+    }, 3000);
   }
 }
 

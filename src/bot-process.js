@@ -59,13 +59,13 @@ process.on('message', async (msg) => {
     console.log('[BOT-PROCESS] Received stop command. Shutting down...');
     // Trigger SIGINT handler for graceful shutdown
     process.emit('SIGINT');
-    // Give it time to clean up, then force exit
+    // Force exit after 2 seconds to ensure browsers close quickly
     setTimeout(() => {
       if (process.send) {
         process.send({ type: 'stopped' });
       }
       process.exit(0);
-    }, 8000);
+    }, 2000);
   }
 });
 

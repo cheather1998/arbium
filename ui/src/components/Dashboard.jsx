@@ -1,23 +1,56 @@
 import { useMemo, useState, useEffect, useRef } from 'react';
 
+// Only critical system errors — trading events (timeouts, fills) are normal and filtered out
 const ERROR_FIXES = [
-  { pattern: /cookie|session|login|logged out|unauthorized/i, fix: 'Delete cookie files (paradex-cookies-*.json) and restart the bot to re-login.' },
-  { pattern: /timeout|timed out|ETIMEDOUT/i, fix: 'Network timeout. Check your internet connection or try again later.' },
-  { pattern: /wallet|connect.*wallet|metamask/i, fix: 'Wallet connection issue. Make sure your wallet extension is unlocked.' },
-  { pattern: /leverage|margin/i, fix: 'Check if the exchange supports the configured leverage level. Try reducing leverage.' },
-  { pattern: /insufficient|balance|fund|not enough/i, fix: 'Insufficient balance. Deposit more funds to your exchange account.' },
-  { pattern: /price.*not found|no price|NaN/i, fix: 'Price data unavailable. Restart the bot to reload the exchange page.' },
-  { pattern: /ECONNREFUSED|ENOTFOUND|network/i, fix: 'Network connection failed. Check your internet and firewall settings.' },
-  { pattern: /browser.*crash|page.*closed|target.*closed/i, fix: 'Browser session crashed. Restart the bot to launch a new session.' },
-  { pattern: /rate.*limit|429|too many/i, fix: 'Exchange rate limit hit. The bot will auto-retry. Wait a moment.' },
-  { pattern: /order.*rejected|order.*failed/i, fix: 'Order was rejected by the exchange. Check your balance and order size.' },
+  {
+    pattern: /not enough balance|insufficient balance|insufficient fund/i,
+    fix: 'Insufficient balance',
+    action: { label: 'Deposit', urls: ['https://www.kraken.com/u/funding', 'https://grvt.io/exchange/deposit'] },
+  },
+  {
+    pattern: /cookie|session.*expired|logged out|unauthorized/i,
+    fix: 'Session expired',
+    action: { label: 'Restart', restart: true },
+  },
+  {
+    pattern: /No accounts logged in|login.*failed/i,
+    fix: 'Login failed',
+    action: { label: 'Log in', urls: ['https://www.kraken.com/sign-in', 'https://grvt.io/exchange/login'] },
+  },
+  {
+    pattern: /browser.*crash|page.*closed|target.*closed/i,
+    fix: 'Browser crashed',
+    action: { label: 'Restart', restart: true },
+  },
+  {
+    pattern: /ECONNREFUSED|ENOTFOUND|cannot connect|disconnected/i,
+    fix: 'Network disconnected',
+    action: null,
+  },
+  {
+    pattern: /wallet|connect.*wallet|metamask/i,
+    fix: 'Wallet not connected',
+    action: { label: 'Get MetaMask', urls: ['https://metamask.io/download/'] },
+  },
+  {
+    pattern: /Chrome.*not found|chrome.*not installed|CHROME_NOT_FOUND/i,
+    fix: 'Chrome not installed',
+    action: { label: 'Download', urls: ['https://www.google.com/chrome/'] },
+  },
+  {
+    pattern: /Fatal|uncaught|MODULE_NOT_FOUND/i,
+    fix: 'Fatal error — reinstall Arbium',
+    action: { label: 'Download', urls: ['https://github.com/cheather1998/arbium/releases/latest'] },
+  },
 ];
 
 function getErrorFix(message) {
-  for (const { pattern, fix } of ERROR_FIXES) {
-    if (pattern.test(message)) return fix;
+  for (const entry of ERROR_FIXES) {
+    if (entry.pattern.test(message)) {
+      return { text: entry.fix, action: entry.action };
+    }
   }
-  return 'Unexpected error. Try restarting the bot. If the issue persists, check the logs for details.';
+  return { text: 'Unexpected error. Restart the bot.', action: null };
 }
 
 const BOT_STATE_MAP = {
@@ -199,7 +232,8 @@ function parseLogsForMetrics(logs) {
       botMessage = 'Threshold not met after max attempts — restarting cycle...';
     }
 
-    // === ERRORS ===
+    // === CRITICAL SYSTEM ERRORS ONLY ===
+    // These are real problems that need user attention
     if (/CRITICAL.*Only ONE position/i.test(msg)) {
       botState = 'error';
       botMessage = 'Only one side filled — emergency close';
@@ -208,34 +242,27 @@ function parseLogsForMetrics(logs) {
       botState = 'error';
       botMessage = 'No accounts logged in — restart required';
     }
-    if (/Stopping/i.test(msg) && !/Bot stopped/i.test(msg)) {
-      botState = 'error';
-      botMessage = 'Bot stopped unexpectedly';
-    }
     if (/Browser session crashed|target.*closed/i.test(msg)) {
       botState = 'error';
       botMessage = 'Browser crashed — restart the bot';
     }
-    if (/timeout|ETIMEDOUT/i.test(msg) && log.type === 'error') {
-      botState = 'error';
-      botMessage = 'Network timeout — check connection';
-    }
     if (/insufficient.*balance|Insufficient funds|not enough.*balance|not enough.*fund/i.test(msg)) {
       botState = 'error';
-      botMessage = 'Insufficient balance on exchange — deposit more funds';
+      botMessage = 'Insufficient balance — deposit more funds';
     }
     if (log.type === 'error' && /Fatal|uncaught|MODULE_NOT_FOUND/i.test(msg)) {
       botState = 'error';
       botMessage = 'Fatal error — restart required';
     }
-    if (/order.*rejected|order.*failed/i.test(msg)) {
+    if (/cannot connect|disconnected|ECONNREFUSED/i.test(msg)) {
       botState = 'error';
-      botMessage = 'Order rejected by exchange';
+      botMessage = 'Connection lost — check your internet';
     }
-    if (/positions still open after close/i.test(msg)) {
-      botState = 'error';
-      botMessage = 'Retrying to close remaining positions...';
-    }
+    // NOTE: These are NORMAL trading events, NOT errors:
+    // - "order failed: Quick fill timeout" = order didn't fill in time, bot retries automatically
+    // - "order rejected" = exchange rejected order, bot adjusts and retries
+    // - "timeout" in trade context = waiting for price, normal behavior
+    // - "positions still open after close" = bot is retrying close, normal behavior
   }
 
   return { cycle, krakenPrice, grvtPrice, priceDiff, botState, botMessage, latency };
@@ -258,18 +285,21 @@ export default function Dashboard({ status, botRunning, logs, onStart, onStop, c
 
     for (const log of newLogs) {
       const msg = log.text || log.message || '';
-      if (/order placed successfully/i.test(msg)) {
-        if (/kraken/i.test(msg)) tc.kraken++;
-        else if (/grvt/i.test(msg)) tc.grvt++;
+      // Match actual bot log: "✓ [email] BUY order placed and confirmed"
+      if (/order placed and confirmed/i.test(msg)) {
+        // Determine exchange from the email or context in surrounding logs
+        // BUY typically goes to one exchange, SELL to another
+        if (/BUY/i.test(msg)) tc.kraken++;
+        if (/SELL/i.test(msg)) tc.grvt++;
       }
+      // Match: "[CYCLE X] Step 6: Executing trades using quick fill (both GRVT and Kraken)"
       if (/Step 6.*Executing trades.*both GRVT and Kraken/i.test(msg)) {
         tc.kraken++;
         tc.grvt++;
       }
-      if (/\[CYCLE.*Executing trades\.\.\./.test(msg)) {
-        tc.kraken++;
-        tc.grvt++;
-      }
+      // Match: "✓ [exchange] BUY/SELL completed" or similar success patterns
+      if (/✓.*Kraken.*order|Kraken.*✅.*order|Kraken.*placed/i.test(msg)) tc.kraken++;
+      if (/✓.*GRVT.*order|GRVT.*✅.*order|GRVT.*placed/i.test(msg)) tc.grvt++;
     }
     tc.lastLogCount = logs.length;
   }, [logs]);
@@ -326,11 +356,22 @@ export default function Dashboard({ status, botRunning, logs, onStart, onStop, c
     return `${s}s`;
   };
 
-  const CRITICAL_PATTERNS = /not enough|insufficient|balance.*error|order.*rejected|order.*failed|CRITICAL|fatal|browser.*crash|target.*closed|No accounts logged in/i;
+  // Only show critical system errors — NOT normal trading events like order timeouts
+  const CRITICAL_PATTERNS = /not enough balance|insufficient balance|insufficient fund|CRITICAL|fatal|browser.*crash|target.*closed|No accounts logged in|session.*expired|login.*failed|disconnected|cannot connect/i;
+  // Trading events that look like errors but are normal bot operation
+  const TRADING_NOISE = /Quick fill timeout|order.*timeout|fill timeout|spread.*not enough|price.*not met|order.*cancel|waiting.*price|no.*opportunity/i;
 
   const recentErrors = useMemo(() => {
     return logs
-      .filter((l) => l.type === 'error' || (l.type === 'info' && CRITICAL_PATTERNS.test(l.message)))
+      .filter((l) => {
+        const msg = l.message || '';
+        // Skip normal trading events
+        if (TRADING_NOISE.test(msg)) return false;
+        // Only show actual system-level errors
+        if (l.type === 'error' && !TRADING_NOISE.test(msg)) return true;
+        if (l.type === 'info' && CRITICAL_PATTERNS.test(msg)) return true;
+        return false;
+      })
       .slice(-5)
       .map((l) => ({ ...l, fix: getErrorFix(l.message) }));
   }, [logs]);
@@ -414,20 +455,38 @@ export default function Dashboard({ status, botRunning, logs, onStart, onStop, c
 
       {/* Status Section */}
       <div className={`dash-status ${botRunning ? (isError ? 'is-error' : botState === 'paused' ? 'is-paused' : 'is-running') : 'is-idle'}`}>
-        <div className="dash-status-indicator">
-          <span className="dash-status-dot" style={{ background: stateInfo.color, boxShadow: botRunning ? `0 0 10px ${stateInfo.color}` : 'none' }} />
+        <div className="dash-status-header">
+          <div className="dash-status-indicator">
+            <span className="dash-status-dot" style={{ background: stateInfo.color, boxShadow: botRunning ? `0 0 10px ${stateInfo.color}` : 'none' }} />
+          </div>
+          <div className="dash-status-text">
+            <span className="dash-status-label" style={{ color: botRunning ? stateInfo.color : 'var(--text-secondary)' }}>
+              {botRunning ? stateInfo.label : 'Bot Stopped'}
+            </span>
+            <span className="dash-status-desc">
+              {botRunning ? (botMessage || stateInfo.desc) : 'Configure settings and start trading'}
+            </span>
+          </div>
+          {botRunning && (
+            <div className="dash-status-uptime">
+              {formatUptime(uptime)}
+            </div>
+          )}
         </div>
-        <div className="dash-status-text">
-          <span className="dash-status-label" style={{ color: botRunning ? stateInfo.color : 'var(--text-secondary)' }}>
-            {botRunning ? stateInfo.label : 'Bot Stopped'}
-          </span>
-          <span className="dash-status-desc">
-            {botRunning ? (botMessage || stateInfo.desc) : 'Configure settings and start trading'}
-          </span>
-        </div>
-        {botRunning && (
-          <div className="dash-status-uptime">
-            {formatUptime(uptime)}
+        {recentErrors.length > 0 && (
+          <div className="dash-errors-inline">
+            {recentErrors.map((err, i) => (
+              <div key={i} className="dash-error-inline-item" onClick={() => {
+                if (!err.fix?.action) return;
+                if (err.fix.action.restart) { onStop(); setTimeout(() => onStart(), 1500); }
+                else if (err.fix.action.urls) { err.fix.action.urls.forEach(u => api?.openExternal?.(u)); }
+              }}>
+                <span className="dash-error-inline-text">{err.fix?.text || err.fix}</span>
+                {err.fix?.action && (
+                  <span className="dash-error-link-btn">{err.fix.action.label}</span>
+                )}
+              </div>
+            ))}
           </div>
         )}
       </div>
@@ -435,9 +494,16 @@ export default function Dashboard({ status, botRunning, logs, onStart, onStop, c
       {/* Action Button */}
       <div className="dash-actions">
         {botRunning ? (
-          <button className="btn btn-danger dash-action-btn" onClick={onStop}>
-            Stop Bot
-          </button>
+          <div className="dash-actions-row">
+            <button className="btn btn-danger dash-action-btn" onClick={onStop}>
+              Stop Bot
+            </button>
+            {recentErrors.length > 0 && (
+              <button className="btn dash-restart-btn" onClick={() => { onStop(); setTimeout(() => onStart(), 1500); }}>
+                Restart Bot
+              </button>
+            )}
+          </div>
         ) : (
           <button className="btn btn-primary dash-action-btn" onClick={() => setShowConfirm(true)}>
             Log In & Start Trading
@@ -500,35 +566,6 @@ export default function Dashboard({ status, botRunning, logs, onStart, onStop, c
         </div>
       </div>
 
-      {/* Errors */}
-      {recentErrors.length > 0 && (
-        <div className="dash-section">
-          <div className="dash-section-label" style={{ color: 'var(--red)' }}>
-            Errors ({recentErrors.length})
-          </div>
-          <div className="dash-errors">
-            {recentErrors.map((err, i) => (
-              <div key={i} className="dash-error-item">
-                <div className="dash-error-top">
-                  <span className="dash-error-time">{err.time}</span>
-                  <span className="dash-error-msg">{err.message}</span>
-                </div>
-                {err.fix && (
-                  <div className="dash-error-fix">
-                    <span className="dash-error-fix-icon">{'\u2139'}</span>
-                    {err.fix}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-          {botRunning && (
-            <button className="btn dash-restart-btn" onClick={() => { onStop(); setTimeout(() => onStart(), 1500); }}>
-              Restart Bot
-            </button>
-          )}
-        </div>
-      )}
     </div>
   );
 }
