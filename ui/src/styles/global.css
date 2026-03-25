@@ -941,6 +941,48 @@ input[type="range"]::-webkit-slider-thumb:active {
   color: var(--text-primary);
 }
 
+.log-bottom-actions {
+  position: absolute;
+  bottom: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  pointer-events: none;
+  z-index: 10;
+}
+
+.log-bottom-actions > * {
+  pointer-events: auto;
+}
+
+.log-bottom-actions .log-scroll-btn {
+  position: static;
+  transform: none;
+}
+
+.log-copy-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  font-size: 12px;
+  border-radius: 12px;
+  background: var(--bg-hover);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  transition: all 0.15s;
+}
+
+.log-copy-btn:hover {
+  background: var(--border);
+  color: var(--text-primary);
+}
+
 /* ============== Status Bar ============== */
 .status-bar {
   display: flex;

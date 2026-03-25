@@ -275,7 +275,7 @@ export default function Dashboard({ status, botRunning, logs, onStart, onStop, c
   const logMetrics = useMemo(() => parseLogsForMetrics(logs), [logs]);
 
   // Persistent trade counters — survive log truncation
-  const tradeCountRef = useRef({ kraken: 0, grvt: 0, lastLogCount: 0 });
+  const tradeCountRef = useRef({ kraken: 0, grvt: 0, lastLogCount: 0, lastCountedCycle: 0 });
 
   // Only count NEW logs (incremental), never re-parse old ones
   useEffect(() => {
@@ -285,21 +285,18 @@ export default function Dashboard({ status, botRunning, logs, onStart, onStop, c
 
     for (const log of newLogs) {
       const msg = log.text || log.message || '';
-      // Match actual bot log: "✓ [email] BUY order placed and confirmed"
-      if (/order placed and confirmed/i.test(msg)) {
-        // Determine exchange from the email or context in surrounding logs
-        // BUY typically goes to one exchange, SELL to another
-        if (/BUY/i.test(msg)) tc.kraken++;
-        if (/SELL/i.test(msg)) tc.grvt++;
+      // Only count when bot confirms BOTH positions opened in the same cycle
+      // This is the single definitive success message — appears only once per successful trade
+      if (/SUCCESS.*Both positions opened successfully/i.test(msg)) {
+        // Extract cycle number to avoid double-counting from duplicate log lines
+        const cycleMatch = msg.match(/CYCLE\s*(\d+)/i);
+        const cycleNum = cycleMatch ? parseInt(cycleMatch[1], 10) : 0;
+        if (cycleNum > tc.lastCountedCycle) {
+          tc.kraken++;
+          tc.grvt++;
+          tc.lastCountedCycle = cycleNum;
+        }
       }
-      // Match: "[CYCLE X] Step 6: Executing trades using quick fill (both GRVT and Kraken)"
-      if (/Step 6.*Executing trades.*both GRVT and Kraken/i.test(msg)) {
-        tc.kraken++;
-        tc.grvt++;
-      }
-      // Match: "✓ [exchange] BUY/SELL completed" or similar success patterns
-      if (/✓.*Kraken.*order|Kraken.*✅.*order|Kraken.*placed/i.test(msg)) tc.kraken++;
-      if (/✓.*GRVT.*order|GRVT.*✅.*order|GRVT.*placed/i.test(msg)) tc.grvt++;
     }
     tc.lastLogCount = logs.length;
   }, [logs]);
@@ -359,18 +356,14 @@ export default function Dashboard({ status, botRunning, logs, onStart, onStop, c
   // Only show critical system errors — NOT normal trading events like order timeouts
   const CRITICAL_PATTERNS = /not enough balance|insufficient balance|insufficient fund|CRITICAL|fatal|browser.*crash|target.*closed|No accounts logged in|session.*expired|login.*failed|disconnected|cannot connect/i;
   // Trading events that look like errors but are normal bot operation
-  const TRADING_NOISE = /Quick fill timeout|order.*timeout|fill timeout|spread.*not enough|price.*not met|order.*cancel|waiting.*price|no.*opportunity/i;
+  const TRADING_NOISE = /Quick fill timeout|order.*timeout|fill timeout|spread.*not enough|price.*not met|order.*cancel|waiting.*price|no.*opportunity|order.*failed|order.*rejected|timeout|timed out|ETIMEDOUT|Execution context|navigation|retry|attempt|Stopping|positions still open/i;
 
   const recentErrors = useMemo(() => {
     return logs
       .filter((l) => {
         const msg = l.message || '';
-        // Skip normal trading events
-        if (TRADING_NOISE.test(msg)) return false;
-        // Only show actual system-level errors
-        if (l.type === 'error' && !TRADING_NOISE.test(msg)) return true;
-        if (l.type === 'info' && CRITICAL_PATTERNS.test(msg)) return true;
-        return false;
+        // ONLY show errors that match critical system patterns
+        return CRITICAL_PATTERNS.test(msg);
       })
       .slice(-5)
       .map((l) => ({ ...l, fix: getErrorFix(l.message) }));
@@ -473,7 +466,7 @@ export default function Dashboard({ status, botRunning, logs, onStart, onStop, c
             </div>
           )}
         </div>
-        {recentErrors.length > 0 && (
+        {isError && recentErrors.length > 0 && (
           <div className="dash-errors-inline">
             {recentErrors.map((err, i) => (
               <div key={i} className="dash-error-inline-item" onClick={() => {
@@ -498,7 +491,7 @@ export default function Dashboard({ status, botRunning, logs, onStart, onStop, c
             <button className="btn btn-danger dash-action-btn" onClick={onStop}>
               Stop Bot
             </button>
-            {recentErrors.length > 0 && (
+            {isError && recentErrors.length > 0 && (
               <button className="btn dash-restart-btn" onClick={() => { onStop(); setTimeout(() => onStart(), 1500); }}>
                 Restart Bot
               </button>

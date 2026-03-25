@@ -186,7 +186,7 @@ async function launchAccount(accountConfig, exchangeConfig, _isRetry = false) {
           break;
         } catch (error) {
           const isContextDestroyed = error.message.includes('Execution context was destroyed') ||
-            error.message.includes('navigation');
+            error.message.includes('most likely because of a navigation');
           if (isContextDestroyed && attempt < 3) {
             console.log(`[${email}] Navigation interrupted (attempt ${attempt}/3), retrying in 3s...`);
             await delay(3000);
@@ -380,7 +380,7 @@ async function launchAccount(accountConfig, exchangeConfig, _isRetry = false) {
     } catch (error) {
       const msg = error.message || '';
       const isRecoverable = msg.includes('Execution context was destroyed') ||
-        msg.includes('navigation') || msg.includes('Target closed');
+        msg.includes('most likely because of a navigation') || msg.includes('Target closed');
 
       if (isRecoverable && !_isRetry) {
         console.log(`\n⚠ [${email}] Recoverable error during launch: ${msg}`);
