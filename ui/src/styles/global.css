@@ -348,6 +348,41 @@ h1, h2, h3 {
   letter-spacing: 0.6px;
 }
 
+.dash-refresh-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  opacity: 0.4;
+  transition: opacity 0.15s;
+}
+.dash-refresh-btn:hover {
+  opacity: 0.7;
+}
+.dash-refresh-label {
+  font-family: var(--font-body);
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+.dash-refresh-icon {
+  width: 11px;
+  height: 11px;
+  filter: invert(1);
+  transition: transform 0.3s ease;
+}
+.dash-refresh-btn.spinning .dash-refresh-icon {
+  opacity: 1;
+  animation: spin-refresh 0.5s ease;
+}
+@keyframes spin-refresh {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
 /* --- Prices --- */
 .dash-prices {
   display: flex;

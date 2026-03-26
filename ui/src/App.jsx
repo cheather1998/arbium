@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import UpdateModal from './components/UpdateModal';
 import Onboarding from './components/Onboarding';
 import ConfigPanel from './components/ConfigPanel';
@@ -38,15 +38,32 @@ export default function App() {
   const [version, setVersion] = useState('');
   const [setupComplete, setSetupComplete] = useState(() => isOnboardingDone());
   const [showChromeModal, setShowChromeModal] = useState(false);
-  const maxLogs = 10000;
+  const maxLogs = 2000;
 
-  const addLog = useCallback((entry) => {
-    const time = new Date().toLocaleTimeString('en-US', { hour12: false });
+  // Batch log updates every 2 seconds to prevent UI jank
+  const logBufferRef = useRef([]);
+  const flushTimerRef = useRef(null);
+
+  const flushLogs = useCallback(() => {
+    if (logBufferRef.current.length === 0) return;
+    const batch = logBufferRef.current;
+    logBufferRef.current = [];
     setLogs((prev) => {
-      const next = [...prev, { ...entry, time }];
+      const next = [...prev, ...batch];
       return next.length > maxLogs ? next.slice(-maxLogs) : next;
     });
   }, []);
+
+  const addLog = useCallback((entry) => {
+    const time = new Date().toLocaleTimeString('en-US', { hour12: false });
+    logBufferRef.current.push({ ...entry, time });
+    if (!flushTimerRef.current) {
+      flushTimerRef.current = setTimeout(() => {
+        flushTimerRef.current = null;
+        flushLogs();
+      }, 2000);
+    }
+  }, [flushLogs]);
 
   useEffect(() => {
     if (!api) {
@@ -55,7 +72,7 @@ export default function App() {
       return;
     }
 
-    api.getVersion().then(setVersion);
+    api.getVersion().then(setVersion).catch(() => setVersion('unknown'));
 
     api.checkForUpdates().then((result) => {
       if (result.updateRequired) setUpdateInfo(result);

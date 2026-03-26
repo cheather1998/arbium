@@ -2,7 +2,9 @@ export default function UpdateModal({ info }) {
   const api = window.electronAPI;
 
   const handleDownload = () => {
-    api.openExternal(info.downloadUrl);
+    if (api?.openExternal && info?.downloadUrl) {
+      api.openExternal(info.downloadUrl);
+    }
   };
 
   return (

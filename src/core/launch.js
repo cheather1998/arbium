@@ -426,13 +426,6 @@ async function launchAccount(accountConfig, exchangeConfig, _isRetry = false) {
         // Start the API server for this account
         startApiServer(page, apiPort, email);
 
-        // DISABLED: Auto-click TP/SL listener - now using manual flow in closeAllPositions
-        // The manual flow goes to Positions tab, finds TP/SL button, clicks it, fills value, confirms, then clicks Limit
-        // This gives us better control over the sequence: TP/SL -> Confirm -> Wait -> Limit -> Close
-        // if (exchange.name === 'Paradex') {
-        //   await setupTpSlAddButtonListener(page, email);
-        // }
-  
         return { browser, page, email, success: true, exchange: exchange.name };
       } else {
         console.log(`[${email}] Failed to login.`);

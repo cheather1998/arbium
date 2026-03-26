@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, memo } from 'react';
 
 const LOG_FILTERS = [
   { key: 'all', label: 'All' },
@@ -7,14 +7,16 @@ const LOG_FILTERS = [
   { key: 'info', label: 'Info' },
 ];
 
-export default function LogViewer({ logs, onClear }) {
+export default memo(function LogViewer({ logs, onClear }) {
   const bottomRef = useRef(null);
   const containerRef = useRef(null);
   const [filter, setFilter] = useState('all');
   const [autoScroll, setAutoScroll] = useState(true);
   const [copied, setCopied] = useState(false);
 
-  const filteredLogs = filter === 'all' ? logs : logs.filter((l) => l.type === filter);
+  const allFiltered = filter === 'all' ? logs : logs.filter((l) => l.type === filter);
+  // Only render last 200 logs in DOM for performance — full logs kept in memory for copy
+  const filteredLogs = allFiltered.length > 200 ? allFiltered.slice(-200) : allFiltered;
 
   useEffect(() => {
     if (autoScroll) {
@@ -87,7 +89,7 @@ export default function LogViewer({ logs, onClear }) {
             className="log-copy-btn"
             title="Copy all logs"
             onClick={() => {
-              const text = filteredLogs.map(l => `${l.time || ''} ${l.message || l.text || ''}`).join('\n');
+              const text = allFiltered.map(l => `${l.time || ''} ${l.message || l.text || ''}`).join('\n');
               navigator.clipboard.writeText(text);
               setCopied(true);
               setTimeout(() => setCopied(false), 1500);
@@ -104,4 +106,4 @@ export default function LogViewer({ logs, onClear }) {
       </div>
     </div>
   );
-}
+})

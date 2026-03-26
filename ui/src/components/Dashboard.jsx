@@ -1,4 +1,5 @@
 import { useMemo, useState, useEffect } from 'react';
+import refreshIcon from '../assets/refresh-icon.svg';
 
 // Only critical system errors — trading events (timeouts, fills) are normal and filtered out
 const ERROR_FIXES = [
@@ -64,205 +65,75 @@ const BOT_STATE_MAP = {
  * Parse bot logs to extract dashboard metrics.
  * The bot outputs structured text logs — we regex-match key data points.
  */
+/**
+ * Parse bot logs for dashboard metrics.
+ * Optimized: scan last ~100 logs for live data (prices, state),
+ * full scan only for cumulative counters (trades, cycle).
+ */
 function parseLogsForMetrics(logs) {
-  let cycle = 0;
-  let krakenTrades = 0;
-  let grvtTrades = 0;
-  let currentCycle = 0;
+  const len = logs.length;
+  let cycle = 0, krakenTrades = 0, grvtTrades = 0, currentCycle = 0;
   const counted = new Set();
-  let krakenPrice = null;
-  let grvtPrice = null;
-  let priceDiff = null;
-  let botState = null;
-  let botMessage = null;
-  let latency = null;
+  let krakenPrice = null, grvtPrice = null, priceDiff = null;
+  let botState = null, botMessage = null, latency = null;
 
-  for (const log of logs) {
-    const msg = (log.message || '').trim();
-
-    // Extract cycle number
-    const cycleMatch = msg.match(/CYCLE\s+(\d+)/);
-    if (cycleMatch) {
-      const num = parseInt(cycleMatch[1], 10);
-      if (num > cycle) cycle = num;
-      if (num > currentCycle) currentCycle = num;
-    }
-
-    // Count trades: "[Kraken] ✓ Order confirmed as ..."
+  // --- Pass 1: Full scan for cumulative data (trades + max cycle) ---
+  for (let i = 0; i < len; i++) {
+    const msg = (logs[i].message || '');
+    const cm = msg.match(/CYCLE\s+(\d+)/);
+    if (cm) { const n = parseInt(cm[1], 10); if (n > cycle) cycle = n; if (n > currentCycle) currentCycle = n; }
     if (/Kraken/i.test(msg) && /Order confirmed/i.test(msg)) {
-      const key = `k${currentCycle}`;
-      if (!counted.has(key)) { counted.add(key); krakenTrades++; }
+      const k = `k${currentCycle}`; if (!counted.has(k)) { counted.add(k); krakenTrades++; }
     }
     if (/GRVT/i.test(msg) && /Order confirmed/i.test(msg)) {
-      const key = `g${currentCycle}`;
-      if (!counted.has(key)) { counted.add(key); grvtTrades++; }
+      const k = `g${currentCycle}`; if (!counted.has(k)) { counted.add(k); grvtTrades++; }
     }
+  }
 
-    // Extract prices from multiple log formats:
-    // loop.js: "   Highest: Kraken at $87,432.5"
-    // loop.js: "   Lowest: GRVT at $87,410"
-    // priceComparison.js: "🔺 HIGHEST Kraken: $87,432.5"
-    // priceComparison.js: "   Highest: Kraken at $87,432.5"
-    // priceComparison.js: "[Kraken] ✓ Price: $87,432.5"
+  // --- Pass 2: Last 100 logs only for live data (prices, state, latency) ---
+  const start = Math.max(0, len - 100);
+  for (let i = start; i < len; i++) {
+    const log = logs[i];
+    const msg = (log.message || '');
 
-    const highMatch = msg.match(/Highest:\s+(\w+)\s+at\s+\$([\d,.]+)/);
-    if (highMatch) {
-      const exchange = highMatch[1].toLowerCase();
-      const price = parseFloat(highMatch[2].replace(/,/g, ''));
-      if (exchange === 'kraken') krakenPrice = price;
-      else if (exchange === 'grvt') grvtPrice = price;
-    }
+    // Prices
+    const hm = msg.match(/Highest:\s+(\w+)\s+at\s+\$([\d,.]+)/);
+    if (hm) { const p = parseFloat(hm[2].replace(/,/g, '')); if (hm[1].toLowerCase() === 'kraken') krakenPrice = p; else if (hm[1].toLowerCase() === 'grvt') grvtPrice = p; }
+    const lm = msg.match(/Lowest:\s+(\w+)\s+at\s+\$([\d,.]+)/);
+    if (lm) { const p = parseFloat(lm[2].replace(/,/g, '')); if (lm[1].toLowerCase() === 'kraken') krakenPrice = p; else if (lm[1].toLowerCase() === 'grvt') grvtPrice = p; }
+    const pm = msg.match(/(?:HIGHEST|LOWEST)\s+(\w+):\s+\$([\d,.]+)/);
+    if (pm) { const p = parseFloat(pm[2].replace(/,/g, '')); if (pm[1].toLowerCase() === 'kraken') krakenPrice = p; else if (pm[1].toLowerCase() === 'grvt') grvtPrice = p; }
 
-    const lowMatch = msg.match(/Lowest:\s+(\w+)\s+at\s+\$([\d,.]+)/);
-    if (lowMatch) {
-      const exchange = lowMatch[1].toLowerCase();
-      const price = parseFloat(lowMatch[2].replace(/,/g, ''));
-      if (exchange === 'kraken') krakenPrice = price;
-      else if (exchange === 'grvt') grvtPrice = price;
-    }
+    // Spread
+    const dm = msg.match(/[Dd]ifference:\s+\$([\d,.]+)/);
+    if (dm) priceDiff = parseFloat(dm[1].replace(/,/g, ''));
 
-    // Also extract from "[Kraken] ✓ Price: $87,432.5" format
-    const priceLogMatch = msg.match(/\[(Kraken|GRVT)\].*Price:\s+\$([\d,.]+)/i);
-    if (priceLogMatch) {
-      const exchange = priceLogMatch[1].toLowerCase();
-      const price = parseFloat(priceLogMatch[2].replace(/,/g, ''));
-      if (exchange === 'kraken') krakenPrice = price;
-      else if (exchange === 'grvt') grvtPrice = price;
-    }
+    // Latency
+    const fm = msg.match(/Total fetch time:\s*(\d+)ms/i);
+    if (fm) latency = (parseInt(fm[1]) / 1000).toFixed(1);
 
-    // Also extract from "HIGHEST Kraken: $87,432.5" format
-    const resultMatch = msg.match(/(?:HIGHEST|LOWEST)\s+(\w+):\s+\$([\d,.]+)/);
-    if (resultMatch) {
-      const exchange = resultMatch[1].toLowerCase();
-      const price = parseFloat(resultMatch[2].replace(/,/g, ''));
-      if (exchange === 'kraken') krakenPrice = price;
-      else if (exchange === 'grvt') grvtPrice = price;
-    }
+    // Bot state (only from recent logs)
+    if (/Launching browser|Starting Multi-Exchange|opening.*browsers/i.test(msg)) { botState = 'setting_up'; botMessage = 'Launching browser sessions...'; }
+    else if (/Please log in|waiting.*login/i.test(msg)) { botState = 'setting_up'; botMessage = 'Waiting for exchange login...'; }
+    else if (/CYCLE.*Price check attempt/i.test(msg)) { botState = 'running'; botMessage = 'Scanning prices across exchanges...'; }
+    else if (/Price difference.*>=.*threshold.*Proceeding/i.test(msg)) { botState = 'running'; botMessage = 'Price threshold met — opening positions...'; }
+    else if (/Executing trades|Step 6.*Executing/i.test(msg)) { botState = 'running'; botMessage = 'Executing trade on both exchanges...'; }
+    else if (/waiting.*positions to open|waiting.*minutes.*positions/i.test(msg)) { botState = 'running'; botMessage = 'Waiting for positions to fill...'; }
+    else if (/Both positions opened successfully/i.test(msg)) { botState = 'running'; botMessage = 'Both positions opened — monitoring for close...'; }
+    else if (/Closing threshold check|Closing spread threshold/i.test(msg)) { botState = 'running'; botMessage = 'Waiting for closing conditions...'; }
+    else if (/Proceeding to close positions/i.test(msg)) { botState = 'running'; botMessage = 'Closing positions...'; }
+    else if (/Force closing positions/i.test(msg)) { botState = 'running'; botMessage = 'Force closing positions (timeout)...'; }
+    else if (/cleanup/i.test(msg) && /CYCLE/.test(msg)) { botState = 'running'; botMessage = 'Cleaning up for next cycle...'; }
+    else if (/checking again/i.test(msg)) { botState = 'running'; botMessage = 'Spread below threshold — waiting...'; }
 
-    // Extract price difference from multiple formats:
-    // "Price difference: $22.50" or "Difference: $22.50"
-    const diffMatch = msg.match(/(?:Price )?[Dd]ifference:\s+\$([\d,.]+)/);
-    if (diffMatch) {
-      priceDiff = parseFloat(diffMatch[1].replace(/,/g, ''));
+    // Critical errors (last 50 only)
+    if (i >= len - 50) {
+      if (/No accounts logged in/i.test(msg)) { botState = 'error'; botMessage = 'No accounts logged in — restart required'; }
+      else if (/Browser session crashed/i.test(msg)) { botState = 'error'; botMessage = 'Browser crashed — restart the bot'; }
+      else if (/insufficient.*balance|not enough.*balance/i.test(msg)) { botState = 'error'; botMessage = 'Insufficient balance — deposit more funds'; }
+      else if (log.type === 'error' && /Fatal|MODULE_NOT_FOUND/i.test(msg)) { botState = 'error'; botMessage = 'Fatal error — restart required'; }
+      else if (/ECONNREFUSED|cannot connect/i.test(msg)) { botState = 'error'; botMessage = 'Connection lost — check your internet'; }
     }
-
-    // Calculate latency from "Total fetch time: 3018ms"
-    const fetchTimeMatch = msg.match(/Total fetch time:\s*(\d+)ms/i);
-    if (fetchTimeMatch) {
-      latency = (parseInt(fetchTimeMatch[1]) / 1000).toFixed(1);
-    }
-
-
-    // === PREPARING / SETTING UP ===
-    if (/Launching browser|Starting Multi-Exchange|opening.*browsers/i.test(msg)) {
-      botState = 'setting_up';
-      botMessage = 'Launching browser sessions...';
-    }
-    if (/Loading cookies|Restoring session/i.test(msg)) {
-      botState = 'setting_up';
-      botMessage = 'Restoring previous session...';
-    }
-    if (/Please log in|waiting.*login|waiting.*account/i.test(msg)) {
-      botState = 'setting_up';
-      botMessage = 'Waiting for exchange login...';
-    }
-    if (/Cleaning up existing positions|Checking for open positions/i.test(msg) && !cycle) {
-      botState = 'setting_up';
-      botMessage = 'Cleaning up previous positions...';
-    }
-    if (/Setting leverage|Leverage set/i.test(msg) && !cycle) {
-      botState = 'setting_up';
-      botMessage = 'Configuring leverage...';
-    }
-    if (/clickOrdersTab|PRE-trade flow/i.test(msg)) {
-      botState = 'setting_up';
-      botMessage = 'Preparing exchange interface...';
-    }
-
-    // === RUNNING NORMALLY ===
-    if (/CYCLE.*Price check attempt/i.test(msg)) {
-      botState = 'running';
-      botMessage = 'Scanning prices across exchanges...';
-    }
-    if (/Price difference.*>=.*threshold.*Proceeding/i.test(msg)) {
-      botState = 'running';
-      botMessage = 'Price threshold met — opening positions...';
-    }
-    if (/Executing trades|Step 6.*Executing/i.test(msg)) {
-      botState = 'running';
-      botMessage = 'Executing trade on both exchanges...';
-    }
-    if (/waiting.*positions to open|waiting.*minutes.*positions/i.test(msg)) {
-      botState = 'running';
-      botMessage = 'Waiting for positions to fill...';
-    }
-    if (/Both positions opened successfully/i.test(msg)) {
-      botState = 'running';
-      botMessage = 'Both positions opened — monitoring for close...';
-    }
-    if (/Closing threshold check|Closing spread threshold check/i.test(msg)) {
-      botState = 'running';
-      botMessage = 'Waiting for closing conditions...';
-    }
-    if (/Proceeding to close positions/i.test(msg)) {
-      botState = 'running';
-      botMessage = 'Closing positions...';
-    }
-    if (/Force closing positions/i.test(msg)) {
-      botState = 'running';
-      botMessage = 'Force closing positions (timeout)...';
-    }
-    if (/Canceling.*orders/i.test(msg) && /CYCLE/.test(msg)) {
-      botState = 'running';
-      botMessage = 'Canceling open orders...';
-    }
-    if (/cleanup/i.test(msg) && /CYCLE/.test(msg)) {
-      botState = 'running';
-      botMessage = 'Cleaning up for next cycle...';
-    }
-
-    // === WAITING / THRESHOLD NOT MET ===
-    if (/Price difference.*<.*threshold.*Waiting|checking again/i.test(msg)) {
-      botState = 'running';
-      botMessage = 'Spread below threshold — waiting...';
-    }
-    if (/Price comparison failed|insufficient prices.*Retrying/i.test(msg)) {
-      botState = 'running';
-      botMessage = 'Price data unavailable — retrying...';
-    }
-    if (/Maximum attempts.*reached/i.test(msg)) {
-      botState = 'running';
-      botMessage = 'Threshold not met after max attempts — restarting cycle...';
-    }
-
-    // === CRITICAL SYSTEM ERRORS ONLY ===
-    // These are real problems that need user attention
-    // Note: "Only ONE position opened" is a trading event, not a system error — bot handles it automatically
-    if (/No accounts logged in/i.test(msg)) {
-      botState = 'error';
-      botMessage = 'No accounts logged in — restart required';
-    }
-    if (/Browser session crashed/i.test(msg)) {
-      botState = 'error';
-      botMessage = 'Browser crashed — restart the bot';
-    }
-    if (/insufficient.*balance|Insufficient funds|not enough.*balance|not enough.*fund/i.test(msg)) {
-      botState = 'error';
-      botMessage = 'Insufficient balance — deposit more funds';
-    }
-    if (log.type === 'error' && /Fatal|uncaught|MODULE_NOT_FOUND/i.test(msg)) {
-      botState = 'error';
-      botMessage = 'Fatal error — restart required';
-    }
-    if (/ECONNREFUSED|cannot connect to|network.*unreachable/i.test(msg)) {
-      botState = 'error';
-      botMessage = 'Connection lost — check your internet';
-    }
-    // NOTE: These are NORMAL trading events, NOT errors:
-    // - "order failed: Quick fill timeout" = order didn't fill in time, bot retries automatically
-    // - "order rejected" = exchange rejected order, bot adjusts and retries
-    // - "timeout" in trade context = waiting for price, normal behavior
-    // - "positions still open after close" = bot is retrying close, normal behavior
   }
 
   return { cycle, krakenTrades, grvtTrades, krakenPrice, grvtPrice, priceDiff, botState, botMessage, latency };
@@ -270,9 +141,10 @@ function parseLogsForMetrics(logs) {
 
 export default function Dashboard({ status, botRunning, logs, onStart, onStop, config }) {
   const api = window.electronAPI;
+  const [refreshKey, setRefreshKey] = useState(0);
 
   // Parse logs for metrics
-  const logMetrics = useMemo(() => parseLogsForMetrics(logs), [logs]);
+  const logMetrics = useMemo(() => parseLogsForMetrics(logs), [logs, refreshKey]);
 
 
   // Use status data if available, fall back to log-parsed data
@@ -290,6 +162,7 @@ export default function Dashboard({ status, botRunning, logs, onStart, onStop, c
 
   const [showConfirm, setShowConfirm] = useState(false);
   const [showSleepWarning, setShowSleepWarning] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   // Uptime counter
   const [uptime, setUptime] = useState(0);
@@ -471,7 +344,7 @@ export default function Dashboard({ status, botRunning, logs, onStart, onStop, c
             {recentErrors.map((err, i) => (
               <div key={i} className="dash-error-inline-item" onClick={() => {
                 if (!err.fix?.action) return;
-                if (err.fix.action.restart) { onStop(); setTimeout(() => onStart(), 1500); }
+                if (err.fix.action.restart && !window._restarting) { window._restarting = true; onStop(); setTimeout(() => { onStart(); window._restarting = false; }, 2000); }
                 else if (err.fix.action.urls) { err.fix.action.urls.forEach(u => api?.openExternal?.(u)); }
               }}>
                 <span className="dash-error-inline-text">{err.fix?.text || err.fix}</span>
@@ -492,7 +365,7 @@ export default function Dashboard({ status, botRunning, logs, onStart, onStop, c
               Stop Bot
             </button>
             {isError && recentErrors.length > 0 && (
-              <button className="btn dash-restart-btn" onClick={() => { onStop(); setTimeout(() => onStart(), 1500); }}>
+              <button className="btn dash-restart-btn" onClick={() => { if (!window._restarting) { window._restarting = true; onStop(); setTimeout(() => { onStart(); window._restarting = false; }, 2000); } }}>
                 Restart Bot
               </button>
             )}
@@ -527,7 +400,13 @@ export default function Dashboard({ status, botRunning, logs, onStart, onStop, c
 
       {/* Stats + Check P&L */}
       <div className="dash-section">
-        <div className="dash-section-label">Performance</div>
+        <div className="dash-section-label" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          Performance
+          <button className={`dash-refresh-btn ${isRefreshing ? 'spinning' : ''}`} onClick={() => { setRefreshKey(k => k + 1); setIsRefreshing(true); setTimeout(() => setIsRefreshing(false), 600); }} title="Refresh dashboard">
+            <img src={refreshIcon} alt="" className="dash-refresh-icon" />
+            <span className="dash-refresh-label">Refresh</span>
+          </button>
+        </div>
         <div className="dash-stats">
           <div className="dash-stat">
             <span className="dash-stat-value">{cycle || '—'}</span>
