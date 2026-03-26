@@ -4,10 +4,20 @@ package-lock.json
 
 # Environment variables
 .env
+.env.*
 
+# Cookies
 paradex-cookies-account*.json
+
+# OS files
+.DS_Store
+Thumbs.db
 
 # Electron / UI build
 ui/dist/
 ui/node_modules/
 dist/
+
+# IDE
+.vscode/
+.idea/

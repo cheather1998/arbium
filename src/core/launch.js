@@ -223,6 +223,30 @@ async function launchAccount(accountConfig, exchangeConfig, _isRetry = false) {
         await delay(5000);
       }
   
+      // Verify the page URL matches the expected exchange URL
+      // Kraken may redirect to spot trading if cookies saved a different trading pair
+      if (exchange.url) {
+        const currentUrl = page.url();
+        const expectedUrl = exchange.url;
+        if (!currentUrl.includes(new URL(expectedUrl).pathname)) {
+          console.log(`[${email}] ⚠ Page redirected to wrong URL: ${currentUrl}`);
+          console.log(`[${email}] Expected: ${expectedUrl}`);
+          console.log(`[${email}] Forcing navigation to correct page...`);
+          try {
+            await page.goto(expectedUrl, {
+              waitUntil: "domcontentloaded",
+              timeout: 30000,
+            });
+            await delay(3000);
+            console.log(`[${email}] ✅ Redirected to correct page: ${page.url()}`);
+          } catch (error) {
+            console.log(`[${email}] ⚠ Force navigation failed, continuing with current page...`);
+          }
+        } else {
+          console.log(`[${email}] ✅ Page URL verified: ${currentUrl}`);
+        }
+      }
+
       // For GRVT: Close any NotifyBarWrapper notifications immediately after page load
       await delay(2000); // Wait for notifications to appear
       await closeNotifyBarWrapperNotifications(page, exchange, 'on initial page load');
@@ -309,7 +333,39 @@ async function launchAccount(accountConfig, exchangeConfig, _isRetry = false) {
   
       if (loggedIn) {
         console.log(`\n[${email}] *** Successfully logged in to ${exchange.name}! ***\n`);
-  
+
+        // For Kraken: ALWAYS navigate to Futures page after login
+        // Kraken often redirects to Spot after login, and may redirect back even after navigation
+        if (exchange.name === 'Kraken') {
+          const futuresUrl = 'https://pro.kraken.com/app/trade/futures-btc-usd-perp';
+
+          // Try up to 3 times — Kraken may redirect back to Spot
+          for (let attempt = 1; attempt <= 3; attempt++) {
+            const currentUrl = page.url();
+            if (currentUrl.includes('futures')) {
+              console.log(`[${email}] ✅ Kraken is on Futures page: ${currentUrl}`);
+              break;
+            }
+            console.log(`[${email}] Kraken on Spot (attempt ${attempt}/3): ${currentUrl}`);
+            console.log(`[${email}] Navigating to Futures...`);
+            try {
+              await page.goto(futuresUrl, { waitUntil: 'networkidle2', timeout: 30000 });
+              await delay(5000); // Wait longer for Kraken to settle
+
+              // Check if we stayed on Futures
+              const afterUrl = page.url();
+              if (afterUrl.includes('futures')) {
+                console.log(`[${email}] ✅ Kraken Futures confirmed: ${afterUrl}`);
+                break;
+              } else {
+                console.log(`[${email}] ⚠ Kraken redirected back to: ${afterUrl}`);
+              }
+            } catch (e) {
+              console.log(`[${email}] ⚠ Navigation failed: ${e.message}`);
+            }
+          }
+        }
+
         // For Extended Exchange, if cookies are set, click on Orders tab
         if (exchange.name === 'Extended Exchange') {
           const hasCookies = await hasExtendedExchangeCookies(page);
@@ -352,9 +408,24 @@ async function launchAccount(accountConfig, exchangeConfig, _isRetry = false) {
         await delay(2000); // Wait for notifications to appear
         await closeNotifyBarWrapperNotifications(page, exchange, 'on page load');
 
+        // Final URL check for Kraken — ensure we're on Futures, not Spot
+        if (exchange.name === 'Kraken') {
+          const finalUrl = page.url();
+          if (!finalUrl.includes('futures')) {
+            console.log(`[${email}] ⚠ Kraken is on Spot page (${finalUrl}), navigating to Futures...`);
+            try {
+              await page.goto(exchange.url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+              await delay(3000);
+              console.log(`[${email}] ✅ Navigated to Kraken Futures: ${page.url()}`);
+            } catch (e) {
+              console.log(`[${email}] ⚠ Futures navigation failed: ${e.message}`);
+            }
+          }
+        }
+
         // Start the API server for this account
         startApiServer(page, apiPort, email);
-  
+
         // DISABLED: Auto-click TP/SL listener - now using manual flow in closeAllPositions
         // The manual flow goes to Positions tab, finds TP/SL button, clicks it, fills value, confirms, then clicks Limit
         // This gives us better control over the sequence: TP/SL -> Confirm -> Wait -> Limit -> Close

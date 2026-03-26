@@ -55,7 +55,7 @@ const EXCHANGE_CONFIGS = {
       name: "Kraken",
       url: "https://pro.kraken.com/app/trade/futures-btc-usd-perp",
       referralUrl: "https://pro.kraken.com/app/trade/futures-btc-usd-perp",
-      urlPattern: "pro.kraken.com/app/trade",
+      urlPattern: "pro.kraken.com/app/trade/futures",
       // UI selectors - will need to be updated after inspecting Kraken UI
       // For now, using generic text-based selectors
       selectors: {

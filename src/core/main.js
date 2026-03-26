@@ -355,10 +355,15 @@ async function main() {
         console.log(`========================================`);
         
         console.log(`\nStopping API servers...`);
-        await delay(2000);
-        
-        // Close all positions (only for successful logins)
-        await closeAllPositionsOnShutdown(successful);
+
+        // Skip position closing if force stop from Electron UI
+        if (!global.__FORCE_STOP__) {
+          await delay(2000);
+          // Close all positions (only for successful logins)
+          await closeAllPositionsOnShutdown(successful);
+        } else {
+          console.log(`Force stop — skipping position closing, closing browsers immediately...`);
+        }
         
         // Close ALL browsers - including failed logins that kept browsers open
         console.log(`Closing all browsers (including failed logins)...`);
@@ -525,12 +530,16 @@ async function main() {
   
       // Stop trading loops
       console.log(`\nStopping trading loops...`);
-  
-      // Wait a moment for loops to detect shutdown flag
-      await delay(2000);
-  
-      // Close all positions
-      await closeAllPositionsOnShutdown(successful);
+
+      // Skip position closing if force stop from Electron UI
+      if (!global.__FORCE_STOP__) {
+        // Wait a moment for loops to detect shutdown flag
+        await delay(2000);
+        // Close all positions
+        await closeAllPositionsOnShutdown(successful);
+      } else {
+        console.log(`Force stop — skipping position closing, closing browsers immediately...`);
+      }
   
       // Close browsers - close all pages first, then browsers
       console.log(`Closing browsers...`);

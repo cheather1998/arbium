@@ -2649,21 +2649,38 @@ async function readTriggerPriceAndFillLimitPrice(page, exchange, sectionName) {
       // Find limit price input
       let limitPriceInput = null;
       let limitPriceInputId = '';
-      
+
       for (const input of allInputsInSection) {
         if (input.tagName !== 'INPUT') continue;
         const placeholder = (input.getAttribute('placeholder') || '').trim().toLowerCase();
         const sectionPrefix = sectionNameLower.includes('profit') ? 'tp' : 'sl';
-        if ((placeholder.includes(`${sectionPrefix} limit price`) || 
-             placeholder.includes(`${sectionNameLower} limit price`) || 
-             placeholder.includes('limit price')) && 
-            !placeholder.includes('trigger')) {
+        if ((placeholder.includes(`${sectionPrefix} limit price`) ||
+             placeholder.includes(`${sectionNameLower} limit price`) ||
+             placeholder.includes('limit price') ||
+             placeholder.includes('limit')) &&
+            !placeholder.includes('trigger') &&
+            !placeholder.includes('p&l') &&
+            !placeholder.includes('roi')) {
           limitPriceInput = input;
           limitPriceInputId = input.id || '';
           break;
         }
       }
-      
+
+      // Fallback: if limit price input not found by placeholder, find the last input that isn't the trigger price
+      if (!limitPriceInput) {
+        const nonTriggerInputs = allInputsInSection.filter(inp => {
+          if (inp.tagName !== 'INPUT') return false;
+          if (inp === triggerPriceInput) return false;
+          const ph = (inp.getAttribute('placeholder') || '').toLowerCase();
+          return !ph.includes('trigger') && !ph.includes('p&l') && !ph.includes('roi');
+        });
+        if (nonTriggerInputs.length > 0) {
+          limitPriceInput = nonTriggerInputs[nonTriggerInputs.length - 1];
+          limitPriceInputId = limitPriceInput.id || '';
+        }
+      }
+
       if (!limitPriceInput) {
         return { success: false, message: `Could not find limit price input in "${sectionName}" section` };
       }

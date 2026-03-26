@@ -57,15 +57,17 @@ process.on('message', async (msg) => {
     }
   } else if (msg.type === 'stop') {
     console.log('[BOT-PROCESS] Received stop command. Shutting down...');
+    // Set global flag so shutdown handler skips position closing
+    global.__FORCE_STOP__ = true;
     // Trigger SIGINT handler for graceful shutdown
     process.emit('SIGINT');
-    // Force exit after 2 seconds to ensure browsers close quickly
+    // Give browsers more time to close (shutdown handler needs time)
     setTimeout(() => {
       if (process.send) {
         process.send({ type: 'stopped' });
       }
       process.exit(0);
-    }, 2000);
+    }, 8000);
   }
 });
 

@@ -19,13 +19,10 @@ dotenv.config({ path: process.env.DOTENV_CONFIG_PATH || ".env" });
 
 /**
  * Set leverage for GRVT
- * TODO: Implement GRVT-specific leverage setting after UI inspection
+ * GRVT leverage is configured directly on the exchange UI by the user.
  */
 export async function setLeverageGrvt(page, leverage, exchange) {
-  console.log(`[${exchange.name}] Setting leverage...`);
-  // TODO: Implement GRVT-specific leverage setting logic
-  // This will be implemented after inspecting GRVT UI
-  console.log(`[${exchange.name}] ⚠️  Leverage setting not yet implemented for GRVT`);
+  console.log(`[${exchange.name}] Leverage is managed via GRVT UI settings — skipping.`);
   await delay(1000);
 }
 

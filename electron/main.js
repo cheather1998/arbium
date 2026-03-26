@@ -130,14 +130,22 @@ function startBot(mode, config) {
 function stopBot() {
   if (botProcess) {
     botProcess.send({ type: 'stop' });
-    // Force kill after 3 seconds if not stopped gracefully
+    // Force kill after 10 seconds if not stopped gracefully
+    // (browsers need time to close — GRVT is especially slow)
     setTimeout(() => {
       if (botProcess) {
         try { botProcess.kill('SIGKILL'); } catch {}
         botProcess = null;
         sendToUI('bot:stopped', {});
       }
-    }, 3000);
+    }, 10000);
+    // Also kill all Chrome processes spawned by Puppeteer
+    setTimeout(() => {
+      try {
+        const { execSync } = require('child_process');
+        execSync('pkill -f "puppeteer-chrome-profile" 2>/dev/null || true');
+      } catch {}
+    }, 10500);
   }
 }
 

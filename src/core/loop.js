@@ -2029,7 +2029,7 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
       };
       
       // Helper function for GRVT quick fill (with prefill)
-      const quickFillAndSubmitGrvtWithTimeout = async (page, price, tradeParams, exchange, prefillData, timeoutMs = 30000, thresholdMetTime, cycleCount, sideLabel, email) => {
+      const quickFillAndSubmitGrvtWithTimeout = async (page, price, tradeParams, exchange, prefillData, timeoutMs = 60000, thresholdMetTime, cycleCount, sideLabel, email) => {
         const { fillPriceSideAndSubmitGrvt } = await import('../trading/prefillForm.js');
         
         const quickFillPromise = fillPriceSideAndSubmitGrvt(page, price, tradeParams, exchange, thresholdMetTime, cycleCount, sideLabel, email, prefillData);

@@ -38,7 +38,7 @@ export default function App() {
   const [version, setVersion] = useState('');
   const [setupComplete, setSetupComplete] = useState(() => isOnboardingDone());
   const [showChromeModal, setShowChromeModal] = useState(false);
-  const maxLogs = 500;
+  const maxLogs = 10000;
 
   const addLog = useCallback((entry) => {
     const time = new Date().toLocaleTimeString('en-US', { hour12: false });

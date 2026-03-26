@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect, useRef } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 
 // Only critical system errors — trading events (timeouts, fills) are normal and filtered out
 const ERROR_FIXES = [
@@ -66,23 +66,36 @@ const BOT_STATE_MAP = {
  */
 function parseLogsForMetrics(logs) {
   let cycle = 0;
-  // Trade counting moved to useRef in component (incremental, survives log truncation)
+  let krakenTrades = 0;
+  let grvtTrades = 0;
+  let currentCycle = 0;
+  const counted = new Set();
   let krakenPrice = null;
   let grvtPrice = null;
   let priceDiff = null;
   let botState = null;
   let botMessage = null;
   let latency = null;
-  let lastPriceCheckTime = null;
 
   for (const log of logs) {
-    const msg = log.message || '';
+    const msg = (log.message || '').trim();
 
-    // Extract cycle number: [CYCLE 5]
-    const cycleMatch = msg.match(/\[CYCLE\s+(\d+)\]/);
+    // Extract cycle number
+    const cycleMatch = msg.match(/CYCLE\s+(\d+)/);
     if (cycleMatch) {
       const num = parseInt(cycleMatch[1], 10);
       if (num > cycle) cycle = num;
+      if (num > currentCycle) currentCycle = num;
+    }
+
+    // Count trades: "[Kraken] ✓ Order confirmed as ..."
+    if (/Kraken/i.test(msg) && /Order confirmed/i.test(msg)) {
+      const key = `k${currentCycle}`;
+      if (!counted.has(key)) { counted.add(key); krakenTrades++; }
+    }
+    if (/GRVT/i.test(msg) && /Order confirmed/i.test(msg)) {
+      const key = `g${currentCycle}`;
+      if (!counted.has(key)) { counted.add(key); grvtTrades++; }
     }
 
     // Extract prices from multiple log formats:
@@ -133,20 +146,10 @@ function parseLogsForMetrics(logs) {
       priceDiff = parseFloat(diffMatch[1].replace(/,/g, ''));
     }
 
-    // Calculate latency from price check intervals
-    if (/Price check attempt|Closing threshold check attempt|Closing spread threshold check attempt/i.test(msg) && log.time) {
-      // Parse time "HH:MM:SS" to seconds
-      const parts = log.time.split(':');
-      if (parts.length === 3) {
-        const timeInSec = parseInt(parts[0]) * 3600 + parseInt(parts[1]) * 60 + parseInt(parts[2]);
-        if (lastPriceCheckTime !== null) {
-          const diff = timeInSec - lastPriceCheckTime;
-          if (diff > 0 && diff < 300) { // reasonable range: 0-5 min
-            latency = diff;
-          }
-        }
-        lastPriceCheckTime = timeInSec;
-      }
+    // Calculate latency from "Total fetch time: 3018ms"
+    const fetchTimeMatch = msg.match(/Total fetch time:\s*(\d+)ms/i);
+    if (fetchTimeMatch) {
+      latency = (parseInt(fetchTimeMatch[1]) / 1000).toFixed(1);
     }
 
 
@@ -234,15 +237,12 @@ function parseLogsForMetrics(logs) {
 
     // === CRITICAL SYSTEM ERRORS ONLY ===
     // These are real problems that need user attention
-    if (/CRITICAL.*Only ONE position/i.test(msg)) {
-      botState = 'error';
-      botMessage = 'Only one side filled — emergency close';
-    }
+    // Note: "Only ONE position opened" is a trading event, not a system error — bot handles it automatically
     if (/No accounts logged in/i.test(msg)) {
       botState = 'error';
       botMessage = 'No accounts logged in — restart required';
     }
-    if (/Browser session crashed|target.*closed/i.test(msg)) {
+    if (/Browser session crashed/i.test(msg)) {
       botState = 'error';
       botMessage = 'Browser crashed — restart the bot';
     }
@@ -254,7 +254,7 @@ function parseLogsForMetrics(logs) {
       botState = 'error';
       botMessage = 'Fatal error — restart required';
     }
-    if (/cannot connect|disconnected|ECONNREFUSED/i.test(msg)) {
+    if (/ECONNREFUSED|cannot connect to|network.*unreachable/i.test(msg)) {
       botState = 'error';
       botMessage = 'Connection lost — check your internet';
     }
@@ -265,7 +265,7 @@ function parseLogsForMetrics(logs) {
     // - "positions still open after close" = bot is retrying close, normal behavior
   }
 
-  return { cycle, krakenPrice, grvtPrice, priceDiff, botState, botMessage, latency };
+  return { cycle, krakenTrades, grvtTrades, krakenPrice, grvtPrice, priceDiff, botState, botMessage, latency };
 }
 
 export default function Dashboard({ status, botRunning, logs, onStart, onStop, config }) {
@@ -274,51 +274,19 @@ export default function Dashboard({ status, botRunning, logs, onStart, onStop, c
   // Parse logs for metrics
   const logMetrics = useMemo(() => parseLogsForMetrics(logs), [logs]);
 
-  // Persistent trade counters — survive log truncation
-  const tradeCountRef = useRef({ kraken: 0, grvt: 0, lastLogCount: 0, lastCountedCycle: 0 });
-
-  // Only count NEW logs (incremental), never re-parse old ones
-  useEffect(() => {
-    const tc = tradeCountRef.current;
-    const startIdx = tc.lastLogCount;
-    const newLogs = logs.slice(startIdx);
-
-    for (const log of newLogs) {
-      const msg = log.text || log.message || '';
-      // Only count when bot confirms BOTH positions opened in the same cycle
-      // This is the single definitive success message — appears only once per successful trade
-      if (/SUCCESS.*Both positions opened successfully/i.test(msg)) {
-        // Extract cycle number to avoid double-counting from duplicate log lines
-        const cycleMatch = msg.match(/CYCLE\s*(\d+)/i);
-        const cycleNum = cycleMatch ? parseInt(cycleMatch[1], 10) : 0;
-        if (cycleNum > tc.lastCountedCycle) {
-          tc.kraken++;
-          tc.grvt++;
-          tc.lastCountedCycle = cycleNum;
-        }
-      }
-    }
-    tc.lastLogCount = logs.length;
-  }, [logs]);
-
-  // Reset counters when bot stops
-  useEffect(() => {
-    if (!botRunning) {
-      tradeCountRef.current = { kraken: 0, grvt: 0, lastLogCount: 0 };
-    }
-  }, [botRunning]);
 
   // Use status data if available, fall back to log-parsed data
   const prices = status.prices || {};
   const cycle = status.cycle || logMetrics.cycle || 0;
   const priceDiff = status.priceDiff ?? logMetrics.priceDiff;
-  const krakenTrades = tradeCountRef.current.kraken;
-  const grvtTrades = tradeCountRef.current.grvt;
   const krakenPrice = prices.kraken || logMetrics.krakenPrice;
   const grvtPrice = prices.grvt || logMetrics.grvtPrice;
   const botState = status.botState || logMetrics.botState || (botRunning ? 'running' : null);
   const botMessage = status.botMessage || logMetrics.botMessage || (botRunning ? 'Running correctly' : null);
   const latency = logMetrics.latency;
+
+  const krakenTrades = logMetrics.krakenTrades;
+  const grvtTrades = logMetrics.grvtTrades;
 
   const [showConfirm, setShowConfirm] = useState(false);
   const [showSleepWarning, setShowSleepWarning] = useState(false);
@@ -353,17 +321,49 @@ export default function Dashboard({ status, botRunning, logs, onStart, onStop, c
     return `${s}s`;
   };
 
-  // Only show critical system errors — NOT normal trading events like order timeouts
-  const CRITICAL_PATTERNS = /not enough balance|insufficient balance|insufficient fund|CRITICAL|fatal|browser.*crash|target.*closed|No accounts logged in|session.*expired|login.*failed|disconnected|cannot connect/i;
-  // Trading events that look like errors but are normal bot operation
-  const TRADING_NOISE = /Quick fill timeout|order.*timeout|fill timeout|spread.*not enough|price.*not met|order.*cancel|waiting.*price|no.*opportunity|order.*failed|order.*rejected|timeout|timed out|ETIMEDOUT|Execution context|navigation|retry|attempt|Stopping|positions still open/i;
-
+  // SYSTEM ERRORS ONLY — things the user must fix manually
+  // Each pattern is specific to avoid false positives from trading logs
   const recentErrors = useMemo(() => {
+    const seen = new Set();
     return logs
       .filter((l) => {
         const msg = l.message || '';
-        // ONLY show errors that match critical system patterns
-        return CRITICAL_PATTERNS.test(msg);
+        const msgLower = msg.toLowerCase();
+
+        // === WHITELIST: Only these specific system errors are shown ===
+        let errorType = null;
+
+        // 1. Insufficient balance — user needs to deposit funds
+        if (/not enough balance|insufficient balance|insufficient fund/i.test(msg)) {
+          errorType = 'balance';
+        }
+        // 2. No accounts logged in — all login attempts failed
+        else if (/No accounts logged in\. Stopping/i.test(msg)) {
+          errorType = 'login';
+        }
+        // 3. Browser crashed — not just "target closed" from navigation
+        else if (/Browser session crashed/i.test(msg)) {
+          errorType = 'crash';
+        }
+        // 4. Chrome not installed
+        else if (/Chrome.*not found|Google Chrome is required/i.test(msg)) {
+          errorType = 'chrome';
+        }
+        // 5. Fatal code error
+        else if (/MODULE_NOT_FOUND|Fatal error|uncaught exception/i.test(msg) && l.type === 'error') {
+          errorType = 'fatal';
+        }
+        // 6. Network completely down (not just temporary timeout)
+        else if (/ECONNREFUSED|cannot connect to|network.*unreachable/i.test(msg)) {
+          errorType = 'network';
+        }
+
+        // Deduplicate by error type
+        if (errorType && !seen.has(errorType)) {
+          seen.add(errorType);
+          return true;
+        }
+        return false;
       })
       .slice(-5)
       .map((l) => ({ ...l, fix: getErrorFix(l.message) }));
