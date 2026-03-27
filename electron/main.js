@@ -24,17 +24,47 @@ const DATA_DIR = isDev ? ROOT_DIR : app.getPath('userData');
 function ensureDataFiles() {
   if (isDev) return;
   const userEnv = path.join(DATA_DIR, '.env');
+  console.log('[Data] DATA_DIR:', DATA_DIR);
+  console.log('[Data] ROOT_DIR:', ROOT_DIR);
+  console.log('[Data] userEnv:', userEnv);
+
+  // Ensure userData directory exists
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    console.log('[Data] Created DATA_DIR:', DATA_DIR);
+  }
+
   const needsCopy = !fs.existsSync(userEnv) ||
     !fs.readFileSync(userEnv, 'utf-8').includes('ACCOUNT_EMAILS');
   if (needsCopy) {
-    // Copy default .env from the asar bundle (overwrite if missing required fields)
-    const bundledEnv = path.join(ROOT_DIR, '.env');
-    try {
-      const content = fs.readFileSync(bundledEnv, 'utf-8');
-      fs.writeFileSync(userEnv, content);
-      console.log('[Data] Copied default .env to', userEnv);
-    } catch (err) {
-      console.error('[Data] Failed to copy .env:', err.message);
+    // Try multiple paths for the bundled .env
+    const possiblePaths = [
+      path.join(ROOT_DIR, '.env'),
+      path.join(__dirname, '..', '.env'),
+      path.join(process.resourcesPath || '', 'app.asar', '.env'),
+      path.join(process.resourcesPath || '', 'app', '.env'),
+      path.join(app.getAppPath(), '.env'),
+    ];
+    let copied = false;
+    for (const bundledEnv of possiblePaths) {
+      try {
+        console.log('[Data] Trying .env path:', bundledEnv);
+        const content = fs.readFileSync(bundledEnv, 'utf-8');
+        if (content.includes('ACCOUNT_EMAILS')) {
+          fs.writeFileSync(userEnv, content);
+          console.log('[Data] Copied default .env from', bundledEnv, 'to', userEnv);
+          copied = true;
+          break;
+        }
+      } catch (err) {
+        console.log('[Data] Path failed:', bundledEnv, err.message);
+      }
+    }
+    if (!copied) {
+      // Write a minimal default .env so the app doesn't crash
+      const defaultEnv = `ACCOUNT_EMAILS="user1@example.com,user2@example.com"\nEXCHANGE_ACCOUNTS="kraken:user1@example.com,grvt:user2@example.com"\nBUY_QTY=0.0001\nSELL_QTY=0.0001\nLEVERAGE=10\nOPENING_THRESHOLD=7\nCLOSING_THRESHOLD=5\nCLOSING_SPREAD=10\n`;
+      fs.writeFileSync(userEnv, defaultEnv);
+      console.log('[Data] Wrote default .env template to', userEnv);
     }
   }
 }
