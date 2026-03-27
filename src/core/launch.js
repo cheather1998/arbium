@@ -339,29 +339,37 @@ async function launchAccount(accountConfig, exchangeConfig, _isRetry = false) {
         if (exchange.name === 'Kraken') {
           const futuresUrl = 'https://pro.kraken.com/app/trade/futures-btc-usd-perp';
 
-          // Try up to 3 times — Kraken may redirect back to Spot
-          for (let attempt = 1; attempt <= 3; attempt++) {
+          // Try up to 5 times — Kraken may redirect back to Spot
+          for (let attempt = 1; attempt <= 5; attempt++) {
             const currentUrl = page.url();
             if (currentUrl.includes('futures')) {
               console.log(`[${email}] ✅ Kraken is on Futures page: ${currentUrl}`);
               break;
             }
-            console.log(`[${email}] Kraken on Spot (attempt ${attempt}/3): ${currentUrl}`);
+            console.log(`[${email}] Kraken on Spot (attempt ${attempt}/5): ${currentUrl}`);
             console.log(`[${email}] Navigating to Futures...`);
             try {
-              await page.goto(futuresUrl, { waitUntil: 'networkidle2', timeout: 30000 });
-              await delay(5000); // Wait longer for Kraken to settle
-
-              // Check if we stayed on Futures
-              const afterUrl = page.url();
-              if (afterUrl.includes('futures')) {
-                console.log(`[${email}] ✅ Kraken Futures confirmed: ${afterUrl}`);
-                break;
-              } else {
-                console.log(`[${email}] ⚠ Kraken redirected back to: ${afterUrl}`);
-              }
+              // Use domcontentloaded — networkidle2 times out on Kraken
+              await page.goto(futuresUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
             } catch (e) {
-              console.log(`[${email}] ⚠ Navigation failed: ${e.message}`);
+              console.log(`[${email}] Navigation timeout, checking URL anyway...`);
+            }
+            // Wait for page to settle and check URL
+            await delay(3000);
+            const afterUrl = page.url();
+            if (afterUrl.includes('futures')) {
+              console.log(`[${email}] ✅ Kraken Futures confirmed: ${afterUrl}`);
+              break;
+            } else {
+              console.log(`[${email}] ⚠ Kraken redirected back to: ${afterUrl}`);
+              // Try using JavaScript navigation as fallback
+              if (attempt >= 2) {
+                console.log(`[${email}] Trying JavaScript navigation...`);
+                try {
+                  await page.evaluate((url) => { window.location.href = url; }, futuresUrl);
+                  await delay(5000);
+                } catch (e) { /* ignore */ }
+              }
             }
           }
         }
@@ -412,10 +420,10 @@ async function launchAccount(accountConfig, exchangeConfig, _isRetry = false) {
         if (exchange.name === 'Kraken') {
           const finalUrl = page.url();
           if (!finalUrl.includes('futures')) {
-            console.log(`[${email}] ⚠ Kraken is on Spot page (${finalUrl}), navigating to Futures...`);
+            console.log(`[${email}] ⚠ Kraken is on Spot page (${finalUrl}), forcing Futures via JS...`);
             try {
-              await page.goto(exchange.url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-              await delay(3000);
+              await page.evaluate((url) => { window.location.href = url; }, exchange.url);
+              await delay(5000);
               console.log(`[${email}] ✅ Navigated to Kraken Futures: ${page.url()}`);
             } catch (e) {
               console.log(`[${email}] ⚠ Futures navigation failed: ${e.message}`);
