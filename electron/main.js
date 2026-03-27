@@ -24,8 +24,10 @@ const DATA_DIR = isDev ? ROOT_DIR : app.getPath('userData');
 function ensureDataFiles() {
   if (isDev) return;
   const userEnv = path.join(DATA_DIR, '.env');
-  if (!fs.existsSync(userEnv)) {
-    // Copy default .env from the asar bundle
+  const needsCopy = !fs.existsSync(userEnv) ||
+    !fs.readFileSync(userEnv, 'utf-8').includes('ACCOUNT_EMAILS');
+  if (needsCopy) {
+    // Copy default .env from the asar bundle (overwrite if missing required fields)
     const bundledEnv = path.join(ROOT_DIR, '.env');
     try {
       const content = fs.readFileSync(bundledEnv, 'utf-8');
