@@ -34,10 +34,8 @@ function ensureDataFiles() {
     console.log('[Data] Created DATA_DIR:', DATA_DIR);
   }
 
-  const needsCopy = !fs.existsSync(userEnv) ||
-    !fs.readFileSync(userEnv, 'utf-8').includes('ACCOUNT_EMAILS');
-  if (needsCopy) {
-    // Try multiple paths for the bundled .env
+  if (!fs.existsSync(userEnv)) {
+    // Try to copy from bundled .env
     const possiblePaths = [
       path.join(ROOT_DIR, '.env'),
       path.join(__dirname, '..', '.env'),
@@ -48,23 +46,18 @@ function ensureDataFiles() {
     let copied = false;
     for (const bundledEnv of possiblePaths) {
       try {
-        console.log('[Data] Trying .env path:', bundledEnv);
         const content = fs.readFileSync(bundledEnv, 'utf-8');
-        if (content.includes('ACCOUNT_EMAILS')) {
-          fs.writeFileSync(userEnv, content);
-          console.log('[Data] Copied default .env from', bundledEnv, 'to', userEnv);
-          copied = true;
-          break;
-        }
-      } catch (err) {
-        console.log('[Data] Path failed:', bundledEnv, err.message);
-      }
+        fs.writeFileSync(userEnv, content);
+        console.log('[Data] Copied .env from', bundledEnv);
+        copied = true;
+        break;
+      } catch (err) { /* try next */ }
     }
     if (!copied) {
-      // Write a minimal default .env so the app doesn't crash
-      const defaultEnv = `ACCOUNT_EMAILS="user1@example.com,user2@example.com"\nEXCHANGE_ACCOUNTS="kraken:user1@example.com,grvt:user2@example.com"\nBUY_QTY=0.0001\nSELL_QTY=0.0001\nLEVERAGE=10\nOPENING_THRESHOLD=7\nCLOSING_THRESHOLD=5\nCLOSING_SPREAD=10\n`;
+      // Write minimal default .env — ACCOUNT_EMAILS not required, bot uses defaults
+      const defaultEnv = `BUY_QTY=0.0001\nSELL_QTY=0.0001\nLEVERAGE=10\nOPENING_THRESHOLD=7\nCLOSING_THRESHOLD=5\nCLOSING_SPREAD=10\n`;
       fs.writeFileSync(userEnv, defaultEnv);
-      console.log('[Data] Wrote default .env template to', userEnv);
+      console.log('[Data] Wrote default .env to', userEnv);
     }
   }
 }

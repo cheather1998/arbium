@@ -1,19 +1,17 @@
 import dotenv from 'dotenv';
 dotenv.config({ path: process.env.DOTENV_CONFIG_PATH || '.env' });
 
-// Multiple accounts configuration - read from environment variable
+// Multiple accounts configuration - read from environment variable or use defaults
 const getAccountsFromEnv = () => {
     const emailsEnv = process.env.ACCOUNT_EMAILS;
-  
-    if (!emailsEnv) {
-      console.error('ERROR: ACCOUNT_EMAILS not found in .env file');
-      process.exit(1);
-    }
-  
-    const emails = emailsEnv.split(',').map(e => e.trim()).filter(e => e);
-  
+
+    // If no ACCOUNT_EMAILS configured, use default placeholders
+    // The actual login happens in the browser — emails are only used for logging and cookie file naming
+    const DEFAULT_EMAILS = 'kraken-user@arbium.local,grvt-user@arbium.local,account3@arbium.local';
+    const emails = (emailsEnv || DEFAULT_EMAILS).split(',').map(e => e.trim()).filter(e => e);
+
     if (emails.length === 0) {
-      console.error('ERROR: No valid emails found in ACCOUNT_EMAILS');
+      console.error('ERROR: No valid emails found');
       process.exit(1);
     }
   
