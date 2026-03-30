@@ -84,9 +84,9 @@ export default function Onboarding({ onComplete }) {
             fontSize: 38, marginBottom: 18, letterSpacing: '-0.04em', fontWeight: 600, lineHeight: 1.2,
             color: '#fff',
           }}>
-            GRVT &amp; Kraken<br />Arbitrage Strategy
+            <>GRVT &amp; Kraken<br />Arbitrage Strategy</>
           </h2>
-          <p style={{ fontFamily: "'Plus Jakarta Sans', var(--font-body)", color: 'var(--text-muted)', fontSize: 14, marginBottom: 44, lineHeight: 1.7 }}>
+          <p style={{ fontFamily: "'Plus Jakarta Sans', var(--font-body)", color: 'var(--text-muted)', fontSize: 14, marginBottom: 28, lineHeight: 1.7 }}>
             Complete the setup for both exchanges, then start earning from price differences automatically.
           </p>
 

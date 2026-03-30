@@ -9,12 +9,29 @@ import logoSvg from './assets/logo.svg';
 
 const api = window.electronAPI;
 
-const FIXED_MODE = {
-  mode: '3d',
-  description: 'Kraken + GRVT',
-  exchanges: ['kraken', 'grvt'],
-  accountCount: 2,
+const TRADING_MODES = {
+  'kraken-only': {
+    mode: 'kraken-only',
+    description: 'Kraken Only',
+    exchanges: ['kraken'],
+    accountCount: 1,
+  },
+  'kraken-grvt': {
+    mode: '3d',
+    description: 'Kraken + GRVT',
+    exchanges: ['kraken', 'grvt'],
+    accountCount: 2,
+  },
 };
+
+// Persist trading mode selection
+function getSavedTradingMode() {
+  try { return localStorage.getItem('trading_mode') || 'kraken-grvt'; }
+  catch { return 'kraken-grvt'; }
+}
+function saveTradingMode(mode) {
+  try { localStorage.setItem('trading_mode', mode); } catch {}
+}
 
 // Check if onboarding has been completed (persisted in localStorage)
 function isOnboardingDone() {
@@ -38,6 +55,14 @@ export default function App() {
   const [version, setVersion] = useState('');
   const [setupComplete, setSetupComplete] = useState(() => isOnboardingDone());
   const [showChromeModal, setShowChromeModal] = useState(false);
+  const [tradingModeKey, setTradingModeKey] = useState(() => getSavedTradingMode());
+
+  const handleTradingModeChange = (key) => {
+    setTradingModeKey(key);
+    saveTradingMode(key);
+  };
+
+  const currentMode = TRADING_MODES[tradingModeKey];
   const maxLogs = 2000;
 
   // Batch log updates every 2 seconds to prevent UI jank
@@ -129,10 +154,16 @@ export default function App() {
   const handleStart = async () => {
     setLogs([]);
     setStatus({});
-    addLog({ type: 'info', message: 'Starting bot — opening Kraken & GRVT browsers...' });
-    addLog({ type: 'info', message: 'Please log in to both exchanges in the browser windows.' });
+    const isKrakenOnly = tradingModeKey === 'kraken-only';
+    if (isKrakenOnly) {
+      addLog({ type: 'info', message: 'Starting bot — opening Kraken browser...' });
+      addLog({ type: 'info', message: 'Please log in to Kraken in the browser window.' });
+    } else {
+      addLog({ type: 'info', message: 'Starting bot — opening Kraken & GRVT browsers...' });
+      addLog({ type: 'info', message: 'Please log in to both exchanges in the browser windows.' });
+    }
     if (api) {
-      await api.startBot(FIXED_MODE.mode, config);
+      await api.startBot(currentMode.mode, config);
     } else {
       setBotRunning(true);
       addLog({ type: 'warn', message: '[Dev Mode] Electron API not available.' });
@@ -178,7 +209,9 @@ export default function App() {
           <img src={logoSvg} alt="Arbium" style={{ height: 22 }} />
         </header>
         <div style={{ flex: 1, overflow: 'hidden' }}>
-          <Onboarding onComplete={() => { markOnboardingDone(); setSetupComplete(true); }} />
+          <Onboarding
+            onComplete={() => { markOnboardingDone(); setSetupComplete(true); }}
+          />
         </div>
         <StatusBar botRunning={false} version={version} status={{}} />
       </div>
@@ -232,6 +265,8 @@ export default function App() {
             onStart={handleStart}
             onStop={handleStop}
             config={config}
+            tradingMode={tradingModeKey}
+            onTradingModeChange={handleTradingModeChange}
           />
         </div>
 

@@ -236,7 +236,7 @@ h1, h2, h3 {
 .dashboard {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 12px;
   max-height: 100%;
   overflow-y: auto;
 }
@@ -301,6 +301,51 @@ h1, h2, h3 {
 }
 
 /* --- Actions --- */
+.dash-mode-selector {
+  display: flex;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 10px;
+  padding: 3px;
+  gap: 2px;
+  margin-bottom: 0;
+}
+
+.dash-mode-btn {
+  flex: 1;
+  padding: 10px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: 'Plus Jakarta Sans', sans-serif;
+  background: transparent;
+  color: var(--text-muted);
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  letter-spacing: -0.01em;
+}
+
+.dash-mode-btn:hover {
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.dash-mode-btn.active {
+  background: #ffffff;
+  color: #0a0a0a;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+}
+
+.dash-mode-title {
+  font-family: 'Plus Jakarta Sans', sans-serif;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: -0.03em;
+  margin-bottom: 12px;
+  padding: 0 2px;
+}
+
 .dash-actions {
   display: flex;
   gap: 8px;

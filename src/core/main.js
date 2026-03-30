@@ -1,6 +1,6 @@
 import dotenv from 'dotenv';
 import { chooseTradingMode, delay } from '../utils/helpers.js';
-import { closeAllPositionsOnShutdown, automatedTradingLoop, automatedTradingLoop3Exchanges, automatedTradingLoop2Exchanges, testSingleExchangeTrading } from '../core/loop.js';
+import { closeAllPositionsOnShutdown, automatedTradingLoop, automatedTradingLoop3Exchanges, automatedTradingLoop2Exchanges, testSingleExchangeTrading, automatedTradingLoopKrakenOnly } from '../core/loop.js';
 import { launchAccount } from '../core/launch.js';
 import EXCHANGE_CONFIGS from '../config/exchanges.js';
 import { ACCOUNTS } from '../config/accounts.js';
@@ -23,6 +23,61 @@ async function main() {
     const tradingMode = await chooseTradingMode(main._modeInput);
     console.log(`\n✓ Selected: ${tradingMode.description}\n`);
   
+    // Handle Kraken-Only continuous trading mode
+    if (tradingMode.mode === 'kraken-only') {
+      const exchangeConfig = EXCHANGE_CONFIGS.kraken;
+
+      console.log(`\n📋 Kraken-Only Trading Configuration:`);
+      console.log(`   Exchange: ${exchangeConfig.name}`);
+      console.log(`   Mode: Continuous Trading (30s–5min randomized hold)\n`);
+
+      // Find Kraken account
+      let krakenAccount = ACCOUNTS.find(a => a.exchange === 'kraken' || a.assignedExchange === 'kraken');
+      if (!krakenAccount && ACCOUNTS.length > 0) {
+        krakenAccount = { ...ACCOUNTS[0], exchange: 'kraken', exchangeConfig };
+      }
+
+      if (!krakenAccount) {
+        console.log(`\n✗ Error: No account found for Kraken`);
+        process.exit(1);
+      }
+
+      krakenAccount = { ...krakenAccount, exchange: 'kraken', exchangeConfig };
+      console.log(`   Account: ${krakenAccount.email}\n`);
+
+      // Launch Kraken browser
+      console.log(`\n🚀 Launching Kraken...`);
+      const result = await launchAccount(krakenAccount, exchangeConfig);
+
+      if (!result.success) {
+        console.log(`\n✗ Failed to launch Kraken`);
+        process.exit(1);
+      }
+
+      console.log(`\n✅ Kraken is ready! Starting continuous trading...\n`);
+
+      // Setup graceful shutdown
+      const shutdownHandler = async () => {
+        if (isShuttingDown) return;
+        isShuttingDown = true;
+        console.log(`\n\nShutting down Kraken-Only trading...`);
+        try {
+          await closeAllPositionsOnShutdown([result]);
+        } catch (e) {}
+        if (result.browser) {
+          try { await result.browser.close(); } catch (e) {}
+        }
+        process.exit(0);
+      };
+
+      process.on('SIGINT', shutdownHandler);
+      process.on('SIGTERM', shutdownHandler);
+
+      // Start continuous trading loop
+      await automatedTradingLoopKrakenOnly(result);
+      return;
+    }
+
     // Handle test modes (3a, 3b, 3c) - Single exchange testing
     if (tradingMode.mode === '3a' || tradingMode.mode === '3b' || tradingMode.mode === '3c') {
       const testExchangeName = tradingMode.testExchange; // 'kraken', 'grvt', or 'extended'

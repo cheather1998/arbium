@@ -2630,4 +2630,309 @@ async function testSingleExchangeTrading(accountResult, exchangeName) {
   };
 }
 
-export { automatedTradingLoop, automatedTradingLoop3Exchanges, automatedTradingLoop2Exchanges, testSingleExchangeTrading, closeAllPositionsOnShutdown };
+/**
+ * Kraken-Only Continuous Trading Loop
+ * Determines BUY/SELL direction based on price movement (like the 2-exchange loop).
+ * Each cycle:
+ *   1. Cleanup: cancel orders & close any open positions
+ *   2. Fetch current market price → compare with previous price → decide direction
+ *   3. Open position in determined direction
+ *   4. Hold for randomized 30s–5min (with periodic price logging)
+ *   5. Close position with opposite order
+ *   6. Cooldown → repeat
+ */
+async function automatedTradingLoopKrakenOnly(accountResult) {
+  const { page, email } = accountResult;
+  const exchange = EXCHANGE_CONFIGS.kraken;
+  const { getCurrentMarketPrice } = await import('../trading/executeBase.js');
+  const { prefillFormKraken, fillPriceSideAndSubmitKraken } = await import('../trading/prefillForm.js');
+
+  console.log(`\n========================================`);
+  console.log(`Kraken-Only Continuous Trading`);
+  console.log(`Account: ${email}`);
+  console.log(`========================================`);
+  console.log(`  Buy Qty:  ${TRADE_CONFIG.buyQty} BTC`);
+  console.log(`  Sell Qty: ${TRADE_CONFIG.sellQty} BTC`);
+  console.log(`  Leverage: ${TRADE_CONFIG.leverage}x`);
+  console.log(`  Hold time: 30s – 5min (randomized)`);
+  console.log(`========================================\n`);
+
+  // Phase 1: Set leverage
+  console.log(`\n🔧 Setting leverage to ${TRADE_CONFIG.leverage}x...`);
+  try {
+    const leverageResult = await setLeverageKraken(page, TRADE_CONFIG.leverage, exchange);
+    if (leverageResult.success) {
+      console.log(`✅ Leverage set to ${TRADE_CONFIG.leverage}x`);
+    } else {
+      console.log(`⚠️  Leverage setting: ${leverageResult.error || 'failed'}`);
+    }
+    await delay(2000);
+  } catch (err) {
+    console.log(`⚠️  Leverage error: ${err.message}`);
+  }
+
+  // Phase 2: Initial cleanup — cancel orders & close positions
+  console.log(`\n🧹 Initial cleanup: cancelling orders & closing positions...`);
+  try {
+    await cancelKrakenOrders(page);
+    console.log(`✅ Initial cleanup completed`);
+  } catch (err) {
+    console.log(`⚠️  Initial cleanup error: ${err.message}`);
+  }
+  await delay(2000);
+
+  // Phase 3: Continuous trading loop
+  let cycleCount = 0;
+  let previousPrice = null;
+
+  // Fetch initial price as baseline
+  console.log(`\n📊 Fetching initial baseline price...`);
+  try {
+    previousPrice = await getCurrentMarketPrice(page, exchange);
+    if (previousPrice) {
+      console.log(`✅ Baseline price: $${previousPrice.toLocaleString()}`);
+    } else {
+      console.log(`⚠️  Could not fetch baseline price, will use first cycle price`);
+    }
+  } catch (err) {
+    console.log(`⚠️  Baseline price error: ${err.message}`);
+  }
+  await delay(1000);
+
+  while (!isShuttingDown) {
+    cycleCount++;
+
+    console.log(`\n>>> CYCLE ${cycleCount} — ${new Date().toLocaleTimeString()}`);
+
+    try {
+      // ── Step 1: Cleanup — cancel orders & close any open positions ──
+      console.log(`[CYCLE ${cycleCount}] Step 1: Cleanup — cancel orders & close positions...`);
+      try {
+        await cancelKrakenOrders(page);
+        console.log(`[CYCLE ${cycleCount}] ✅ Cleanup completed`);
+      } catch (err) {
+        console.log(`[CYCLE ${cycleCount}] ⚠️  Cleanup error: ${err.message}`);
+      }
+      await delay(1000);
+
+      // ── Step 2: Fetch current price & determine direction ──
+      console.log(`[CYCLE ${cycleCount}] Step 2: Fetching price & determining direction...`);
+      let currentPrice = null;
+      let retries = 0;
+      while (!currentPrice && retries < 3) {
+        try {
+          currentPrice = await getCurrentMarketPrice(page, exchange);
+        } catch (err) {
+          console.log(`[CYCLE ${cycleCount}] ⚠️  Price fetch error (attempt ${retries + 1}): ${err.message}`);
+        }
+        if (!currentPrice) {
+          retries++;
+          if (retries < 3) await delay(3000);
+        }
+      }
+
+      if (!currentPrice) {
+        console.log(`[CYCLE ${cycleCount}] ✗ Could not fetch price after 3 attempts. Waiting 10s...`);
+        await delay(10000);
+        continue;
+      }
+
+      // Determine direction based on price movement
+      // Price went UP → SELL (sell the top), Price went DOWN → BUY (buy the dip)
+      // First cycle or no previous price → default to BUY
+      let openSide, closeSide;
+      if (previousPrice && currentPrice !== previousPrice) {
+        if (currentPrice > previousPrice) {
+          openSide = 'sell';
+          closeSide = 'buy';
+          console.log(`[CYCLE ${cycleCount}] 📈 Price UP: $${previousPrice.toLocaleString()} → $${currentPrice.toLocaleString()} (+$${(currentPrice - previousPrice).toFixed(2)})`);
+          console.log(`[CYCLE ${cycleCount}] 🔻 Direction: SELL → hold → BUY (sell the top)`);
+        } else {
+          openSide = 'buy';
+          closeSide = 'sell';
+          console.log(`[CYCLE ${cycleCount}] 📉 Price DOWN: $${previousPrice.toLocaleString()} → $${currentPrice.toLocaleString()} (-$${(previousPrice - currentPrice).toFixed(2)})`);
+          console.log(`[CYCLE ${cycleCount}] 🔺 Direction: BUY → hold → SELL (buy the dip)`);
+        }
+      } else {
+        // No previous price or price unchanged → alternate based on cycle
+        openSide = cycleCount % 2 === 1 ? 'buy' : 'sell';
+        closeSide = openSide === 'buy' ? 'sell' : 'buy';
+        if (!previousPrice) {
+          console.log(`[CYCLE ${cycleCount}] 📊 No previous price — defaulting to ${openSide.toUpperCase()}`);
+        } else {
+          console.log(`[CYCLE ${cycleCount}] 📊 Price unchanged at $${currentPrice.toLocaleString()} — alternating to ${openSide.toUpperCase()}`);
+        }
+      }
+
+      // Save current price for next cycle comparison
+      previousPrice = currentPrice;
+
+      const openQty = openSide === 'buy' ? TRADE_CONFIG.buyQty : TRADE_CONFIG.sellQty;
+      const closeQty = openQty; // Close same quantity
+      const holdTimeMs = Math.floor(Math.random() * (300000 - 30000 + 1)) + 30000; // 30s–5min
+      const holdTimeSec = Math.round(holdTimeMs / 1000);
+
+      console.log(`\n[CYCLE ${cycleCount}] ═══════════════════════════════════`);
+      console.log(`[CYCLE ${cycleCount}] ${openSide.toUpperCase()} → hold ${holdTimeSec}s → ${closeSide.toUpperCase()}`);
+      console.log(`[CYCLE ${cycleCount}]   Price: $${currentPrice.toLocaleString()}`);
+      console.log(`[CYCLE ${cycleCount}]   Quantity: ${openQty} BTC`);
+      console.log(`[CYCLE ${cycleCount}] ═══════════════════════════════════\n`);
+
+      // ── Step 3: Pre-fill form (order type + quantity, excluding side and price) ──
+      console.log(`[CYCLE ${cycleCount}] Step 3: Pre-filling order form...`);
+      let prefillData = {};
+      try {
+        const prefillResult = await prefillFormKraken(page, { orderType: 'limit', qty: openQty }, exchange);
+        if (prefillResult.success) {
+          prefillData = prefillResult;
+          console.log(`[CYCLE ${cycleCount}] ✅ Form pre-filled`);
+        } else {
+          console.log(`[CYCLE ${cycleCount}] ⚠️  Pre-fill failed: ${prefillResult.error || 'unknown'}`);
+        }
+      } catch (err) {
+        console.log(`[CYCLE ${cycleCount}] ⚠️  Pre-fill error: ${err.message}`);
+      }
+
+      // ── Step 4: Open position ──
+      console.log(`[CYCLE ${cycleCount}] Step 4: Opening ${openSide.toUpperCase()} position...`);
+      let openResult;
+      try {
+        // Use quick-fill if prefill succeeded, otherwise fall back to full executeTrade
+        if (prefillData.success) {
+          openResult = await fillPriceSideAndSubmitKraken(
+            page, currentPrice,
+            { side: openSide, orderType: 'limit' },
+            exchange, Date.now(), cycleCount, openSide.toUpperCase(), email, prefillData
+          );
+        } else {
+          openResult = await executeTrade(page, {
+            side: openSide,
+            orderType: 'limit',
+            qty: openQty,
+          }, exchange);
+        }
+      } catch (err) {
+        console.log(`[CYCLE ${cycleCount}] ✗ ${openSide.toUpperCase()} order error: ${err.message}`);
+        openResult = { success: false, error: err.message };
+      }
+
+      if (openResult.success) {
+        console.log(`[CYCLE ${cycleCount}] ✅ [Kraken] ${openSide.toUpperCase()} Order confirmed`);
+      } else {
+        console.log(`[CYCLE ${cycleCount}] ✗ ${openSide.toUpperCase()} order failed: ${openResult.error || 'unknown'}`);
+        console.log(`[CYCLE ${cycleCount}] ⏳ Waiting 10s before next cycle...`);
+        await delay(10000);
+        continue;
+      }
+
+      // ── Step 5: Hold position with periodic price logging ──
+      console.log(`[CYCLE ${cycleCount}] Step 5: Holding ${openSide.toUpperCase()} position for ${holdTimeSec}s (${(holdTimeSec / 60).toFixed(1)} min)...`);
+      const holdStart = Date.now();
+
+      while (Date.now() - holdStart < holdTimeMs) {
+        if (isShuttingDown) break;
+        const elapsed = Math.round((Date.now() - holdStart) / 1000);
+        const remaining = holdTimeSec - elapsed;
+        // Log every 30s with current price
+        if (remaining > 0 && elapsed > 0 && elapsed % 30 === 0) {
+          let priceInfo = '';
+          try {
+            const holdPrice = await getCurrentMarketPrice(page, exchange);
+            if (holdPrice) {
+              const priceDiff = holdPrice - currentPrice;
+              const pricePct = ((priceDiff / currentPrice) * 100).toFixed(3);
+              priceInfo = ` | Price: $${holdPrice.toLocaleString()} (${priceDiff >= 0 ? '+' : ''}$${priceDiff.toFixed(2)} / ${priceDiff >= 0 ? '+' : ''}${pricePct}%)`;
+            }
+          } catch (_) { /* ignore price fetch errors during hold */ }
+          console.log(`[CYCLE ${cycleCount}] ⏱️  Held ${elapsed}s / ${holdTimeSec}s — closing in ${remaining}s${priceInfo}`);
+        }
+        await delay(5000);
+      }
+
+      if (isShuttingDown) break;
+
+      // ── Step 6: Close position with opposite order ──
+      console.log(`[CYCLE ${cycleCount}] Step 6: Closing position with ${closeSide.toUpperCase()} order...`);
+
+      // Fetch fresh price for closing order
+      let closePrice = null;
+      try {
+        closePrice = await getCurrentMarketPrice(page, exchange);
+        if (closePrice) {
+          console.log(`[CYCLE ${cycleCount}] Close price: $${closePrice.toLocaleString()}`);
+        }
+      } catch (_) { /* use null price, executeTrade will handle */ }
+
+      // Pre-fill for close order
+      let closePrefillData = {};
+      try {
+        const closePrefill = await prefillFormKraken(page, { orderType: 'limit', qty: closeQty }, exchange);
+        if (closePrefill.success) {
+          closePrefillData = closePrefill;
+        }
+      } catch (_) { /* fall back to full executeTrade */ }
+
+      let closeResult;
+      try {
+        if (closePrefillData.success && closePrice) {
+          closeResult = await fillPriceSideAndSubmitKraken(
+            page, closePrice,
+            { side: closeSide, orderType: 'limit' },
+            exchange, Date.now(), cycleCount, closeSide.toUpperCase(), email, closePrefillData
+          );
+        } else {
+          closeResult = await executeTrade(page, {
+            side: closeSide,
+            orderType: 'limit',
+            qty: closeQty,
+          }, exchange);
+        }
+      } catch (err) {
+        console.log(`[CYCLE ${cycleCount}] ✗ ${closeSide.toUpperCase()} close error: ${err.message}`);
+        closeResult = { success: false, error: err.message };
+      }
+
+      if (closeResult.success) {
+        console.log(`[CYCLE ${cycleCount}] ✅ [Kraken] ${closeSide.toUpperCase()} Order confirmed — position closed`);
+      } else {
+        console.log(`[CYCLE ${cycleCount}] ⚠️  ${closeSide.toUpperCase()} close failed: ${closeResult.error || 'unknown'}`);
+        // Fallback: force-close via cancelKrakenOrders (which also closes positions)
+        console.log(`[CYCLE ${cycleCount}] 🔄 Fallback: force-closing via cancelKrakenOrders...`);
+        try {
+          await cancelKrakenOrders(page, true);
+          console.log(`[CYCLE ${cycleCount}] ✅ Force-close completed`);
+        } catch (err2) {
+          console.log(`[CYCLE ${cycleCount}] ✗ Force-close error: ${err2.message}`);
+          // Last resort: closeAllPositions
+          try {
+            await closeAllPositions(page, 100, exchange);
+            console.log(`[CYCLE ${cycleCount}] ✅ closeAllPositions completed`);
+          } catch (err3) {
+            console.log(`[CYCLE ${cycleCount}] ✗ closeAllPositions error: ${err3.message}`);
+          }
+        }
+      }
+
+      // Update previousPrice with latest price for next cycle direction decision
+      try {
+        const latestPrice = await getCurrentMarketPrice(page, exchange);
+        if (latestPrice) previousPrice = latestPrice;
+      } catch (_) { /* keep existing previousPrice */ }
+
+      // ── Step 7: Cooldown ──
+      const cooldown = Math.floor(Math.random() * 5000) + 3000; // 3-8s
+      console.log(`[CYCLE ${cycleCount}] ⏳ Cooldown ${Math.round(cooldown / 1000)}s before next cycle...\n`);
+      await delay(cooldown);
+
+    } catch (err) {
+      console.log(`[CYCLE ${cycleCount}] ❌ Unexpected error: ${err.message}`);
+      console.log(`[CYCLE ${cycleCount}] Stack: ${err.stack}`);
+      console.log(`[CYCLE ${cycleCount}] ⏳ Waiting 15s before next cycle...`);
+      await delay(15000);
+    }
+  }
+
+  console.log(`\n🛑 Kraken-Only trading loop stopped (shutdown signal received).`);
+}
+
+export { automatedTradingLoop, automatedTradingLoop3Exchanges, automatedTradingLoop2Exchanges, testSingleExchangeTrading, automatedTradingLoopKrakenOnly, closeAllPositionsOnShutdown };

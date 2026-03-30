@@ -91,6 +91,13 @@ async function chooseTradingMode(modeInput) {
         description: 'Multi-Exchange Mode - GRVT + Extended (2 Exchanges)',
         accountCount: 2
       };
+    } else if (mode === 'kraken-only') {
+      return {
+        mode: 'kraken-only',
+        exchanges: ['kraken'],
+        description: 'Kraken Only — Continuous Trading (30s–5min hold)',
+        accountCount: 1
+      };
     } else if (mode === '3a') {
       return {
         mode: '3a',

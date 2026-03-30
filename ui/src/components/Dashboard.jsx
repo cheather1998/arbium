@@ -139,7 +139,8 @@ function parseLogsForMetrics(logs) {
   return { cycle, krakenTrades, grvtTrades, krakenPrice, grvtPrice, priceDiff, botState, botMessage, latency };
 }
 
-export default function Dashboard({ status, botRunning, logs, onStart, onStop, config }) {
+export default function Dashboard({ status, botRunning, logs, onStart, onStop, config, tradingMode, onTradingModeChange }) {
+  const isKrakenOnly = tradingMode === 'kraken-only';
   const api = window.electronAPI;
   const [refreshKey, setRefreshKey] = useState(0);
 
@@ -248,10 +249,10 @@ export default function Dashboard({ status, botRunning, logs, onStart, onStop, c
   const handleOpenExchanges = () => {
     if (api?.openExternal) {
       api.openExternal('https://pro.kraken.com/app/trade/futures-btc-usd-perp');
-      api.openExternal('https://grvt.io/exchange/perpetual/BTC-USDT');
+      if (!isKrakenOnly) api.openExternal('https://grvt.io/exchange/perpetual/BTC-USDT');
     } else {
       window.open('https://pro.kraken.com/app/trade/futures-btc-usd-perp', '_blank');
-      window.open('https://grvt.io/exchange/perpetual/BTC-USDT', '_blank');
+      if (!isKrakenOnly) window.open('https://grvt.io/exchange/perpetual/BTC-USDT', '_blank');
     }
   };
 
@@ -266,6 +267,28 @@ export default function Dashboard({ status, botRunning, logs, onStart, onStop, c
 
   return (
     <div className="dashboard">
+      {/* Trading Mode Selector / Title — Top Level */}
+      {!botRunning ? (
+        <div className="dash-mode-selector">
+          <button
+            className={`dash-mode-btn ${!isKrakenOnly ? 'active' : ''}`}
+            onClick={() => onTradingModeChange('kraken-grvt')}
+          >
+            Kraken + GRVT
+          </button>
+          <button
+            className={`dash-mode-btn ${isKrakenOnly ? 'active' : ''}`}
+            onClick={() => onTradingModeChange('kraken-only')}
+          >
+            Kraken Only
+          </button>
+        </div>
+      ) : (
+        <div className="dash-mode-title">
+          {isKrakenOnly ? 'Kraken Strategy' : 'Kraken & GRVT Arbitrage Strategy'}
+        </div>
+      )}
+
       {/* Confirm Modal */}
       {showConfirm && (
         <div className="modal-overlay">
@@ -385,16 +408,20 @@ export default function Dashboard({ status, botRunning, logs, onStart, onStop, c
             <span className="dash-price-exchange">Kraken</span>
             <span className="dash-price-value">{formatPrice(krakenPrice)}</span>
           </div>
-          <div className="dash-price-spread">
-            <span className={`dash-spread-value ${priceDiff !== null ? (Math.abs(priceDiff) >= 5 ? 'high' : '') : ''}`}>
-              {priceDiff !== null ? `$${Math.abs(priceDiff).toFixed(2)}` : '—'}
-            </span>
-            <span className="dash-spread-label">spread</span>
-          </div>
-          <div className="dash-price-item">
-            <span className="dash-price-exchange">GRVT</span>
-            <span className="dash-price-value">{formatPrice(grvtPrice)}</span>
-          </div>
+          {!isKrakenOnly && (
+            <>
+              <div className="dash-price-spread">
+                <span className={`dash-spread-value ${priceDiff !== null ? (Math.abs(priceDiff) >= 5 ? 'high' : '') : ''}`}>
+                  {priceDiff !== null ? `$${Math.abs(priceDiff).toFixed(2)}` : '—'}
+                </span>
+                <span className="dash-spread-label">spread</span>
+              </div>
+              <div className="dash-price-item">
+                <span className="dash-price-exchange">GRVT</span>
+                <span className="dash-price-value">{formatPrice(grvtPrice)}</span>
+              </div>
+            </>
+          )}
         </div>
       </div>
 
@@ -417,11 +444,15 @@ export default function Dashboard({ status, botRunning, logs, onStart, onStop, c
             <span className="dash-stat-value">{krakenTrades || '—'}</span>
             <span className="dash-stat-label">Kraken Trades</span>
           </div>
-          <div className="dash-stat-divider" />
-          <div className="dash-stat">
-            <span className="dash-stat-value">{grvtTrades || '—'}</span>
-            <span className="dash-stat-label">GRVT Trades</span>
-          </div>
+          {!isKrakenOnly && (
+            <>
+              <div className="dash-stat-divider" />
+              <div className="dash-stat">
+                <span className="dash-stat-value">{grvtTrades || '—'}</span>
+                <span className="dash-stat-label">GRVT Trades</span>
+              </div>
+            </>
+          )}
           <div className="dash-stat-divider" />
           <div className="dash-stat">
             <span className="dash-stat-value">{latency !== null ? `${latency}s` : '—'}</span>
@@ -430,7 +461,7 @@ export default function Dashboard({ status, botRunning, logs, onStart, onStop, c
         </div>
         <div className="dash-pnl-row">
           <button className="btn dash-pnl-btn" onClick={handleOpenExchanges}>
-            Check P&L on Kraken & GRVT
+            {isKrakenOnly ? 'Check P&L on Kraken' : 'Check P&L on Kraken & GRVT'}
           </button>
           <p className="dash-pnl-note">
             Do not click any elements in the bot's browser windows while running. Open separate browser windows to check P&L.
