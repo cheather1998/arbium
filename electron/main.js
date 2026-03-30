@@ -24,14 +24,10 @@ const DATA_DIR = isDev ? ROOT_DIR : app.getPath('userData');
 function ensureDataFiles() {
   if (isDev) return;
   const userEnv = path.join(DATA_DIR, '.env');
-  console.log('[Data] DATA_DIR:', DATA_DIR);
-  console.log('[Data] ROOT_DIR:', ROOT_DIR);
-  console.log('[Data] userEnv:', userEnv);
 
   // Ensure userData directory exists
   if (!fs.existsSync(DATA_DIR)) {
     fs.mkdirSync(DATA_DIR, { recursive: true });
-    console.log('[Data] Created DATA_DIR:', DATA_DIR);
   }
 
   if (!fs.existsSync(userEnv)) {
@@ -48,7 +44,6 @@ function ensureDataFiles() {
       try {
         const content = fs.readFileSync(bundledEnv, 'utf-8');
         fs.writeFileSync(userEnv, content);
-        console.log('[Data] Copied .env from', bundledEnv);
         copied = true;
         break;
       } catch (err) { /* try next */ }
@@ -57,7 +52,6 @@ function ensureDataFiles() {
       // Write minimal default .env — ACCOUNT_EMAILS not required, bot uses defaults
       const defaultEnv = `BUY_QTY=0.0001\nSELL_QTY=0.0001\nLEVERAGE=10\nOPENING_THRESHOLD=7\nCLOSING_THRESHOLD=5\nCLOSING_SPREAD=10\n`;
       fs.writeFileSync(userEnv, defaultEnv);
-      console.log('[Data] Wrote default .env to', userEnv);
     }
   }
 }

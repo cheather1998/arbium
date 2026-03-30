@@ -1319,12 +1319,12 @@ async function automatedTradingLoop3Exchanges(krakenAccount, grvtAccount, extend
       console.log(`   SELL on ${sellAccount.exchange.name} (${sellAccount.email})`);
       
       // Helper function to wrap trade execution with timeout
-      const executeTradeWithTimeout = async (page, tradeParams, exchange, timeoutMs = 30000) => {
+      const executeTradeWithTimeout = async (page, tradeParams, exchange, timeoutMs = 60000) => {
         const tradePromise = executeTrade(page, tradeParams, exchange);
-        const timeoutPromise = new Promise((_, reject) => 
+        const timeoutPromise = new Promise((_, reject) =>
           setTimeout(() => reject(new Error(`Trade execution timeout after ${timeoutMs}ms`)), timeoutMs)
         );
-        
+
         try {
           return await Promise.race([tradePromise, timeoutPromise]);
         } catch (error) {
@@ -1332,18 +1332,18 @@ async function automatedTradingLoop3Exchanges(krakenAccount, grvtAccount, extend
           return { success: false, error: error.message };
         }
       };
-      
+
       const tradePromises = [
         executeTradeWithTimeout(buyAccount.page, {
           side: "buy",
           orderType: "limit",
           qty: TRADE_CONFIG.buyQty,
-        }, buyAccount.exchange, 30000), // 30 second timeout
+        }, buyAccount.exchange, 60000), // 60 second timeout (Windows compatibility)
         executeTradeWithTimeout(sellAccount.page, {
           side: "sell",
           orderType: "limit",
           qty: TRADE_CONFIG.sellQty,
-        }, sellAccount.exchange, 30000), // 30 second timeout
+        }, sellAccount.exchange, 60000), // 60 second timeout (Windows compatibility)
       ];
       
       // Use allSettled so one trade doesn't block the other
@@ -1833,7 +1833,7 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
 
 
 
-      const executeTradeWithTimeout = async (page, tradeParams, exchange, timeoutMs = 30000, thresholdMetTime = null, cycleCount = null, side = '', email = '') => {
+      const executeTradeWithTimeout = async (page, tradeParams, exchange, timeoutMs = 60000, thresholdMetTime = null, cycleCount = null, side = '', email = '') => {
         // Pass timing info to executeTrade
         const tradePromise = executeTrade(page, tradeParams, exchange, thresholdMetTime, cycleCount, side, email);
         const timeoutPromise = new Promise((_, reject) => 
@@ -2011,7 +2011,7 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
       console.log(`   SELL on ${tradeSellAccount.exchange.name} (${tradeSellAccount.email}) at $${finalHighestPriceExchange.price.toLocaleString()}`);
       
       // Helper function for Kraken quick fill (with prefill)
-      const quickFillAndSubmitKrakenWithTimeout = async (page, price, tradeParams, exchange, prefillData, timeoutMs = 30000, thresholdMetTime, cycleCount, sideLabel, email) => {
+      const quickFillAndSubmitKrakenWithTimeout = async (page, price, tradeParams, exchange, prefillData, timeoutMs = 60000, thresholdMetTime, cycleCount, sideLabel, email) => {
         const { fillPriceSideAndSubmitKraken } = await import('../trading/prefillForm.js');
         
         const quickFillPromise = fillPriceSideAndSubmitKraken(page, price, tradeParams, exchange, thresholdMetTime, cycleCount, sideLabel, email, prefillData);
@@ -2062,7 +2062,7 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
             { side: "buy", orderType: "limit", qty: TRADE_CONFIG.buyQty },
             tradeBuyAccount.exchange,
             prefillData[tradeBuyAccount.email] || {},
-            30000,
+            60000,
             thresholdMetTime,
             cycleCount,
             'BUY',
@@ -2075,7 +2075,7 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
             { side: "buy", orderType: "limit", qty: TRADE_CONFIG.buyQty },
             tradeBuyAccount.exchange,
             prefillData[tradeBuyAccount.email] || {},
-            30000,
+            60000,
             thresholdMetTime,
             cycleCount,
             'BUY',
@@ -2090,13 +2090,13 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
               qty: TRADE_CONFIG.buyQty
             },
             tradeBuyAccount.exchange,
-            30000,
+            60000,
             thresholdMetTime,
             cycleCount,
             'BUY',
             tradeBuyAccount.email
           );
-      
+
       const sellTradePromise = sellIsKraken
         ? quickFillAndSubmitKrakenWithTimeout(
             tradeSellAccount.page,
@@ -2104,7 +2104,7 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
             { side: "sell", orderType: "limit", qty: TRADE_CONFIG.sellQty },
             tradeSellAccount.exchange,
             prefillData[tradeSellAccount.email] || {},
-            30000,
+            60000,
             thresholdMetTime,
             cycleCount,
             'SELL',
@@ -2117,7 +2117,7 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
             { side: "sell", orderType: "limit", qty: TRADE_CONFIG.sellQty },
             tradeSellAccount.exchange,
             prefillData[tradeSellAccount.email] || {},
-            30000,
+            60000,
             thresholdMetTime,
             cycleCount,
             'SELL',
@@ -2132,7 +2132,7 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
               qty: TRADE_CONFIG.sellQty
             },
             tradeSellAccount.exchange,
-            30000,
+            60000,
             thresholdMetTime,
             cycleCount,
             'SELL',
@@ -2141,7 +2141,7 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
       
       // Use allSettled to wait for BOTH promises to complete (fulfilled or rejected)
       // This ensures we wait for both trades before continuing
-      console.log(`[CYCLE ${cycleCount}] ⏳ Waiting for both trades to complete (this may take up to 30 seconds)...`);
+      console.log(`[CYCLE ${cycleCount}] ⏳ Waiting for both trades to complete (this may take up to 60 seconds)...`);
       const startTime = Date.now();
       
       // CRITICAL: await Promise.allSettled() will block here until BOTH promises settle

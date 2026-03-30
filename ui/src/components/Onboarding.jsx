@@ -12,14 +12,6 @@ export default function Onboarding({ onComplete }) {
 
   const stepStyle = { display: 'flex', gap: 10, alignItems: 'baseline' };
   const numStyle = { color: 'var(--text-muted)', minWidth: 20, fontFamily: 'var(--font-mono)', fontSize: 11 };
-  const registerBtn = {
-    padding: '10px 16px', fontSize: 13, background: '#fff', color: '#0a0a0a',
-    border: 'none', fontWeight: 600, borderRadius: 10, cursor: 'pointer', width: '100%',
-    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-    transition: 'opacity 0.15s',
-    fontFamily: "'Plus Jakarta Sans', sans-serif", letterSpacing: '-0.2px',
-  };
-
   return (
     <div style={{ position: 'relative', overflow: 'hidden', height: 'calc(100vh - 40px)' }}>
       {/* Background SVG */}

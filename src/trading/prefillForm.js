@@ -3129,9 +3129,10 @@ export async function fillPriceSideAndSubmitGrvt(page, price, { side, orderType,
   }
   
   // 3. Check if TP/SL modal is still open, close it, click Advanced again, then refill P&L inputs, wait for trigger price update, and fill limit prices
-  if (orderType === "limit" && price) {
+  const tpSlConfigured = !!(process.env.TAKE_PROFIT || process.env.STOP_LOSS);
+  if (orderType === "limit" && price && tpSlConfigured) {
     console.log(`[${exchange.name}] [QUICK-FILL] Step 3: Handling TP/SL (close modal, reopen with Advanced, refill P&L inputs, wait for trigger price update, fill limit prices, update side, confirm)...`);
-    
+
     // Step 3.0: Close TP/SL modal if it's open (after price refill)
     console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] Step 3.0: Closing TP/SL modal after price refill...`);
     let modalOpen = await page.evaluate(() => {
@@ -3917,7 +3918,10 @@ export async function fillPriceSideAndSubmitGrvt(page, price, { side, orderType,
         await delay(300);
       }
     }
-  
+  } else if (orderType === "limit" && price && !tpSlConfigured) {
+    console.log(`[${exchange.name}] [QUICK-FILL] Step 3: No TP/SL configured (TAKE_PROFIT/STOP_LOSS not set), skipping TP/SL handling`);
+  }
+
   // 4. Select Buy or Sell (side)
   console.log(`[${exchange.name}] [QUICK-FILL] Step 4: Selecting ${side.toUpperCase()}...`);
   await selectBuyOrSell(page, side, exchange);
