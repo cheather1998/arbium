@@ -110,6 +110,12 @@ h1, h2, h3 {
   color: var(--text-primary);
 }
 
+.app-header .header-actions {
+  display: flex;
+  gap: 8px;
+  -webkit-app-region: no-drag;
+}
+
 .app-body {
   flex: 1;
   display: flex;
@@ -177,6 +183,19 @@ h1, h2, h3 {
 }
 .btn-danger:hover { background: rgba(254, 111, 111, 0.75); }
 
+.btn-success {
+  background: var(--green);
+  border-color: var(--green);
+  color: #242222;
+}
+
+.btn-outline {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--text-secondary);
+}
+.btn-outline:hover { border-color: var(--accent); color: var(--accent); }
+
 .btn-ghost {
   background: transparent;
   border-color: transparent;
@@ -196,6 +215,13 @@ h1, h2, h3 {
 }
 
 /* ============== Cards ============== */
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+}
+
 .card-title {
   font-family: var(--font-heading);
   font-size: 11px;
@@ -286,6 +312,24 @@ h1, h2, h3 {
   font-size: 13px !important;
   font-weight: 600 !important;
   font-family: 'Plus Jakarta Sans', sans-serif !important;
+}
+
+.dash-exchange-btn {
+  padding: 14px 18px !important;
+  font-size: 13px !important;
+  white-space: nowrap;
+  color: var(--text-secondary) !important;
+}
+
+.dash-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: center;
+  margin-top: -16px;
+}
+
+.dash-hint-warn {
+  color: var(--yellow);
 }
 
 /* --- Sections --- */
@@ -474,6 +518,56 @@ h1, h2, h3 {
 }
 
 /* --- Errors --- */
+.dash-errors {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dash-error-item {
+  background: rgba(254, 111, 111, 0.05);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+}
+
+.dash-error-top {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.dash-error-time {
+  font-size: 11px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+}
+
+.dash-error-msg {
+  font-size: 13px;
+  color: var(--red);
+  word-break: break-word;
+  line-height: 1.5;
+}
+
+.dash-error-fix {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--yellow);
+  background: rgba(210, 153, 34, 0.06);
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  margin-top: 8px;
+  line-height: 1.4;
+}
+
+.dash-error-fix-icon {
+  flex-shrink: 0;
+  font-size: 13px;
+}
+
 .dash-errors-inline {
   display: flex;
   flex-direction: column;
@@ -605,6 +699,28 @@ h1, h2, h3 {
   margin-bottom: 4px;
 }
 
+.config-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 10px;
+}
+
+.badge-blue {
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+
+.badge-green {
+  background: var(--green-bg);
+  color: var(--green);
+}
+
+.config-input-row {
+  display: flex;
+  gap: 6px;
+}
+
 .config-input {
   width: 100%;
   padding: 10px 12px;
@@ -702,6 +818,16 @@ input[type="range"]::-webkit-slider-thumb:hover {
 
 input[type="range"]::-webkit-slider-thumb:active {
   transform: scale(1.1);
+}
+
+/* Advanced Settings */
+.advanced-settings {
+  animation: slideDown 0.2s ease;
+}
+
+@keyframes slideDown {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 /* ============== Log Viewer ============== */
@@ -1108,6 +1234,11 @@ input[type="range"]::-webkit-slider-thumb:active {
   width: 90%;
   text-align: center;
   animation: modalSlideUp 0.25s ease;
+}
+
+.confirm-modal-icon {
+  font-size: 32px;
+  margin-bottom: 12px;
 }
 
 .confirm-modal h2 {

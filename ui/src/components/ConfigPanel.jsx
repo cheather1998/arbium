@@ -9,6 +9,9 @@ const LEVERAGE_STEPS = [1, 5, 10, 20, 30, 40, 50];
 
 export default function ConfigPanel({ config, onSave, disabled, onSwitchAccount, btcPrice }) {
   const [localConfig, setLocalConfig] = useState({});
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [liveBtcPrice, setLiveBtcPrice] = useState(null);
 
   // Fetch BTC price on mount for USD reference (independent of bot)
@@ -35,8 +38,19 @@ export default function ConfigPanel({ config, onSave, disabled, onSwitchAccount,
   const handleChange = (key, value) => {
     const updated = { ...localConfig, [key]: value };
     setLocalConfig(updated);
+    setSaved(false);
     // Auto-save on change
     onSave(updated);
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    const result = await onSave(localConfig);
+    setSaving(false);
+    if (result.success) {
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    }
   };
 
   const leverage = Number(localConfig.LEVERAGE) || 1;

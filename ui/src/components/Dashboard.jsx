@@ -62,6 +62,10 @@ const BOT_STATE_MAP = {
 };
 
 /**
+ * Parse bot logs to extract dashboard metrics.
+ * The bot outputs structured text logs — we regex-match key data points.
+ */
+/**
  * Parse bot logs for dashboard metrics.
  * Optimized: scan last ~100 logs for live data (prices, state),
  * full scan only for cumulative counters (trades, cycle).
@@ -197,6 +201,7 @@ export default function Dashboard({ status, botRunning, logs, onStart, onStop, c
     return logs
       .filter((l) => {
         const msg = l.message || '';
+        const msgLower = msg.toLowerCase();
 
         // === WHITELIST: Only these specific system errors are shown ===
         let errorType = null;
