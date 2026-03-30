@@ -224,10 +224,10 @@ async function launchAccount(accountConfig, exchangeConfig, _isRetry = false) {
       }
   
       // Verify the page URL matches the expected exchange URL
-      // Kraken may redirect to spot trading if cookies saved a different trading pair
-      // SKIP this check for Kraken if not logged in — Kraken redirects Futures URL to sign-in page,
-      // and forcing navigation back to Futures causes repeated refresh on the sign-in page
-      if (exchange.url && !(exchange.name === 'Kraken' && !hasExistingCookies)) {
+      // SKIP this check entirely for Kraken — Kraken redirects Futures URL to sign-in page
+      // when not logged in (even with expired cookies), causing repeated refresh.
+      // Futures navigation is handled AFTER login is confirmed (line ~337).
+      if (exchange.url && exchange.name !== 'Kraken') {
         const currentUrl = page.url();
         const expectedUrl = exchange.url;
         if (!currentUrl.includes(new URL(expectedUrl).pathname)) {

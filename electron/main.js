@@ -118,17 +118,9 @@ function startBot(mode, config) {
     stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
   });
 
-  botProcess.stdout.on('data', (data) => {
-    data.toString().split('\n').filter(Boolean).forEach((line) => {
-      sendToUI('bot:log', { type: 'info', message: line });
-    });
-  });
-
-  botProcess.stderr.on('data', (data) => {
-    data.toString().split('\n').filter(Boolean).forEach((line) => {
-      sendToUI('bot:log', { type: 'error', message: line });
-    });
-  });
+  // Note: bot-process.js sends logs via BOTH stdout (originalLog) and IPC (process.send).
+  // Only use IPC channel to avoid duplicate logs in the UI.
+  // stdout/stderr are intentionally NOT forwarded to UI.
 
   botProcess.on('message', (msg) => {
     if (msg.type === 'status') sendToUI('bot:status', msg.data);
