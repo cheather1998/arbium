@@ -3209,10 +3209,89 @@ export async function fillPriceSideAndSubmitGrvt(page, price, { side, orderType,
       console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] TP/SL modal was already closed`);
     }
     
+    // Step 3.05: Ensure TP/SL checkbox is checked (Advanced button only appears when checked)
+    console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] Step 3.05: Ensuring TP/SL checkbox is checked...`);
+    const tpSlCheckboxChecked = await page.evaluate(() => {
+      const labels = Array.from(document.querySelectorAll('label'));
+      for (const label of labels) {
+        const text = (label.textContent || '').trim().toLowerCase();
+        if ((text.includes('tp') && text.includes('sl')) ||
+          (text.includes('take profit') && text.includes('stop loss'))) {
+          const checkbox = label.querySelector('input[type="checkbox"]');
+          if (checkbox) {
+            return checkbox.checked;
+          }
+        }
+      }
+      return null; // checkbox not found
+    });
+
+    if (tpSlCheckboxChecked === false) {
+      console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] TP/SL checkbox is unchecked, clicking to enable...`);
+      const clicked = await page.evaluate(() => {
+        const labels = Array.from(document.querySelectorAll('label'));
+        for (const label of labels) {
+          const text = (label.textContent || '').trim().toLowerCase();
+          if ((text.includes('tp') && text.includes('sl')) ||
+            (text.includes('take profit') && text.includes('stop loss'))) {
+            const checkbox = label.querySelector('input[type="checkbox"]');
+            if (checkbox) {
+              checkbox.click();
+              return true;
+            }
+            // Fallback: click the label itself
+            label.click();
+            return true;
+          }
+        }
+        return false;
+      });
+
+      if (clicked) {
+        await delay(800);
+        // Verify it's now checked
+        const isNowChecked = await page.evaluate(() => {
+          const labels = Array.from(document.querySelectorAll('label'));
+          for (const label of labels) {
+            const text = (label.textContent || '').trim().toLowerCase();
+            if ((text.includes('tp') && text.includes('sl')) ||
+              (text.includes('take profit') && text.includes('stop loss'))) {
+              const checkbox = label.querySelector('input[type="checkbox"]');
+              if (checkbox) return checkbox.checked;
+            }
+          }
+          return false;
+        });
+        if (isNowChecked) {
+          console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ✅ TP/SL checkbox is now checked`);
+        } else {
+          console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  Could not check TP/SL checkbox, trying label click...`);
+          await page.evaluate(() => {
+            const labels = Array.from(document.querySelectorAll('label'));
+            for (const label of labels) {
+              const text = (label.textContent || '').trim().toLowerCase();
+              if ((text.includes('tp') && text.includes('sl')) ||
+                (text.includes('take profit') && text.includes('stop loss'))) {
+                label.click();
+                return;
+              }
+            }
+          });
+          await delay(800);
+        }
+      } else {
+        console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  Could not find TP/SL checkbox to click`);
+      }
+    } else if (tpSlCheckboxChecked === true) {
+      console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ✅ TP/SL checkbox already checked`);
+    } else {
+      console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] ⚠️  TP/SL checkbox not found on page`);
+    }
+
     // Step 3.1: Click Advanced button again to reopen TP/SL modal
     console.log(`[${exchange.name}] [QUICK-FILL] [TP/SL] Step 3.1: Clicking Advanced button to reopen TP/SL modal...`);
     await delay(800); // Give UI time to update after modal close
-    
+
     const createOrderPanel = await page.$('[data-sentry-element="CreateOrderPanel"]');
     let advancedEl = null;
     
