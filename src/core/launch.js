@@ -167,7 +167,10 @@ async function launchAccount(accountConfig, exchangeConfig, _isRetry = false) {
       console.log(`[${email}] Opening ${exchange.name}...`);
   
       // If new account, use referral URL; otherwise use regular trading URL
-      const targetUrl = isNewAccount ? exchange.referralUrl : exchange.url;
+      // For Kraken: always go to home page first — Futures URL redirects to sign-in
+      // with repeated refreshes when not logged in. Navigate to Futures AFTER login.
+      const targetUrl = isNewAccount ? exchange.referralUrl
+        : (exchange.name === 'Kraken' ? 'https://pro.kraken.com/app/home' : exchange.url);
   
       // Retry navigation up to 3 times to handle "Execution context was destroyed" errors
       let navSuccess = false;
@@ -209,7 +212,8 @@ async function launchAccount(accountConfig, exchangeConfig, _isRetry = false) {
       }
   
       // If cookies were loaded, reload the page to ensure cookies are applied
-      if (hasExistingCookies) {
+      // SKIP reload for Kraken — expired cookies + reload causes infinite redirect loop
+      if (hasExistingCookies && exchange.name !== 'Kraken') {
         console.log(
           `[${email}] Cookies loaded, reloading page to apply cookies...`
         );

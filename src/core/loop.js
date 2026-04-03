@@ -2681,6 +2681,26 @@ async function automatedTradingLoopKrakenOnly(accountResult) {
   }
   await delay(2000);
 
+  // Helper: ensure page is on Kraken Futures, navigate back if not
+  async function ensureFuturesPage() {
+    const currentUrl = page.url();
+    if (!currentUrl.includes('futures')) {
+      console.log(`⚠️  Page drifted to: ${currentUrl}`);
+      console.log(`🔄 Navigating back to Kraken Futures...`);
+      await page.goto(exchange.url, { waitUntil: 'networkidle2', timeout: 30000 });
+      await delay(3000);
+      // Verify
+      const newUrl = page.url();
+      if (newUrl.includes('futures')) {
+        console.log(`✅ Back on Kraken Futures page`);
+      } else {
+        console.log(`⚠️  Still not on Futures: ${newUrl}, retrying...`);
+        await page.goto(exchange.url, { waitUntil: 'networkidle2', timeout: 30000 });
+        await delay(3000);
+      }
+    }
+  }
+
   // Phase 3: Continuous trading loop
   let cycleCount = 0;
   let previousPrice = null;
@@ -2705,6 +2725,9 @@ async function automatedTradingLoopKrakenOnly(accountResult) {
     console.log(`\n>>> CYCLE ${cycleCount} — ${new Date().toLocaleTimeString()}`);
 
     try {
+      // ── Step 0: Ensure we're on the Futures page ──
+      await ensureFuturesPage();
+
       // ── Step 1: Cleanup — cancel orders & close any open positions ──
       console.log(`[CYCLE ${cycleCount}] Step 1: Cleanup — cancel orders & close positions...`);
       try {
@@ -2833,8 +2856,10 @@ async function automatedTradingLoopKrakenOnly(accountResult) {
         if (isShuttingDown) break;
         const elapsed = Math.round((Date.now() - holdStart) / 1000);
         const remaining = holdTimeSec - elapsed;
-        // Log every 30s with current price
+        // Log every 30s with current price + verify page URL
         if (remaining > 0 && elapsed > 0 && elapsed % 30 === 0) {
+          // Check page hasn't drifted during hold
+          await ensureFuturesPage();
           let priceInfo = '';
           try {
             const holdPrice = await getCurrentMarketPrice(page, exchange);
@@ -2852,6 +2877,7 @@ async function automatedTradingLoopKrakenOnly(accountResult) {
       if (isShuttingDown) break;
 
       // ── Step 6: Close position with opposite order ──
+      await ensureFuturesPage();
       console.log(`[CYCLE ${cycleCount}] Step 6: Closing position with ${closeSide.toUpperCase()} order...`);
 
       // Fetch fresh price for closing order

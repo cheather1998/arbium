@@ -40,27 +40,32 @@ async function isLoggedIn(page, exchangeConfig = null) {
       await delay(2000);
       const isTradingPage = await page.evaluate(() => {
         const text = document.body.innerText.toLowerCase();
-        // Check for trading interface elements
-        const hasTradingElements = 
-          text.includes('buy') || 
-          text.includes('sell') || 
-          text.includes('market') || 
-          text.includes('limit') ||
-          text.includes('order') ||
-          text.includes('position');
-        
-        // Check for price displays
-        const hasPriceElements = document.querySelectorAll('[class*="price"], [class*="ticker"]').length > 0;
-        
-        // Check if there are trading buttons
+        const url = window.location.href.toLowerCase();
+
+        // Check for sign-in page — definitely NOT logged in
+        if (url.includes('sign-in') || url.includes('signin') || url.includes('login')) {
+          return false;
+        }
+
+        // For Kraken: must have portfolio/balance indicators (only visible when logged in)
+        const hasAccountInfo =
+          text.includes('available balance') ||
+          text.includes('portfolio value') ||
+          text.includes('total value') ||
+          text.includes('order form') ||
+          text.includes('open orders') ||
+          text.includes('open positions');
+
+        // Check for actual Buy/Sell trading buttons (not just text mentions)
         const hasTradingButtons = Array.from(document.querySelectorAll('button')).some(
           btn => {
             const btnText = btn.textContent?.trim().toLowerCase();
             return btnText === 'buy' || btnText === 'sell' || btnText === 'long' || btnText === 'short';
           }
         );
-        
-        return hasTradingElements || hasPriceElements || hasTradingButtons;
+
+        // Must have BOTH account info AND trading buttons to be considered logged in
+        return hasAccountInfo && hasTradingButtons;
       });
       
       if (isTradingPage) {
