@@ -64,4 +64,5 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Utilities
   openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
   getVersion: () => ipcRenderer.invoke('app:version'),
+  fetchBtcPrice: () => ipcRenderer.invoke('btc:price'),
 });

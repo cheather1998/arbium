@@ -95,7 +95,14 @@ async function chooseTradingMode(modeInput) {
       return {
         mode: 'kraken-only',
         exchanges: ['kraken'],
-        description: 'Kraken Only — Continuous Trading (30s–5min hold)',
+        description: 'Kraken Future Trade — Continuous Trading (30s–5min hold)',
+        accountCount: 1
+      };
+    } else if (mode === 'kraken-margin') {
+      return {
+        mode: 'kraken-margin',
+        exchanges: ['kraken'],
+        description: 'Kraken Margin Trade',
         accountCount: 1
       };
     } else if (mode === '3a') {

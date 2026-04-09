@@ -1,5 +1,6 @@
 import { useMemo, useState, useEffect } from 'react';
 import refreshIcon from '../assets/refresh-icon.svg';
+import { computeRequiredBalance } from '../lib/requiredBalance';
 
 // Only critical system errors — trading events (timeouts, fills) are normal and filtered out
 const ERROR_FIXES = [
@@ -76,6 +77,13 @@ function parseLogsForMetrics(logs) {
   const counted = new Set();
   let krakenPrice = null, grvtPrice = null, priceDiff = null;
   let botState = null, botMessage = null, latency = null;
+  // Kraken-solo mode live position tracking (used to show "Open Side" + "Entry"
+  // in the dashboard for Kraken Future / Margin). We walk the logs in order
+  // and maintain the most recent open position state.
+  let openSide = null;       // 'BUY' | 'SELL' | null
+  let entryPrice = null;     // number | null
+  let pendingSide = null;    // side we've seen in a "Step 4: Opening X position" line but not yet confirmed
+  let pendingPrice = null;   // price captured from the cycle header right before pendingSide
 
   // --- Pass 1: Full scan for cumulative data (trades + max cycle) ---
   for (let i = 0; i < len; i++) {
@@ -87,6 +95,34 @@ function parseLogsForMetrics(logs) {
     }
     if (/GRVT/i.test(msg) && /Order confirmed/i.test(msg)) {
       const k = `g${currentCycle}`; if (!counted.has(k)) { counted.add(k); grvtTrades++; }
+    }
+
+    // === Track Kraken-solo open position ===
+    // Cycle header: "[CYCLE 5] BUY → hold 120s → SELL"
+    const cycleHeader = msg.match(/\[CYCLE\s+\d+\]\s+(BUY|SELL)\s*→\s*hold/i);
+    if (cycleHeader) {
+      pendingSide = cycleHeader[1].toUpperCase();
+      pendingPrice = null;
+    }
+    // Price line right after cycle header: "[CYCLE 5]   Price: $108,234.56"
+    const cyclePrice = msg.match(/\[CYCLE\s+\d+\]\s+Price:\s*\$([\d,]+\.?\d*)/);
+    if (cyclePrice && pendingSide) {
+      pendingPrice = parseFloat(cyclePrice[1].replace(/,/g, ''));
+    }
+    // Open confirmed: "[CYCLE 5] ✅ [Kraken] BUY Order confirmed" (NOT "position closed")
+    const openConfirmed = msg.match(/\[CYCLE\s+\d+\].*\[Kraken\]\s+(BUY|SELL)\s+Order confirmed/i);
+    if (openConfirmed && !/position closed/i.test(msg)) {
+      openSide = openConfirmed[1].toUpperCase();
+      // Prefer pendingPrice (from cycle header), fall back to most recent krakenPrice
+      if (pendingPrice != null) entryPrice = pendingPrice;
+      else if (krakenPrice != null) entryPrice = krakenPrice;
+    }
+    // Close confirmed: "[CYCLE 5] ✅ [Kraken] SELL Order confirmed — position closed"
+    if (/Order confirmed.*position closed/i.test(msg)) {
+      openSide = null;
+      entryPrice = null;
+      pendingSide = null;
+      pendingPrice = null;
     }
   }
 
@@ -136,11 +172,11 @@ function parseLogsForMetrics(logs) {
     }
   }
 
-  return { cycle, krakenTrades, grvtTrades, krakenPrice, grvtPrice, priceDiff, botState, botMessage, latency };
+  return { cycle, krakenTrades, grvtTrades, krakenPrice, grvtPrice, priceDiff, botState, botMessage, latency, openSide, entryPrice };
 }
 
-export default function Dashboard({ status, botRunning, logs, onStart, onStop, config, tradingMode, onTradingModeChange }) {
-  const isKrakenOnly = tradingMode === 'kraken-only';
+export default function Dashboard({ status, botRunning, logs, onStart, onStop, config, tradingMode, onTradingModeChange, liveBtcPrice }) {
+  const isKrakenSolo = tradingMode === 'kraken-future' || tradingMode === 'kraken-margin';
   const api = window.electronAPI;
   const [refreshKey, setRefreshKey] = useState(0);
 
@@ -160,10 +196,17 @@ export default function Dashboard({ status, botRunning, logs, onStart, onStop, c
 
   const krakenTrades = logMetrics.krakenTrades;
   const grvtTrades = logMetrics.grvtTrades;
+  const openSide = logMetrics.openSide;
+  const entryPrice = logMetrics.entryPrice;
 
   const [showConfirm, setShowConfirm] = useState(false);
-  const [showSleepWarning, setShowSleepWarning] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  // User must explicitly confirm they have enough balance before starting.
+  // Reset every time the modal opens so the user actively re-checks each run.
+  const [balanceConfirmed, setBalanceConfirmed] = useState(false);
+  useEffect(() => {
+    if (showConfirm) setBalanceConfirmed(false);
+  }, [showConfirm]);
 
   // Uptime counter
   const [uptime, setUptime] = useState(0);
@@ -249,16 +292,32 @@ export default function Dashboard({ status, botRunning, logs, onStart, onStop, c
   const handleOpenExchanges = () => {
     if (api?.openExternal) {
       api.openExternal('https://pro.kraken.com/app/trade/futures-btc-usd-perp');
-      if (!isKrakenOnly) api.openExternal('https://grvt.io/exchange/perpetual/BTC-USDT');
+      if (!isKrakenSolo) api.openExternal('https://grvt.io/exchange/perpetual/BTC-USDT');
     } else {
       window.open('https://pro.kraken.com/app/trade/futures-btc-usd-perp', '_blank');
-      if (!isKrakenOnly) window.open('https://grvt.io/exchange/perpetual/BTC-USDT', '_blank');
+      if (!isKrakenSolo) window.open('https://grvt.io/exchange/perpetual/BTC-USDT', '_blank');
     }
   };
 
   const leverage = config?.LEVERAGE || '1';
   const buyQty = config?.BUY_QTY || '—';
   const sellQty = config?.SELL_QTY || '—';
+
+  // Compute minimum account balance for Kraken Future / Margin modes
+  const isKrakenFuture = tradingMode === 'kraken-future';
+  const isKrakenMargin = tradingMode === 'kraken-margin';
+  // Use the SAME price source as ConfigPanel: prefer live bot prices, fall
+  // back to the app-level liveBtcPrice fetched in App.jsx. Only use the
+  // hard-coded 100000 as a last resort before the first fetch completes.
+  const refBtcPrice = krakenPrice || grvtPrice || liveBtcPrice || 100000;
+  const maxQty = Math.max(parseFloat(buyQty) || 0, parseFloat(sellQty) || 0);
+  // Shared helper — must match ConfigPanel exactly so sidebar = confirm modal.
+  const { minBalanceUsd: minBalance } = computeRequiredBalance({
+    qtyBtc: maxQty,
+    btcPrice: refBtcPrice,
+    leverage: Number(leverage) || 1,
+    isMargin: isKrakenMargin,
+  });
 
   const formatPrice = (price) => {
     if (!price) return '—';
@@ -269,30 +328,56 @@ export default function Dashboard({ status, botRunning, logs, onStart, onStop, c
     <div className="dashboard">
       {/* Trading Mode Selector / Title — Top Level */}
       {!botRunning ? (
-        <div className="dash-mode-selector">
-          <button
-            className={`dash-mode-btn ${!isKrakenOnly ? 'active' : ''}`}
-            onClick={() => onTradingModeChange('kraken-grvt')}
-          >
-            Kraken + GRVT
-          </button>
-          <button
-            className={`dash-mode-btn ${isKrakenOnly ? 'active' : ''}`}
-            onClick={() => onTradingModeChange('kraken-only')}
-          >
-            Kraken Only
-          </button>
-        </div>
+        (() => {
+          const modeList = ['kraken-grvt', 'kraken-future', 'kraken-margin'];
+          const activeIndex = Math.max(0, modeList.indexOf(tradingMode));
+          return (
+            <div className="dash-mode-selector">
+              <div
+                className="dash-mode-indicator"
+                style={{
+                  left: `calc(3px + (100% - 6px) / 3 * ${activeIndex})`,
+                }}
+              />
+              <button
+                className={`dash-mode-btn ${tradingMode === 'kraken-grvt' ? 'active' : ''}`}
+                onClick={() => onTradingModeChange('kraken-grvt')}
+              >
+                Kraken & GRVT Arbitrage
+              </button>
+              <button
+                className={`dash-mode-btn ${tradingMode === 'kraken-future' ? 'active' : ''}`}
+                onClick={() => onTradingModeChange('kraken-future')}
+              >
+                Kraken Future
+              </button>
+              <button
+                className={`dash-mode-btn ${tradingMode === 'kraken-margin' ? 'active' : ''}`}
+                onClick={() => onTradingModeChange('kraken-margin')}
+              >
+                Kraken Margin
+              </button>
+            </div>
+          );
+        })()
       ) : (
         <div className="dash-mode-title">
-          {isKrakenOnly ? 'Kraken Strategy' : 'Kraken & GRVT Arbitrage Strategy'}
+          {tradingMode === 'kraken-future' ? 'Kraken Future Trade' : tradingMode === 'kraken-margin' ? 'Kraken Margin Trade' : 'Kraken & GRVT Arbitrage Strategy'}
         </div>
       )}
 
       {/* Confirm Modal */}
       {showConfirm && (
-        <div className="modal-overlay">
+        <div className="modal-overlay" onClick={(e) => { if (e.target === e.currentTarget) setShowConfirm(false); }}>
           <div className="confirm-modal">
+            <button
+              type="button"
+              className="confirm-modal-close"
+              onClick={() => setShowConfirm(false)}
+              aria-label="Close"
+            >
+              ×
+            </button>
             <h2>Confirm Trading Settings</h2>
             <p className="confirm-modal-desc">Please review your settings before starting the bot.</p>
             <div className="confirm-modal-settings">
@@ -306,36 +391,40 @@ export default function Dashboard({ status, botRunning, logs, onStart, onStop, c
               </div>
               <div className="confirm-modal-row">
                 <span className="confirm-modal-label">Leverage</span>
-                <span className="confirm-modal-value">{leverage}x</span>
+                <span className="confirm-modal-value">{isKrakenMargin ? '10x' : `${leverage}x`}</span>
               </div>
+              {(isKrakenFuture || isKrakenMargin) && minBalance > 0 && (
+                <div className="confirm-modal-row confirm-modal-balance-row">
+                  <span className="confirm-modal-label">
+                    Required {isKrakenFuture ? 'Futures' : 'Spot'} Balance
+                  </span>
+                  <span className="confirm-modal-value confirm-modal-balance-value">
+                    {minBalance.toLocaleString()} USD
+                  </span>
+                </div>
+              )}
             </div>
+            <label className="confirm-modal-check">
+              <input
+                type="checkbox"
+                checked={balanceConfirmed}
+                onChange={(e) => setBalanceConfirmed(e.target.checked)}
+              />
+              <span>
+                I have enough balance in my <strong>{isKrakenMargin ? 'spot' : 'future'} account</strong>.
+              </span>
+            </label>
             <div className="confirm-modal-actions">
               <button className="btn confirm-btn-edit" onClick={() => setShowConfirm(false)} style={{ flex: 1 }}>
                 Edit
               </button>
-              <button className="btn btn-secondary" onClick={() => { setShowConfirm(false); setShowSleepWarning(true); }} style={{ flex: 1 }}>
+              <button
+                className="btn btn-secondary"
+                onClick={() => { setShowConfirm(false); onStart(); }}
+                disabled={!balanceConfirmed}
+                style={{ flex: 1, opacity: balanceConfirmed ? 1 : 0.5, cursor: balanceConfirmed ? 'pointer' : 'not-allowed' }}
+              >
                 Confirm & Start
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Sleep Warning Modal */}
-      {showSleepWarning && (
-        <div className="modal-overlay">
-          <div className="confirm-modal">
-            <div style={{ fontSize: '2rem', marginBottom: '12px' }}>&#9888;</div>
-            <h2>Important Reminder</h2>
-            <p className="confirm-modal-desc" style={{ fontSize: '0.95rem', lineHeight: '1.6', color: 'var(--text-primary)' }}>
-              Please <strong>do not let your computer enter sleep mode</strong> while the bot is running. The bot requires an active browser session to monitor prices and execute trades.
-            </p>
-            <p className="confirm-modal-desc" style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginTop: '8px' }}>
-              Tip: Go to System Settings &rarr; Displays &rarr; set "Turn display off" to Never.
-            </p>
-            <div className="confirm-modal-actions">
-              <button className="btn btn-secondary" onClick={() => { setShowSleepWarning(false); onStart(); }} style={{ width: '100%' }}>
-                I Understand, Start Bot
               </button>
             </div>
           </div>
@@ -378,6 +467,11 @@ export default function Dashboard({ status, botRunning, logs, onStart, onStop, c
             ))}
           </div>
         )}
+        {botRunning && !isError && (
+          <div className="dash-sleep-reminder">
+            Please <strong>do not let your computer enter sleep mode</strong> while the bot is running.
+          </div>
+        )}
       </div>
 
       {/* Action Button */}
@@ -395,7 +489,11 @@ export default function Dashboard({ status, botRunning, logs, onStart, onStop, c
           </div>
         ) : (
           <button className="btn btn-primary dash-action-btn" onClick={() => setShowConfirm(true)}>
-            Log In & Start Trading
+            {isKrakenFuture
+              ? 'Log In & Trade Kraken Future'
+              : isKrakenMargin
+                ? 'Log In & Trade Kraken Margin'
+                : 'Log In & Start Trading'}
           </button>
         )}
       </div>
@@ -408,7 +506,7 @@ export default function Dashboard({ status, botRunning, logs, onStart, onStop, c
             <span className="dash-price-exchange">Kraken</span>
             <span className="dash-price-value">{formatPrice(krakenPrice)}</span>
           </div>
-          {!isKrakenOnly && (
+          {!isKrakenSolo && (
             <>
               <div className="dash-price-spread">
                 <span className={`dash-spread-value ${priceDiff !== null ? (Math.abs(priceDiff) >= 5 ? 'high' : '') : ''}`}>
@@ -440,28 +538,48 @@ export default function Dashboard({ status, botRunning, logs, onStart, onStop, c
             <span className="dash-stat-label">Cycles</span>
           </div>
           <div className="dash-stat-divider" />
-          <div className="dash-stat">
-            <span className="dash-stat-value">{krakenTrades || '—'}</span>
-            <span className="dash-stat-label">Kraken Trades</span>
-          </div>
-          {!isKrakenOnly && (
+          {isKrakenSolo ? (
             <>
+              {/* Kraken Future / Margin: show live position instead of cumulative trade count */}
+              <div className="dash-stat">
+                <span
+                  className="dash-stat-value"
+                  style={openSide ? { color: openSide === 'BUY' ? 'var(--green)' : 'var(--red)' } : undefined}
+                >
+                  {openSide || '—'}
+                </span>
+                <span className="dash-stat-label">Open Side</span>
+              </div>
+              <div className="dash-stat-divider" />
+              <div className="dash-stat">
+                <span className="dash-stat-value">
+                  {entryPrice != null ? `$${Number(entryPrice).toLocaleString(undefined, { maximumFractionDigits: 0 })}` : '—'}
+                </span>
+                <span className="dash-stat-label">Entry</span>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="dash-stat">
+                <span className="dash-stat-value">{krakenTrades || '—'}</span>
+                <span className="dash-stat-label">Kraken Trades</span>
+              </div>
               <div className="dash-stat-divider" />
               <div className="dash-stat">
                 <span className="dash-stat-value">{grvtTrades || '—'}</span>
                 <span className="dash-stat-label">GRVT Trades</span>
               </div>
+              <div className="dash-stat-divider" />
+              <div className="dash-stat">
+                <span className="dash-stat-value">{latency !== null ? `${latency}s` : '—'}</span>
+                <span className="dash-stat-label">Latency</span>
+              </div>
             </>
           )}
-          <div className="dash-stat-divider" />
-          <div className="dash-stat">
-            <span className="dash-stat-value">{latency !== null ? `${latency}s` : '—'}</span>
-            <span className="dash-stat-label">Latency</span>
-          </div>
         </div>
         <div className="dash-pnl-row">
           <button className="btn dash-pnl-btn" onClick={handleOpenExchanges}>
-            {isKrakenOnly ? 'Check P&L on Kraken' : 'Check P&L on Kraken & GRVT'}
+            {isKrakenSolo ? 'Check P&L on Kraken' : 'Check P&L on Kraken & GRVT'}
           </button>
           <p className="dash-pnl-note">
             Do not click any elements in the bot's browser windows while running. Open separate browser windows to check P&L.

@@ -23,12 +23,15 @@ async function main() {
     const tradingMode = await chooseTradingMode(main._modeInput);
     console.log(`\n✓ Selected: ${tradingMode.description}\n`);
   
-    // Handle Kraken-Only continuous trading mode
-    if (tradingMode.mode === 'kraken-only') {
-      const exchangeConfig = EXCHANGE_CONFIGS.kraken;
+    // Handle Kraken-Only continuous trading mode (Future or Margin)
+    if (tradingMode.mode === 'kraken-only' || tradingMode.mode === 'kraken-margin') {
+      const isMargin = tradingMode.mode === 'kraken-margin';
+      const exchangeConfig = isMargin ? EXCHANGE_CONFIGS['kraken-margin'] : EXCHANGE_CONFIGS.kraken;
+      const modeLabel = isMargin ? 'Kraken Margin Trade' : 'Kraken Future Trade';
 
-      console.log(`\n📋 Kraken-Only Trading Configuration:`);
+      console.log(`\n📋 ${modeLabel} Configuration:`);
       console.log(`   Exchange: ${exchangeConfig.name}`);
+      console.log(`   URL: ${exchangeConfig.url}`);
       console.log(`   Mode: Continuous Trading (30s–5min randomized hold)\n`);
 
       // Find Kraken account
@@ -46,7 +49,7 @@ async function main() {
       console.log(`   Account: ${krakenAccount.email}\n`);
 
       // Launch Kraken browser
-      console.log(`\n🚀 Launching Kraken...`);
+      console.log(`\n🚀 Launching Kraken (${modeLabel})...`);
       const result = await launchAccount(krakenAccount, exchangeConfig);
 
       if (!result.success) {
@@ -54,13 +57,13 @@ async function main() {
         process.exit(1);
       }
 
-      console.log(`\n✅ Kraken is ready! Starting continuous trading...\n`);
+      console.log(`\n✅ Kraken is ready! Starting ${modeLabel}...\n`);
 
       // Setup graceful shutdown
       const shutdownHandler = async () => {
         if (isShuttingDown) return;
         isShuttingDown = true;
-        console.log(`\n\nShutting down Kraken-Only trading...`);
+        console.log(`\n\nShutting down ${modeLabel}...`);
         try {
           await closeAllPositionsOnShutdown([result]);
         } catch (e) {}
@@ -74,7 +77,7 @@ async function main() {
       process.on('SIGTERM', shutdownHandler);
 
       // Start continuous trading loop
-      await automatedTradingLoopKrakenOnly(result);
+      await automatedTradingLoopKrakenOnly(result, exchangeConfig);
       return;
     }
 

@@ -10,9 +10,15 @@ import logoSvg from './assets/logo.svg';
 const api = window.electronAPI;
 
 const TRADING_MODES = {
-  'kraken-only': {
+  'kraken-future': {
     mode: 'kraken-only',
-    description: 'Kraken Only',
+    description: 'Kraken Future Trade',
+    exchanges: ['kraken'],
+    accountCount: 1,
+  },
+  'kraken-margin': {
+    mode: 'kraken-margin',
+    description: 'Kraken Margin Trade',
     exchanges: ['kraken'],
     accountCount: 1,
   },
@@ -26,8 +32,13 @@ const TRADING_MODES = {
 
 // Persist trading mode selection
 function getSavedTradingMode() {
-  try { return localStorage.getItem('trading_mode') || 'kraken-grvt'; }
-  catch { return 'kraken-grvt'; }
+  try {
+    const saved = localStorage.getItem('trading_mode');
+    // Migrate old 'kraken-only' to 'kraken-future'
+    if (saved === 'kraken-only') return 'kraken-future';
+    return saved || 'kraken-future';
+  }
+  catch { return 'kraken-future'; }
 }
 function saveTradingMode(mode) {
   try { localStorage.setItem('trading_mode', mode); } catch {}
@@ -56,6 +67,10 @@ export default function App() {
   const [setupComplete, setSetupComplete] = useState(() => isOnboardingDone());
   const [showChromeModal, setShowChromeModal] = useState(false);
   const [tradingModeKey, setTradingModeKey] = useState(() => getSavedTradingMode());
+  // Shared live BTC price — fetched once in App, shared by Dashboard + ConfigPanel
+  // so the sidebar "Required balance" and the confirm-modal "Required Futures Balance"
+  // always reference the SAME price and therefore always show the SAME number.
+  const [liveBtcPrice, setLiveBtcPrice] = useState(null);
 
   const handleTradingModeChange = (key) => {
     setTradingModeKey(key);
@@ -138,6 +153,35 @@ export default function App() {
     };
   }, [addLog]);
 
+  // Fetch live BTC/USD price once at mount, then every 60s. Shared by
+  // Dashboard confirm modal + ConfigPanel sidebar so both display the same
+  // "Required balance" value regardless of whether the bot is running.
+  useEffect(() => {
+    let cancelled = false;
+    const fetchPrice = async () => {
+      // Prefer Electron IPC (main process) to bypass renderer CORS
+      if (api?.fetchBtcPrice) {
+        try {
+          const price = await api.fetchBtcPrice();
+          if (!cancelled && price && price > 1000 && price < 500000) {
+            setLiveBtcPrice(price);
+            return;
+          }
+        } catch { /* ignore */ }
+      }
+      // Fallback: direct Binance fetch (works in dev / web build)
+      try {
+        const r = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT');
+        const d = await r.json();
+        const p = parseFloat(d?.price);
+        if (!cancelled && p && p > 1000 && p < 500000) setLiveBtcPrice(p);
+      } catch { /* ignore */ }
+    };
+    fetchPrice();
+    const interval = setInterval(fetchPrice, 60000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
+
   const handleConfigSave = async (newConfig) => {
     if (api) {
       const result = await api.saveConfig(newConfig);
@@ -154,13 +198,13 @@ export default function App() {
   const handleStart = async () => {
     setLogs([]);
     setStatus({});
-    const isKrakenOnly = tradingModeKey === 'kraken-only';
-    if (isKrakenOnly) {
-      addLog({ type: 'info', message: 'Starting bot — opening Kraken browser...' });
-      addLog({ type: 'info', message: 'Please log in to Kraken in the browser window.' });
+    const isKrakenSolo = tradingModeKey === 'kraken-future' || tradingModeKey === 'kraken-margin';
+    if (isKrakenSolo) {
+      addLog({ type: 'info', message: `Starting bot — opening Kraken browser (${currentMode.description})...` });
+      addLog({ type: 'info', message: '👉 If you are not logged in, the Kraken sign-in page will open automatically in the browser window. Enter your credentials there.' });
     } else {
       addLog({ type: 'info', message: 'Starting bot — opening Kraken & GRVT browsers...' });
-      addLog({ type: 'info', message: 'Please log in to both exchanges in the browser windows.' });
+      addLog({ type: 'info', message: '👉 If you are not logged in, the sign-in page for each exchange will open automatically. Enter your credentials in each browser window.' });
     }
     if (api) {
       await api.startBot(currentMode.mode, config);
@@ -210,7 +254,14 @@ export default function App() {
         </header>
         <div style={{ flex: 1, overflow: 'hidden' }}>
           <Onboarding
-            onComplete={() => { markOnboardingDone(); setSetupComplete(true); }}
+            onComplete={(selectedMode) => {
+              if (selectedMode && TRADING_MODES[selectedMode]) {
+                setTradingModeKey(selectedMode);
+                saveTradingMode(selectedMode);
+              }
+              markOnboardingDone();
+              setSetupComplete(true);
+            }}
           />
         </div>
         <StatusBar botRunning={false} version={version} status={{}} />
@@ -267,6 +318,7 @@ export default function App() {
             config={config}
             tradingMode={tradingModeKey}
             onTradingModeChange={handleTradingModeChange}
+            liveBtcPrice={liveBtcPrice}
           />
         </div>
 
@@ -277,6 +329,8 @@ export default function App() {
             disabled={botRunning}
             onSwitchAccount={handleSwitchAccount}
             btcPrice={status.prices?.kraken || status.prices?.grvt || null}
+            liveBtcPrice={liveBtcPrice}
+            tradingMode={tradingModeKey}
           />
           <LogViewer logs={logs} onClear={() => setLogs([])} />
         </div>

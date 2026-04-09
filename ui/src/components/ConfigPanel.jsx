@@ -1,42 +1,74 @@
 import { useState, useEffect } from 'react';
+import { computeRequiredBalance } from '../lib/requiredBalance';
 
 const QTY_FIELDS = [
   { key: 'BUY_QTY', label: 'Buy Quantity (BTC)', step: '0.0001', placeholder: '0.001' },
   { key: 'SELL_QTY', label: 'Sell Quantity (BTC)', step: '0.0001', placeholder: '0.001' },
 ];
 
-const LEVERAGE_STEPS = [1, 5, 10, 20, 30, 40, 50];
+const LEVERAGE_STEPS_DEFAULT = [1, 5, 10, 20, 30, 40, 50];
+const MARGIN_FIXED_LEVERAGE = 10;
 
-export default function ConfigPanel({ config, onSave, disabled, onSwitchAccount, btcPrice }) {
+// Per-mode quantity storage — each mode keeps independent BUY/SELL values
+function loadModeQty(mode) {
+  try {
+    const raw = localStorage.getItem(`qty_${mode}`);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+function saveModeQty(mode, buy, sell) {
+  try {
+    localStorage.setItem(`qty_${mode}`, JSON.stringify({ BUY_QTY: buy, SELL_QTY: sell }));
+  } catch {}
+}
+
+export default function ConfigPanel({ config, onSave, disabled, onSwitchAccount, btcPrice, liveBtcPrice, tradingMode }) {
+  const isMargin = tradingMode === 'kraken-margin';
+  const LEVERAGE_STEPS = LEVERAGE_STEPS_DEFAULT;
   const [localConfig, setLocalConfig] = useState({});
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [liveBtcPrice, setLiveBtcPrice] = useState(null);
 
-  // Fetch BTC price on mount for USD reference (independent of bot)
-  useEffect(() => {
-    const fetchPrice = async () => {
-      try {
-        const res = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd');
-        const data = await res.json();
-        if (data?.bitcoin?.usd) setLiveBtcPrice(data.bitcoin.usd);
-      } catch { /* ignore */ }
-    };
-    fetchPrice();
-    const interval = setInterval(fetchPrice, 60000); // refresh every 60s
-    return () => clearInterval(interval);
-  }, []);
-
-  // Use bot price if available, otherwise use fetched price
+  // Shared reference price: prefer bot's live feed when running, otherwise
+  // the app-level `liveBtcPrice` fetched in App.jsx (same source as Dashboard).
   const refPrice = btcPrice || liveBtcPrice;
 
   useEffect(() => {
     setLocalConfig({ ...config });
   }, [config]);
 
+  // When trading mode changes: load mode-specific BUY/SELL quantities and enforce margin leverage
+  useEffect(() => {
+    if (!tradingMode) return;
+    const saved = loadModeQty(tradingMode);
+    const updates = {};
+    if (saved) {
+      updates.BUY_QTY = saved.BUY_QTY;
+      updates.SELL_QTY = saved.SELL_QTY;
+    } else {
+      // First time in this mode — seed localStorage from current config values
+      saveModeQty(tradingMode, localConfig.BUY_QTY || '', localConfig.SELL_QTY || '');
+    }
+    if (isMargin && Number(localConfig.LEVERAGE) !== MARGIN_FIXED_LEVERAGE) {
+      updates.LEVERAGE = String(MARGIN_FIXED_LEVERAGE);
+    }
+    if (Object.keys(updates).length > 0) {
+      const updated = { ...localConfig, ...updates };
+      setLocalConfig(updated);
+      onSave(updated);
+    }
+  }, [tradingMode]);
+
   const handleChange = (key, value) => {
     const updated = { ...localConfig, [key]: value };
+    // Keep BUY_QTY and SELL_QTY in sync within the current mode only
+    if (key === 'BUY_QTY') updated.SELL_QTY = value;
+    if (key === 'SELL_QTY') updated.BUY_QTY = value;
+    // Persist per-mode quantities
+    if (key === 'BUY_QTY' || key === 'SELL_QTY') {
+      saveModeQty(tradingMode, updated.BUY_QTY, updated.SELL_QTY);
+    }
     setLocalConfig(updated);
     setSaved(false);
     // Auto-save on change
@@ -83,19 +115,19 @@ export default function ConfigPanel({ config, onSave, disabled, onSwitchAccount,
 
   return (
     <div className="config-panel">
-      {/* Header */}
-      <div style={{ marginBottom: 16 }}>
-        <span className="card-title" style={{ margin: 0 }}>Settings</span>
-      </div>
-
       {/* Trading Quantities */}
-      <div className="config-section-title">Trade Size</div>
-
       {QTY_FIELDS.map((field) => {
         const btcVal = parseFloat(localConfig[field.key]) || 0;
-        const usdText = refPrice && btcVal
-          ? `$${(btcVal * refPrice).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD`
-          : null;
+        const isKrakenSolo = tradingMode === 'kraken-future' || tradingMode === 'kraken-margin';
+
+        // Uses the SHARED helper so this value matches the Dashboard confirm modal.
+        const { minBalanceUsd: minBalance } = computeRequiredBalance({
+          qtyBtc: btcVal,
+          btcPrice: refPrice,
+          leverage: Number(localConfig.LEVERAGE) || 1,
+          isMargin,
+        });
+        const hintLabel = isMargin ? 'Required spot balance' : 'Required future balance';
 
         return (
           <div className="config-group" key={field.key}>
@@ -111,8 +143,15 @@ export default function ConfigPanel({ config, onSave, disabled, onSwitchAccount,
                 onChange={(e) => handleChange(field.key, e.target.value)}
                 disabled={disabled}
               />
-              {usdText && <span className="config-qty-usd">{usdText}</span>}
             </div>
+            {isKrakenSolo && btcVal > 0 && (
+              <div className="config-balance-hint">
+                <span>{hintLabel}</span>
+                <strong>
+                  {minBalance > 0 ? `${minBalance.toLocaleString()} USD` : '…'}
+                </strong>
+              </div>
+            )}
           </div>
         );
       })}
@@ -125,38 +164,46 @@ export default function ConfigPanel({ config, onSave, disabled, onSwitchAccount,
       <div className="config-group">
         <label className="config-label" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <span>Multiplier</span>
-          <span style={{ color: leverageColor, fontWeight: 700, fontSize: 16, fontFamily: "'SF Mono', 'Fira Code', monospace" }}>
-            {leverage}x
+          <span style={{ color: isMargin ? 'var(--yellow)' : leverageColor, fontWeight: 700, fontSize: 16, fontFamily: "'SF Mono', 'Fira Code', monospace" }}>
+            {isMargin ? `${MARGIN_FIXED_LEVERAGE}x` : `${leverage}x`}
           </span>
         </label>
 
-        <div className="leverage-slider-wrap">
-          <input
-            type="range"
-            min={0}
-            max={LEVERAGE_STEPS.length - 1}
-            step="1"
-            value={stepIndex}
-            onChange={(e) => handleChange('LEVERAGE', String(LEVERAGE_STEPS[Number(e.target.value)]))}
-            disabled={disabled}
-            className="leverage-slider"
-            style={{
-              background: `linear-gradient(to right, ${leverageColor} ${fillPercent}%, var(--border) ${fillPercent}%)`,
-            }}
-          />
-          <div className="leverage-labels">
-            {LEVERAGE_STEPS.map((v) => (
-              <span key={v} className={v === leverage ? 'active' : ''} style={v === leverage ? { color: leverageColor } : undefined}>
-                {v}x
-              </span>
-            ))}
+        {isMargin ? (
+          <div className="config-warning" style={{ background: 'rgba(255,255,255,0.04)', color: 'var(--text-secondary)', borderColor: 'rgba(255,255,255,0.08)' }}>
+            Kraken Margin Trade uses a fixed leverage of {MARGIN_FIXED_LEVERAGE}x.
           </div>
-        </div>
+        ) : (
+          <>
+            <div className="leverage-slider-wrap">
+              <input
+                type="range"
+                min={0}
+                max={LEVERAGE_STEPS.length - 1}
+                step="1"
+                value={stepIndex}
+                onChange={(e) => handleChange('LEVERAGE', String(LEVERAGE_STEPS[Number(e.target.value)]))}
+                disabled={disabled}
+                className="leverage-slider"
+                style={{
+                  background: `linear-gradient(to right, ${leverageColor} ${fillPercent}%, var(--border) ${fillPercent}%)`,
+                }}
+              />
+              <div className="leverage-labels">
+                {LEVERAGE_STEPS.map((v) => (
+                  <span key={v} className={v === leverage ? 'active' : ''} style={v === leverage ? { color: leverageColor } : undefined}>
+                    {v}x
+                  </span>
+                ))}
+              </div>
+            </div>
 
-        {leverage >= 30 && (
-          <div className="config-warning">
-            High leverage increases liquidation risk significantly.
-          </div>
+            {leverage >= 30 && (
+              <div className="config-warning">
+                High leverage increases liquidation risk significantly.
+              </div>
+            )}
+          </>
         )}
       </div>
 

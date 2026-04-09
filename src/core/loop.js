@@ -2641,14 +2641,16 @@ async function testSingleExchangeTrading(accountResult, exchangeName) {
  *   5. Close position with opposite order
  *   6. Cooldown → repeat
  */
-async function automatedTradingLoopKrakenOnly(accountResult) {
+async function automatedTradingLoopKrakenOnly(accountResult, exchangeConfig) {
   const { page, email } = accountResult;
-  const exchange = EXCHANGE_CONFIGS.kraken;
+  const exchange = exchangeConfig || EXCHANGE_CONFIGS.kraken;
+  const isMargin = exchange.url.includes('margin');
+  const modeLabel = isMargin ? 'Kraken Margin Trade' : 'Kraken Future Trade';
   const { getCurrentMarketPrice } = await import('../trading/executeBase.js');
   const { prefillFormKraken, fillPriceSideAndSubmitKraken } = await import('../trading/prefillForm.js');
 
   console.log(`\n========================================`);
-  console.log(`Kraken-Only Continuous Trading`);
+  console.log(`${modeLabel} — Continuous Trading`);
   console.log(`Account: ${email}`);
   console.log(`========================================`);
   console.log(`  Buy Qty:  ${TRADE_CONFIG.buyQty} BTC`);
@@ -2681,20 +2683,22 @@ async function automatedTradingLoopKrakenOnly(accountResult) {
   }
   await delay(2000);
 
-  // Helper: ensure page is on Kraken Futures, navigate back if not
-  async function ensureFuturesPage() {
+  // Helper: ensure page is on the correct trading page, navigate back if not
+  const expectedUrlPart = isMargin ? 'margin' : 'futures';
+  const pageLabel = isMargin ? 'Kraken Margin' : 'Kraken Futures';
+  async function ensureTradingPage() {
     const currentUrl = page.url();
-    if (!currentUrl.includes('futures')) {
+    if (!currentUrl.includes(expectedUrlPart)) {
       console.log(`⚠️  Page drifted to: ${currentUrl}`);
-      console.log(`🔄 Navigating back to Kraken Futures...`);
+      console.log(`🔄 Navigating back to ${pageLabel}...`);
       await page.goto(exchange.url, { waitUntil: 'networkidle2', timeout: 30000 });
       await delay(3000);
       // Verify
       const newUrl = page.url();
-      if (newUrl.includes('futures')) {
-        console.log(`✅ Back on Kraken Futures page`);
+      if (newUrl.includes(expectedUrlPart)) {
+        console.log(`✅ Back on ${pageLabel} page`);
       } else {
-        console.log(`⚠️  Still not on Futures: ${newUrl}, retrying...`);
+        console.log(`⚠️  Still not on ${pageLabel}: ${newUrl}, retrying...`);
         await page.goto(exchange.url, { waitUntil: 'networkidle2', timeout: 30000 });
         await delay(3000);
       }
@@ -2726,7 +2730,7 @@ async function automatedTradingLoopKrakenOnly(accountResult) {
 
     try {
       // ── Step 0: Ensure we're on the Futures page ──
-      await ensureFuturesPage();
+      await ensureTradingPage();
 
       // ── Step 1: Cleanup — cancel orders & close any open positions ──
       console.log(`[CYCLE ${cycleCount}] Step 1: Cleanup — cancel orders & close positions...`);
@@ -2859,7 +2863,7 @@ async function automatedTradingLoopKrakenOnly(accountResult) {
         // Log every 30s with current price + verify page URL
         if (remaining > 0 && elapsed > 0 && elapsed % 30 === 0) {
           // Check page hasn't drifted during hold
-          await ensureFuturesPage();
+          await ensureTradingPage();
           let priceInfo = '';
           try {
             const holdPrice = await getCurrentMarketPrice(page, exchange);
@@ -2877,7 +2881,7 @@ async function automatedTradingLoopKrakenOnly(accountResult) {
       if (isShuttingDown) break;
 
       // ── Step 6: Close position with opposite order ──
-      await ensureFuturesPage();
+      await ensureTradingPage();
       console.log(`[CYCLE ${cycleCount}] Step 6: Closing position with ${closeSide.toUpperCase()} order...`);
 
       // Fetch fresh price for closing order

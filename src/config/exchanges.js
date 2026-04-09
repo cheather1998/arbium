@@ -39,6 +39,10 @@ const EXCHANGE_CONFIGS = {
       url: "https://grvt.io/exchange/perpetual/BTC-USDT",
       referralUrl: "https://grvt.io/exchange/perpetual/BTC-USDT",
       urlPattern: "grvt.io/exchange",
+      // No dedicated sign-in URL — GRVT opens a modal on the trading page.
+      // We click the "Sign In" / "Log In" button to open the modal for the user.
+      signInUrl: null,
+      signInButtonTexts: ["Sign In", "Log In", "Login", "Sign in", "Log in"],
       // UI selectors - updated for GRVT UI
       selectors: {
         loginButton: null, // Will use text-based search
@@ -56,6 +60,14 @@ const EXCHANGE_CONFIGS = {
       url: "https://pro.kraken.com/app/trade/futures-btc-usd-perp",
       referralUrl: "https://pro.kraken.com/app/trade/futures-btc-usd-perp",
       urlPattern: "pro.kraken.com/app/trade/futures",
+      // Kraken's real login page is www.kraken.com/sign-in. pro.kraken.com
+      // routes the Sign In button there. We try a list of fallback URLs and
+      // pick the first one whose final URL actually contains "sign-in".
+      signInUrls: [
+        "https://www.kraken.com/sign-in",
+        "https://pro.kraken.com/app/sign-in",
+      ],
+      signInButtonTexts: ["Sign In", "Sign in", "Log In", "Log in", "Login"],
       // UI selectors - will need to be updated after inspecting Kraken UI
       // For now, using generic text-based selectors
       selectors: {
@@ -67,6 +79,29 @@ const EXCHANGE_CONFIGS = {
         confirmBuy: "Long (buy) BTC", // May need to change after UI inspection
         confirmSell: "Short (sell) BTC", // May need to change after UI inspection
         positionsTab: "Positions", // May need to change after UI inspection
+      }
+    },
+    'kraken-margin': {
+      name: "Kraken",
+      url: "https://pro.kraken.com/app/trade/margin-btc-usd",
+      referralUrl: "https://pro.kraken.com/app/trade/margin-btc-usd",
+      urlPattern: "pro.kraken.com/app/trade/margin",
+      // Same sign-in strategy as futures Kraken — try www.kraken.com first,
+      // then pro.kraken.com as a fallback. Also supports click-first.
+      signInUrls: [
+        "https://www.kraken.com/sign-in",
+        "https://pro.kraken.com/app/sign-in",
+      ],
+      signInButtonTexts: ["Sign In", "Sign in", "Log In", "Log in", "Login"],
+      selectors: {
+        loginButton: null,
+        buyButton: "Buy",
+        sellButton: "Sell",
+        marketButton: "Market",
+        limitButton: "Limit",
+        confirmBuy: "Buy",
+        confirmSell: "Sell",
+        positionsTab: "Positions",
       }
     }
   };

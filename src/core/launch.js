@@ -340,31 +340,33 @@ async function launchAccount(accountConfig, exchangeConfig, _isRetry = false) {
       if (loggedIn) {
         console.log(`\n[${email}] *** Successfully logged in to ${exchange.name}! ***\n`);
 
-        // For Kraken: ALWAYS navigate to Futures page after login
+        // For Kraken: ALWAYS navigate to the correct trading page after login
         // Kraken often redirects to Spot after login, and may redirect back even after navigation
         if (exchange.name === 'Kraken') {
-          const futuresUrl = 'https://pro.kraken.com/app/trade/futures-btc-usd-perp';
+          const tradingUrl = exchange.url; // Futures or Margin URL from exchange config
+          const urlCheck = tradingUrl.includes('margin') ? 'margin' : 'futures';
+          const pageLabel = tradingUrl.includes('margin') ? 'Margin' : 'Futures';
 
           // Try up to 5 times — Kraken may redirect back to Spot
           for (let attempt = 1; attempt <= 5; attempt++) {
             const currentUrl = page.url();
-            if (currentUrl.includes('futures')) {
-              console.log(`[${email}] ✅ Kraken is on Futures page: ${currentUrl}`);
+            if (currentUrl.includes(urlCheck)) {
+              console.log(`[${email}] ✅ Kraken is on ${pageLabel} page: ${currentUrl}`);
               break;
             }
-            console.log(`[${email}] Kraken on Spot (attempt ${attempt}/5): ${currentUrl}`);
-            console.log(`[${email}] Navigating to Futures...`);
+            console.log(`[${email}] Kraken not on ${pageLabel} (attempt ${attempt}/5): ${currentUrl}`);
+            console.log(`[${email}] Navigating to ${pageLabel}...`);
             try {
               // Use domcontentloaded — networkidle2 times out on Kraken
-              await page.goto(futuresUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+              await page.goto(tradingUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
             } catch (e) {
               console.log(`[${email}] Navigation timeout, checking URL anyway...`);
             }
             // Wait for page to settle and check URL
             await delay(3000);
             const afterUrl = page.url();
-            if (afterUrl.includes('futures')) {
-              console.log(`[${email}] ✅ Kraken Futures confirmed: ${afterUrl}`);
+            if (afterUrl.includes(urlCheck)) {
+              console.log(`[${email}] ✅ Kraken ${pageLabel} confirmed: ${afterUrl}`);
               break;
             } else {
               console.log(`[${email}] ⚠ Kraken redirected back to: ${afterUrl}`);
@@ -372,7 +374,7 @@ async function launchAccount(accountConfig, exchangeConfig, _isRetry = false) {
               if (attempt >= 2) {
                 console.log(`[${email}] Trying JavaScript navigation...`);
                 try {
-                  await page.evaluate((url) => { window.location.href = url; }, futuresUrl);
+                  await page.evaluate((url) => { window.location.href = url; }, tradingUrl);
                   await delay(5000);
                 } catch (e) { /* ignore */ }
               }

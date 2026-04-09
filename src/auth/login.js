@@ -111,6 +111,136 @@ async function isLoggedIn(page, exchangeConfig = null) {
     return loggedInIndicators;
   }
   
+  /**
+   * Check whether the current page URL looks like a sign-in / login page.
+   */
+  function urlLooksLikeSignIn(url) {
+    if (!url) return false;
+    const lower = url.toLowerCase();
+    return (
+      lower.includes('sign-in') ||
+      lower.includes('signin') ||
+      lower.includes('/login') ||
+      lower.includes('log-in')
+    );
+  }
+
+  /**
+   * Try to click a visible "Sign In" / "Log In" button on the current page.
+   * Returns the text of the clicked button, or null if nothing was clicked.
+   */
+  async function clickSignInButton(page, buttonTexts) {
+    return page.evaluate((texts) => {
+      const selectors = ['button', 'a', 'div[role="button"]', 'span[role="button"]'];
+      const all = selectors.flatMap((s) => Array.from(document.querySelectorAll(s)));
+      const lowerTexts = texts.map((t) => t.toLowerCase());
+
+      // Pass 1: exact match (case-insensitive) on visible elements
+      for (const el of all) {
+        const txt = (el.textContent || '').trim();
+        if (!txt) continue;
+        const isVisible = el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+        if (!isVisible) continue;
+        const lower = txt.toLowerCase();
+        if (lowerTexts.includes(lower)) {
+          el.scrollIntoView({ block: 'center' });
+          el.click();
+          return txt;
+        }
+      }
+
+      // Pass 2: short element whose text starts/ends/equals a target
+      for (const el of all) {
+        const txt = (el.textContent || '').trim();
+        if (!txt || txt.length > 30) continue;
+        const isVisible = el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
+        if (!isVisible) continue;
+        const lower = txt.toLowerCase();
+        if (lowerTexts.some((t) => lower === t || lower.startsWith(t + ' ') || lower.endsWith(' ' + t))) {
+          el.scrollIntoView({ block: 'center' });
+          el.click();
+          return txt;
+        }
+      }
+      return null;
+    }, buttonTexts);
+  }
+
+  /**
+   * Guide the user to the sign-in page when they are not logged in.
+   *
+   * Strategy (in order):
+   *   1. Try to click a visible "Sign In" / "Log In" button on the current
+   *      page. This is the most reliable path for Kraken (the trading page
+   *      has a Sign In button that routes correctly) and GRVT (opens a modal).
+   *   2. If no button was found OR the click didn't move us toward a sign-in
+   *      page, iterate `exchange.signInUrls` (array) — or the legacy
+   *      `exchange.signInUrl` (single) — and navigate to each, verifying
+   *      afterwards that the final URL actually looks like a sign-in page.
+   *   3. If a modal-based exchange (signInUrl / signInUrls absent) doesn't
+   *      match a button either, return false.
+   *
+   * Returns true if we believe we guided the user successfully.
+   */
+  async function openSignInPage(page, exchange, email) {
+    const buttonTexts = exchange.signInButtonTexts || ['Sign In', 'Sign in', 'Log In', 'Log in', 'Login'];
+    const urls = Array.isArray(exchange.signInUrls)
+      ? exchange.signInUrls.filter(Boolean)
+      : (exchange.signInUrl ? [exchange.signInUrl] : []);
+
+    // ---------- Strategy 1: click Sign In button on the current page ----------
+    try {
+      const beforeUrl = page.url();
+      const clicked = await clickSignInButton(page, buttonTexts);
+      if (clicked) {
+        // Wait a bit for either a modal to appear or a navigation to occur.
+        await delay(2500);
+        try { await page.bringToFront(); } catch { /* ignore */ }
+
+        const afterUrl = page.url();
+        // If the URL changed to a sign-in-ish page, we're done.
+        if (afterUrl !== beforeUrl && urlLooksLikeSignIn(afterUrl)) {
+          console.log(`[${email}] ✅ ${exchange.name} - Sign-in page opened.`);
+          return true;
+        }
+        // If this exchange doesn't have URL-based sign-in (e.g. GRVT modal),
+        // a button click is already success — a modal should now be showing.
+        if (urls.length === 0) {
+          console.log(`[${email}] ✅ ${exchange.name} - Sign-in modal should now be visible.`);
+          return true;
+        }
+        // Otherwise fall through to URL-based navigation as a backup.
+      }
+    } catch { /* fall through to URL-based navigation */ }
+
+    // ---------- Strategy 2: direct navigation, try each URL in order ----------
+    for (const url of urls) {
+      try {
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await delay(2500);
+        try { await page.bringToFront(); } catch { /* ignore */ }
+        const finalUrl = page.url();
+        if (urlLooksLikeSignIn(finalUrl)) {
+          console.log(`[${email}] ✅ ${exchange.name} - Sign-in page opened.`);
+          return true;
+        }
+      } catch { /* try next url */ }
+    }
+
+    // ---------- Last resort: click again so at least something happens ----------
+    try {
+      const clicked = await clickSignInButton(page, buttonTexts);
+      if (clicked) {
+        await delay(1500);
+        try { await page.bringToFront(); } catch { /* ignore */ }
+        return true;
+      }
+    } catch { /* ignore */ }
+
+    console.log(`[${email}] ⚠ ${exchange.name} - Could not auto-open sign-in page. Please click the Sign In / Log In button manually.`);
+    return false;
+  }
+
   // Helper function to handle Ethereum wallet connection error
   async function handleWalletConnectionError(page, email) {
     try {
@@ -309,11 +439,22 @@ async function isLoggedIn(page, exchangeConfig = null) {
           return true;
         }
 
-        console.log(`[${email}] ⚠️  ${exchange.name} - Not logged in. Please log in manually in the browser window...`);
-        console.log(`[${email}] Waiting up to 3 minutes for manual login...`);
+        // === Guide the user to the sign-in page automatically ===
+        // When the user lands on the trading page unauthenticated they often
+        // don't know where to click. We proactively navigate to the dedicated
+        // sign-in URL (Kraken) or click the sign-in button (GRVT), so the
+        // credentials form is visible immediately.
+        console.log(`[${email}] ⚠️  ${exchange.name} - Not logged in. Opening sign-in page for you...`);
+        await openSignInPage(page, exchange, email);
 
-        // Poll for login success - wait up to 3 minutes (60 checks × 3s)
+        console.log(`[${email}] 👉 ${exchange.name} - Please enter your credentials in the browser window.`);
+        console.log(`[${email}] Waiting up to 3 minutes for login to complete...`);
+
+        // Poll for login success - wait up to 3 minutes (60 checks × 3s).
+        // Also re-navigate to the sign-in page every 30s if the user drifted
+        // away (e.g. clicked a "forgot password" link and landed elsewhere).
         const maxWaitAttempts = 60;
+        let lastGuideNavAt = Date.now();
         for (let i = 0; i < maxWaitAttempts; i++) {
           await delay(3000);
           try {
@@ -322,6 +463,18 @@ async function isLoggedIn(page, exchangeConfig = null) {
               console.log(`[${email}] ✅ ${exchange.name} - Login detected!`);
               await saveCookies(page, cookiesPath, email);
               return true;
+            }
+
+            // Every 30s, if the user is clearly not on a sign-in page anymore,
+            // re-open the sign-in page to re-guide them.
+            if (Date.now() - lastGuideNavAt > 30000) {
+              lastGuideNavAt = Date.now();
+              const curUrl = (page.url() || '').toLowerCase();
+              const onSignInPage = curUrl.includes('sign-in') || curUrl.includes('signin') || curUrl.includes('login');
+              if (!onSignInPage) {
+                console.log(`[${email}] 👉 ${exchange.name} - Re-opening sign-in page to guide you...`);
+                await openSignInPage(page, exchange, email);
+              }
             }
           } catch (err) {
             // Ignore transient errors during page transitions

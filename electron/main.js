@@ -521,6 +521,42 @@ ipcMain.handle('app:version', () => {
   return pkg.version;
 });
 
+// Fetch BTC price from multiple sources (bypasses renderer CORS)
+let cachedBtcPrice = null;
+let cachedBtcPriceAt = 0;
+ipcMain.handle('btc:price', async () => {
+  // Return cached price if less than 30s old
+  if (cachedBtcPrice && Date.now() - cachedBtcPriceAt < 30000) {
+    return cachedBtcPrice;
+  }
+
+  const sources = [
+    { url: 'https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT', extract: (d) => parseFloat(d?.price) },
+    { url: 'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd', extract: (d) => d?.bitcoin?.usd },
+    { url: 'https://api.kraken.com/0/public/Ticker?pair=XBTUSD', extract: (d) => {
+        const key = Object.keys(d?.result || {})[0];
+        return parseFloat(d?.result?.[key]?.c?.[0]);
+      }
+    },
+  ];
+
+  for (const src of sources) {
+    try {
+      const res = await fetch(src.url, { signal: AbortSignal.timeout(5000) });
+      const data = await res.json();
+      const price = src.extract(data);
+      if (price && price > 1000 && price < 500000) {
+        cachedBtcPrice = price;
+        cachedBtcPriceAt = Date.now();
+        return price;
+      }
+    } catch (err) { /* try next source */ }
+  }
+
+  // Return last cached price even if stale, or null
+  return cachedBtcPrice;
+});
+
 // --- App Lifecycle ---
 
 app.whenReady().then(createWindow);
