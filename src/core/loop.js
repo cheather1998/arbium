@@ -2659,18 +2659,24 @@ async function automatedTradingLoopKrakenOnly(accountResult, exchangeConfig) {
   console.log(`  Hold time: 30s – 5min (randomized)`);
   console.log(`========================================\n`);
 
-  // Phase 1: Set leverage
-  console.log(`\n🔧 Setting leverage to ${TRADE_CONFIG.leverage}x...`);
-  try {
-    const leverageResult = await setLeverageKraken(page, TRADE_CONFIG.leverage, exchange);
-    if (leverageResult.success) {
-      console.log(`✅ Leverage set to ${TRADE_CONFIG.leverage}x`);
-    } else {
-      console.log(`⚠️  Leverage setting: ${leverageResult.error || 'failed'}`);
+  // Phase 1: Set leverage (Futures only — Margin uses fixed 10x via the "Margin" toggle,
+  // which is enabled by default. The Margin page has no leverage slider, so running
+  // setLeverageKraken on it would fail and leave the page in a dirty state.)
+  if (!isMargin) {
+    console.log(`\n🔧 Setting leverage to ${TRADE_CONFIG.leverage}x...`);
+    try {
+      const leverageResult = await setLeverageKraken(page, TRADE_CONFIG.leverage, exchange);
+      if (leverageResult.success) {
+        console.log(`✅ Leverage set to ${TRADE_CONFIG.leverage}x`);
+      } else {
+        console.log(`⚠️  Leverage setting: ${leverageResult.error || 'failed'}`);
+      }
+      await delay(2000);
+    } catch (err) {
+      console.log(`⚠️  Leverage error: ${err.message}`);
     }
-    await delay(2000);
-  } catch (err) {
-    console.log(`⚠️  Leverage error: ${err.message}`);
+  } else {
+    console.log(`\n🔧 Margin mode: leverage is fixed at 10x via the "Margin" toggle (skipping slider).`);
   }
 
   // Phase 2: Initial cleanup — cancel orders & close positions
@@ -2683,24 +2689,63 @@ async function automatedTradingLoopKrakenOnly(accountResult, exchangeConfig) {
   }
   await delay(2000);
 
-  // Helper: ensure page is on the correct trading page, navigate back if not
+  // Helper: ensure page is on the correct trading page, navigate back if not.
+  // If the page has been redirected to a sign-in / login URL (session expired),
+  // DO NOT navigate — otherwise we keep clobbering the user's sign-in form.
+  // Instead wait (up to ~5 min) for the user to log back in manually.
   const expectedUrlPart = isMargin ? 'margin' : 'futures';
   const pageLabel = isMargin ? 'Kraken Margin' : 'Kraken Futures';
+  const isSignInUrl = (u) => {
+    const l = (u || '').toLowerCase();
+    return l.includes('sign-in') || l.includes('signin') || l.includes('/login') || l.includes('2fa');
+  };
   async function ensureTradingPage() {
-    const currentUrl = page.url();
+    let currentUrl = page.url();
+    // If we hit a sign-in page, pause navigation and wait for user to re-login
+    if (isSignInUrl(currentUrl)) {
+      console.log(`⚠️  Detected sign-in page: ${currentUrl}`);
+      console.log(`🔑 Session appears to have expired. Waiting for you to sign in manually...`);
+      console.log(`   (Bot will NOT refresh the page — please complete login in the browser window.)`);
+      const maxWaitMs = 5 * 60 * 1000; // 5 minutes
+      const startedAt = Date.now();
+      while (Date.now() - startedAt < maxWaitMs && !isShuttingDown) {
+        await delay(5000);
+        currentUrl = page.url();
+        if (!isSignInUrl(currentUrl)) {
+          console.log(`✅ Sign-in detected, resuming. Current URL: ${currentUrl}`);
+          break;
+        }
+      }
+      if (isSignInUrl(page.url())) {
+        throw new Error('User did not complete sign-in within 5 minutes — aborting trading loop.');
+      }
+      // After login, Kraken usually lands on /app/home; fall through so we navigate to margin
+      currentUrl = page.url();
+    }
     if (!currentUrl.includes(expectedUrlPart)) {
       console.log(`⚠️  Page drifted to: ${currentUrl}`);
       console.log(`🔄 Navigating back to ${pageLabel}...`);
       await page.goto(exchange.url, { waitUntil: 'networkidle2', timeout: 30000 });
       await delay(3000);
       // Verify
-      const newUrl = page.url();
+      let newUrl = page.url();
+      if (isSignInUrl(newUrl)) {
+        console.log(`⚠️  Navigation bounced to sign-in page — stopping to avoid refresh loop.`);
+        // Recurse once so the sign-in wait loop above kicks in
+        await ensureTradingPage();
+        return;
+      }
       if (newUrl.includes(expectedUrlPart)) {
         console.log(`✅ Back on ${pageLabel} page`);
       } else {
-        console.log(`⚠️  Still not on ${pageLabel}: ${newUrl}, retrying...`);
+        console.log(`⚠️  Still not on ${pageLabel}: ${newUrl}, retrying once...`);
         await page.goto(exchange.url, { waitUntil: 'networkidle2', timeout: 30000 });
         await delay(3000);
+        newUrl = page.url();
+        if (isSignInUrl(newUrl)) {
+          console.log(`⚠️  Second attempt also bounced to sign-in — waiting for user.`);
+          await ensureTradingPage();
+        }
       }
     }
   }
@@ -2880,23 +2925,27 @@ async function automatedTradingLoopKrakenOnly(accountResult, exchangeConfig) {
 
       if (isShuttingDown) break;
 
-      // ── Step 6: Close position with opposite order ──
+      // ── Step 6: Close position with opposite MARKET order ──
+      // We use MARKET (not limit) for closing so the position always fills
+      // immediately, regardless of price movement during the hold. Limit
+      // closes would leave an unfilled order if the price moved away,
+      // causing positions to accumulate across cycles.
       await ensureTradingPage();
-      console.log(`[CYCLE ${cycleCount}] Step 6: Closing position with ${closeSide.toUpperCase()} order...`);
+      console.log(`[CYCLE ${cycleCount}] Step 6: Closing position with ${closeSide.toUpperCase()} MARKET order...`);
 
-      // Fetch fresh price for closing order
-      let closePrice = null;
+      // Log the current market price for reference only — market order does
+      // not need a price input.
       try {
-        closePrice = await getCurrentMarketPrice(page, exchange);
-        if (closePrice) {
-          console.log(`[CYCLE ${cycleCount}] Close price: $${closePrice.toLocaleString()}`);
+        const refPrice = await getCurrentMarketPrice(page, exchange);
+        if (refPrice) {
+          console.log(`[CYCLE ${cycleCount}] Reference price at close: $${refPrice.toLocaleString()}`);
         }
-      } catch (_) { /* use null price, executeTrade will handle */ }
+      } catch (_) { /* ignore */ }
 
-      // Pre-fill for close order
+      // Pre-fill the form with MARKET order type + quantity
       let closePrefillData = {};
       try {
-        const closePrefill = await prefillFormKraken(page, { orderType: 'limit', qty: closeQty }, exchange);
+        const closePrefill = await prefillFormKraken(page, { orderType: 'market', qty: closeQty }, exchange);
         if (closePrefill.success) {
           closePrefillData = closePrefill;
         }
@@ -2904,16 +2953,16 @@ async function automatedTradingLoopKrakenOnly(accountResult, exchangeConfig) {
 
       let closeResult;
       try {
-        if (closePrefillData.success && closePrice) {
+        if (closePrefillData.success) {
           closeResult = await fillPriceSideAndSubmitKraken(
-            page, closePrice,
-            { side: closeSide, orderType: 'limit' },
+            page, null,
+            { side: closeSide, orderType: 'market' },
             exchange, Date.now(), cycleCount, closeSide.toUpperCase(), email, closePrefillData
           );
         } else {
           closeResult = await executeTrade(page, {
             side: closeSide,
-            orderType: 'limit',
+            orderType: 'market',
             qty: closeQty,
           }, exchange);
         }

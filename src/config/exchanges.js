@@ -99,8 +99,11 @@ const EXCHANGE_CONFIGS = {
         sellButton: "Sell",
         marketButton: "Market",
         limitButton: "Limit",
-        confirmBuy: "Buy",
-        confirmSell: "Sell",
+        // The actual submit button text is "Buy BTC/USD (10x)" / "Sell BTC/USD (10x)"
+        // (the "(10x)" leverage multiplier may vary). Match by the unique prefix
+        // "Buy BTC/USD" so we don't confuse it with the nav "Buy" link.
+        confirmBuy: "Buy BTC/USD",
+        confirmSell: "Sell BTC/USD",
         positionsTab: "Positions",
       }
     }

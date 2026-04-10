@@ -340,16 +340,29 @@ async function launchAccount(accountConfig, exchangeConfig, _isRetry = false) {
       if (loggedIn) {
         console.log(`\n[${email}] *** Successfully logged in to ${exchange.name}! ***\n`);
 
-        // For Kraken: ALWAYS navigate to the correct trading page after login
-        // Kraken often redirects to Spot after login, and may redirect back even after navigation
+        // For Kraken: ALWAYS navigate to the correct trading page after login.
+        // Kraken may redirect back to Spot (or to sign-in if the session expired
+        // mid-check), so retry up to 5 times — BUT if any navigation bounces to
+        // a sign-in page, stop immediately and wait for the user to re-login.
+        // Otherwise we clobber their sign-in form every 15 seconds.
         if (exchange.name === 'Kraken') {
           const tradingUrl = exchange.url; // Futures or Margin URL from exchange config
           const urlCheck = tradingUrl.includes('margin') ? 'margin' : 'futures';
           const pageLabel = tradingUrl.includes('margin') ? 'Margin' : 'Futures';
+          const isSignIn = (u) => {
+            const l = (u || '').toLowerCase();
+            return l.includes('sign-in') || l.includes('signin') || l.includes('/login') || l.includes('2fa');
+          };
 
+          let hitSignIn = false;
           // Try up to 5 times — Kraken may redirect back to Spot
           for (let attempt = 1; attempt <= 5; attempt++) {
             const currentUrl = page.url();
+            if (isSignIn(currentUrl)) {
+              console.log(`[${email}] ⚠ Session expired — bounced to sign-in page. Stopping retries.`);
+              hitSignIn = true;
+              break;
+            }
             if (currentUrl.includes(urlCheck)) {
               console.log(`[${email}] ✅ Kraken is on ${pageLabel} page: ${currentUrl}`);
               break;
@@ -365,6 +378,12 @@ async function launchAccount(accountConfig, exchangeConfig, _isRetry = false) {
             // Wait for page to settle and check URL
             await delay(3000);
             const afterUrl = page.url();
+            if (isSignIn(afterUrl)) {
+              console.log(`[${email}] ⚠ Navigation bounced to sign-in page (${afterUrl}).`);
+              console.log(`[${email}] Stopping navigation retries to let you sign in without interruption.`);
+              hitSignIn = true;
+              break;
+            }
             if (afterUrl.includes(urlCheck)) {
               console.log(`[${email}] ✅ Kraken ${pageLabel} confirmed: ${afterUrl}`);
               break;
@@ -377,7 +396,49 @@ async function launchAccount(accountConfig, exchangeConfig, _isRetry = false) {
                   await page.evaluate((url) => { window.location.href = url; }, tradingUrl);
                   await delay(5000);
                 } catch (e) { /* ignore */ }
+                // Re-check for sign-in bounce after JS navigation
+                if (isSignIn(page.url())) {
+                  console.log(`[${email}] ⚠ JS navigation also bounced to sign-in — stopping.`);
+                  hitSignIn = true;
+                  break;
+                }
               }
+            }
+          }
+
+          // If we bounced to sign-in, wait up to 5 minutes for the user to complete login,
+          // THEN navigate to the trading page once.
+          if (hitSignIn) {
+            console.log(`[${email}] 🔑 Waiting up to 5 minutes for you to sign in manually...`);
+            console.log(`[${email}] (Bot will NOT refresh the page — please complete login in the browser window.)`);
+            const startedAt = Date.now();
+            const maxWaitMs = 5 * 60 * 1000;
+            let signedInAgain = false;
+            while (Date.now() - startedAt < maxWaitMs) {
+              await delay(5000);
+              try {
+                if (!isSignIn(page.url())) {
+                  signedInAgain = true;
+                  console.log(`[${email}] ✅ Sign-in detected — resuming. URL: ${page.url()}`);
+                  break;
+                }
+              } catch { /* page may be navigating */ }
+            }
+            if (signedInAgain) {
+              // One final navigation to the trading page
+              if (!page.url().includes(urlCheck)) {
+                try {
+                  await page.goto(tradingUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+                  await delay(3000);
+                } catch { /* ignore */ }
+              }
+              if (page.url().includes(urlCheck)) {
+                console.log(`[${email}] ✅ Kraken ${pageLabel} confirmed after manual re-login: ${page.url()}`);
+              } else {
+                console.log(`[${email}] ⚠ Still not on ${pageLabel} after re-login: ${page.url()}`);
+              }
+            } else {
+              console.log(`[${email}] ⚠ User did not sign in within 5 minutes — leaving browser as-is.`);
             }
           }
         }

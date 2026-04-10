@@ -295,9 +295,17 @@ export async function fillPriceSideAndSubmitKraken(page, price, { side, orderTyp
     await delay(300);
   }
   
-  // 3. Find and click Confirm button
+  // 3. Find and click Confirm button — pass the price input handle so the
+  // search can be scoped to the actual order form container. Without this,
+  // findByExactText("Buy", ...) latches onto a generic "Buy" element in the
+  // top navigation on the Kraken Margin page instead of the submit button.
   const { findConfirmButtonKraken } = await import('./executeKraken.js');
-  const { confirmBtn, confirmText } = await findConfirmButtonKraken(page, side, exchange);
+  const { confirmBtn, confirmText } = await findConfirmButtonKraken(
+    page,
+    side,
+    exchange,
+    prefillData && prefillData.priceInput ? prefillData.priceInput : (prefillData && prefillData.sizeInput) || null
+  );
   
   if (!confirmBtn) {
     return { success: false, error: `Confirm button not found: "${confirmText}"` };

@@ -357,83 +357,137 @@ async function verifyOrderPlaced(page, exchange, side, qty, maxWaitTime = 10000)
     // Use shorter check interval for Extended Exchange (500ms) to verify faster
     const checkInterval = exchange.name?.toLowerCase().includes('extended') ? 500 : 1000;
     const maxChecks = Math.ceil(maxWaitTime / checkInterval);
-    
+    const isKraken = exchange.name === 'Kraken';
+
     for (let i = 0; i < maxChecks; i++) {
       // Check if we've exceeded max wait time
       if (Date.now() - startTime > maxWaitTime) {
         break;
       }
-      
-      // Method 1: Check for success message/notification
-      const successMessage = await page.evaluate(() => {
-        const bodyText = document.body.innerText || '';
-        const successIndicators = [
+
+      // Method 1: Check for success message/notification.
+      // IMPORTANT: Only look in toast/notification/snackbar containers, NOT in
+      // the entire page body — Kraken Pro has many static strings like "Order
+      // submitted successfully" in help pages / tooltips that would give false
+      // positives. Also drop the very generic word "success" which matches
+      // things like "successfully logged in" or "success rate" stats.
+      const successMessage = await page.evaluate((isKrakenExchange) => {
+        const scopes = [];
+        // Collect visible toast/snackbar/notification containers
+        const selectors = [
+          '[role="status"]',
+          '[role="alert"]',
+          '[class*="toast" i]',
+          '[class*="Toast" i]',
+          '[class*="snackbar" i]',
+          '[class*="Snackbar" i]',
+          '[class*="notification" i]',
+          '[class*="Notification" i]',
+        ];
+        for (const sel of selectors) {
+          try {
+            const els = Array.from(document.querySelectorAll(sel));
+            for (const el of els) {
+              if (!el.offsetParent || el.offsetWidth === 0 || el.offsetHeight === 0) continue;
+              scopes.push(el);
+            }
+          } catch { /* ignore bad selectors */ }
+        }
+        if (scopes.length === 0) return null;
+        const text = scopes.map((e) => (e.innerText || '')).join(' ').toLowerCase();
+        // Require order-specific phrases, NOT bare "success".
+        const indicators = [
           'order placed',
           'order submitted',
           'order created',
           'order pending',
-          'success',
-          'submitted successfully'
+          'submitted successfully',
         ];
-        
-        for (const indicator of successIndicators) {
-          if (bodyText.toLowerCase().includes(indicator)) {
-            return indicator;
-          }
+        for (const ind of indicators) {
+          if (text.includes(ind)) return ind;
         }
         return null;
-      });
-      
+      }, isKraken);
+
       if (successMessage) {
         return { success: true, status: 'pending', method: 'success_message' };
       }
       
       // Method 2: Check orders table for pending order
       const orderInTable = await page.evaluate((side, qty) => {
-        // Find all tables
-        const tables = Array.from(document.querySelectorAll('table'));
-        
+        // Same order-book exclusion used by cancelKrakenOrders container
+        // detection — on the Kraken Margin page the left-side order book has
+        // rows that look like "limit + buy/sell + price" text, which would
+        // otherwise make this verification return a false positive and the
+        // bot would report "Order confirmed as pending" even when nothing
+        // was actually submitted.
+        const looksLikeOrderBook = (el) => {
+          const text = ((el.textContent || '').toLowerCase());
+          if (
+            text.includes('orderbook') ||
+            text.includes('order book') ||
+            text.includes('mid price') ||
+            text.includes('best bid') ||
+            text.includes('best ask') ||
+            text.includes('spread')
+          ) return true;
+          const rowCount = el.querySelectorAll('[role="row"], [role="button"], tr').length;
+          if (rowCount > 30) return true;
+          let p = el.parentElement;
+          for (let i = 0; i < 6 && p; i++) {
+            const ariaLabel = (p.getAttribute && (p.getAttribute('aria-label') || p.getAttribute('data-name') || '')).toLowerCase();
+            if (ariaLabel.includes('order book') || ariaLabel.includes('orderbook')) return true;
+            p = p.parentElement;
+          }
+          return false;
+        };
+
+        // Find all tables (both native <table> and role="table" ARIA tables)
+        const tables = Array.from(document.querySelectorAll('table, [role="table"]'));
+
         for (const table of tables) {
-          // Find data rows (skip header)
-          const dataRows = Array.from(table.querySelectorAll('tbody tr, tr:not(:first-child)'));
-          
+          if (looksLikeOrderBook(table)) continue;
+
+          // Find data rows (skip header). Support both tr and role="row".
+          const dataRows = Array.from(table.querySelectorAll('tbody tr, tr:not(:first-child), [role="row"]'));
+
           // Filter to only visible rows
           const visibleRows = dataRows.filter(row => {
             return row.offsetParent !== null && row.offsetWidth > 0 && row.offsetHeight > 0;
           });
-          
+
           // Check each row for order indicators
           for (const row of visibleRows) {
             const rowText = row.textContent?.toLowerCase() || '';
-            
+
             // Check if row contains order indicators
             const hasOrderIndicators = (
-              rowText.includes('limit') || 
-              rowText.includes('market') || 
+              rowText.includes('limit') ||
+              rowText.includes('market') ||
               rowText.includes('pending') ||
               rowText.includes('open') ||
               rowText.includes('order')
             );
-            
+
             // Check if row matches the side (buy/sell)
-            const matchesSide = side === 'buy' 
+            const matchesSide = side === 'buy'
               ? (rowText.includes('buy') || rowText.includes('long'))
               : (rowText.includes('sell') || rowText.includes('short'));
-            
+
             // Check if NOT already canceled/filled
             const isActive = !(
-              rowText.includes('canceled') || 
+              rowText.includes('canceled') ||
               rowText.includes('filled') ||
               rowText.includes('executed') ||
               rowText.includes('closed')
             );
-            
+
             if (hasOrderIndicators && matchesSide && isActive) {
               return true;
             }
           }
         }
-        
+
         return false;
       }, side, qty);
       
@@ -441,25 +495,30 @@ async function verifyOrderPlaced(page, exchange, side, qty, maxWaitTime = 10000)
         return { success: true, status: 'pending', method: 'orders_table' };
       }
       
-      // Method 3: Check for modal/confirmation dialog closing (indicates success)
-      const modalClosed = await page.evaluate(() => {
-        // Check if any confirmation/trade modal has closed
-        const modals = document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"]');
-        // If no modals or modals are hidden, trade likely succeeded
-        return modals.length === 0 || Array.from(modals).every(m => {
-          const style = window.getComputedStyle(m);
-          return style.display === 'none' || style.visibility === 'hidden';
+      // Method 3: Check for modal/confirmation dialog closing (indicates success).
+      // CRITICAL: "no modal visible" is NOT enough evidence of success on Kraken
+      // Margin — if the bot clicks the wrong button (e.g. the top-nav "Buy"
+      // link), no modal ever opens and we would wrongly report success. Skip
+      // this shortcut entirely for Kraken; other exchanges keep the old
+      // behavior because their flows do open a confirmation modal.
+      if (!isKraken) {
+        const modalClosed = await page.evaluate(() => {
+          const modals = document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="Modal"]');
+          return modals.length === 0 || Array.from(modals).every(m => {
+            const style = window.getComputedStyle(m);
+            return style.display === 'none' || style.visibility === 'hidden';
+          });
         });
-      });
-      
-      // For Extended Exchange, check modal closure earlier (after 1 check = 0.5s)
-      // For other exchanges, wait at least 2 seconds before checking modal
-      const minChecksForModal = exchange.name?.toLowerCase().includes('extended') ? 1 : 2;
-      if (modalClosed && i >= minChecksForModal) {
-        // Modal closed and no errors found - order likely placed
-        return { success: true, status: 'pending', method: 'modal_closed' };
+
+        // For Extended Exchange, check modal closure earlier (after 1 check = 0.5s)
+        // For other exchanges, wait at least 2 seconds before checking modal
+        const minChecksForModal = exchange.name?.toLowerCase().includes('extended') ? 1 : 2;
+        if (modalClosed && i >= minChecksForModal) {
+          // Modal closed and no errors found - order likely placed
+          return { success: true, status: 'pending', method: 'modal_closed' };
+        }
       }
-      
+
       // Wait before next check
       await delay(checkInterval);
     }
@@ -524,8 +583,18 @@ async function dismissCancelModal(page) {
 }
 
 async function cancelKrakenOrders(page, closeAtMarket = false) {
-  console.log(`\n=== Canceling Kraken Orders via Modal Flow (KRAKEN-SPECIFIC FUNCTION) ${closeAtMarket ? '(Market Close)' : '(Limit Close)'} ===`);
-  
+  // Detect whether we're on the Margin page (vs Futures). The Margin UI differs:
+  //   - the right-panel tab is labeled "Orders" (not "Open orders")
+  //   - there's no data-layout-path="/c1/ts1/tb2" bottom tab strip
+  //   - the left side of the page is an order book table that also contains
+  //     "limit/market + buy/sell + price + usd" text — so the generic
+  //     container-detection heuristics below wrongly latch onto the order book.
+  const isMargin = (() => {
+    try { return (page.url() || '').includes('margin'); } catch { return false; }
+  })();
+  const modeTag = isMargin ? '[Kraken Margin]' : '[Kraken Futures]';
+  console.log(`\n=== Canceling Kraken Orders via Modal Flow (KRAKEN-SPECIFIC FUNCTION) ${closeAtMarket ? '(Market Close)' : '(Limit Close)'} ${modeTag} ===`);
+
   // Smart wait for Kraken page to be ready (check for Open Orders tab instead of fixed delay)
   console.log(`[Kraken] Waiting for page to be ready...`);
   let pageReady = false;
@@ -533,25 +602,31 @@ async function cancelKrakenOrders(page, closeAtMarket = false) {
   const startTime = Date.now();
   
   while (Date.now() - startTime < maxWaitTime) {
-    // Check if Open Orders tab is available
-    const tabFound = await page.evaluate(() => {
-      const text = document.body.innerText || '';
-      return text.toLowerCase().includes('open orders') || 
-             text.toLowerCase().includes('order history') ||
+    // Check if the orders tab is available
+    const tabFound = await page.evaluate((isMargin) => {
+      const text = (document.body.innerText || '').toLowerCase();
+      if (isMargin) {
+        // On margin the right-panel tab is literally "Orders". "Closed orders"
+        // also contains "orders" so we look for it independently of "closed".
+        return /\borders\b/.test(text);
+      }
+      return text.includes('open orders') ||
+             text.includes('order history') ||
              document.querySelector('div[data-layout-path*="/c1/ts1/tb"]') !== null;
-    });
-    
+    }, isMargin);
+
     if (tabFound) {
       // Additional check: try to find the tab element
       let tabElement = null;
+      const exactLabel = isMargin ? "Orders" : "Open orders";
       try {
-        tabElement = await findByExactText(page, "Open orders", ["button", "div", "span", "a"]);
+        tabElement = await findByExactText(page, exactLabel, ["button", "div", "span", "a"]);
       } catch (e) {
         try {
-          tabElement = await findByExactText(page, "Open Orders", ["button", "div", "span", "a"]);
+          tabElement = await findByExactText(page, isMargin ? "orders" : "Open Orders", ["button", "div", "span", "a"]);
         } catch (e2) {
           try {
-            tabElement = await findByText(page, "Open orders", ["button", "div", "span", "a"]);
+            tabElement = await findByText(page, exactLabel, ["button", "div", "span", "a"]);
           } catch (e3) {
             // Continue checking
           }
@@ -590,38 +665,57 @@ async function cancelKrakenOrders(page, closeAtMarket = false) {
   // Step 1: Go to Open orders tab
   console.log(`[Kraken] Step 1: Going to Open orders tab...`);
 
-  let openOrdersTab = await page.evaluateHandle(() => {
-    // Strategy 1: data-layout-path (original)
+  let openOrdersTab = await page.evaluateHandle((isMargin) => {
+    // On Margin the tab is literally labeled "Orders" (next to "Closed orders",
+    // "Trades", etc.). On Futures the tab is "Open orders". We must match exactly
+    // to avoid falling onto "Closed orders" / "Order history" / "Order form".
+    const exactTargets = isMargin
+      ? ['orders']
+      : ['open orders'];
+    const excludeTargets = isMargin
+      ? ['closed orders', 'order history', 'order form', 'open orders']
+      : ['closed orders', 'order history', 'order form'];
+
+    const normalize = (t) => (t || '').trim().toLowerCase();
+    const isExact = (t) => {
+      const n = normalize(t);
+      if (excludeTargets.includes(n)) return false;
+      return exactTargets.includes(n);
+    };
+
+    // Strategy 1: data-layout-path (original, Futures bottom-tab strip)
     const byPath = document.querySelector('div[data-layout-path="/c1/ts1/tb2"]');
     if (byPath) {
       const content = byPath.querySelector('.flexlayout__tab_button_content');
-      if (content && content.textContent.toLowerCase().includes('open orders')) return byPath;
+      if (content && isExact(content.textContent)) return byPath;
     }
 
-    // Strategy 2: Search all tab buttons for "Open orders" text
+    // Strategy 2: Search all tab buttons for exact target text
     const allTabs = document.querySelectorAll('.flexlayout__tab_button, [role="tab"], [class*="tab"]');
     for (const tab of allTabs) {
-      const text = (tab.textContent || '').trim().toLowerCase();
-      if (text.includes('open orders')) return tab;
+      // Prefer the inner button-content node so "Closed orders" wrappers don't leak in
+      const inner = tab.querySelector('.flexlayout__tab_button_content');
+      const text = inner ? inner.textContent : tab.textContent;
+      if (isExact(text)) return tab;
     }
 
-    // Strategy 3: Search by data-layout-path pattern (any /c1/ts1/tb*)
+    // Strategy 3: Search by data-layout-path pattern (any /c1/ts1/tb*) — flexlayout only
     const pathTabs = document.querySelectorAll('div[data-layout-path*="/c1/ts1/tb"]');
     for (const tab of pathTabs) {
-      const text = (tab.textContent || '').trim().toLowerCase();
-      if (text.includes('open orders') || text.includes('open')) return tab;
+      const inner = tab.querySelector('.flexlayout__tab_button_content');
+      const text = inner ? inner.textContent : tab.textContent;
+      if (isExact(text)) return tab;
     }
 
-    // Strategy 4: Any clickable element containing "Open Orders"
+    // Strategy 4: Any clickable element with exact "Orders" / "Open orders" text
     const allElements = document.querySelectorAll('button, div[role="tab"], span, div');
     for (const el of allElements) {
       if (el.children.length > 5) continue; // skip containers
-      const text = (el.textContent || '').trim();
-      if (text === 'Open Orders' || text === 'Open orders') return el;
+      if (isExact(el.textContent)) return el;
     }
 
     return null;
-  });
+  }, isMargin);
 
   if (openOrdersTab && openOrdersTab.asElement()) {
     const openOrdersTabElement = openOrdersTab.asElement();
@@ -673,11 +767,26 @@ async function cancelKrakenOrders(page, closeAtMarket = false) {
     });
     console.log(`[Kraken] Available tabs:`, JSON.stringify(availableTabs));
 
-    // Try clicking on any tab that looks like it might contain orders
+    // Try clicking on any tab that looks like it might contain orders.
+    // Excludes "Closed orders" / "Order history" / "Order form" (none of which
+    // hold the active/open orders list we want to cancel from).
     const orderTab = await page.evaluateHandle(() => {
+      const EXCLUDES = ['closed orders', 'order history', 'order form', 'trades', 'trade history'];
       const tabs = document.querySelectorAll('div[data-layout-path*="/c1/ts1/tb"], .flexlayout__tab_button, [role="tab"]');
       for (const tab of tabs) {
-        const text = (tab.textContent || '').trim().toLowerCase();
+        const inner = tab.querySelector && tab.querySelector('.flexlayout__tab_button_content');
+        const text = ((inner ? inner.textContent : tab.textContent) || '').trim().toLowerCase();
+        if (!text) continue;
+        if (EXCLUDES.includes(text)) continue;
+        // Exact match preferred: "orders" (margin) or "open orders" (futures).
+        if (text === 'orders' || text === 'open orders') return tab;
+      }
+      // Secondary pass: any tab that contains "order"/"trade"/"fill"/"history"
+      // but still excludes the blacklist above.
+      for (const tab of tabs) {
+        const inner = tab.querySelector && tab.querySelector('.flexlayout__tab_button_content');
+        const text = ((inner ? inner.textContent : tab.textContent) || '').trim().toLowerCase();
+        if (!text || EXCLUDES.includes(text)) continue;
         if (text.includes('order') || text.includes('trade') || text.includes('history') || text.includes('fill')) {
           return tab;
         }
@@ -705,31 +814,62 @@ async function cancelKrakenOrders(page, closeAtMarket = false) {
   // Small delay to ensure DOM is stable
   await delay(300);
   const hasOrders = await page.evaluate(() => {
+    // Helper: the Margin page shows a full order book (left side) that ALSO
+    // contains "limit/market + buy/sell + price + usd" text, making it look
+    // like an orders table to our heuristics. Filter it out by row count and
+    // by order-book-specific labels that never appear in the open-orders list.
+    const looksLikeOrderBook = (el) => {
+      const text = ((el.textContent || '').toLowerCase());
+      if (
+        text.includes('orderbook') ||
+        text.includes('order book') ||
+        text.includes('mid price') ||
+        text.includes('best bid') ||
+        text.includes('best ask') ||
+        text.includes('spread')
+      ) return true;
+      // The order book has many rows (>= ~25 price levels). The open-orders
+      // list rarely exceeds a handful and never approaches that count.
+      const rowCount = el.querySelectorAll('[role="row"], [role="button"], tr').length;
+      if (rowCount > 30) return true;
+      // Walk up a few ancestors to check if this element lives in a panel
+      // labeled as the order book (flexlayout tab content).
+      let p = el.parentElement;
+      for (let i = 0; i < 6 && p; i++) {
+        const ariaLabel = (p.getAttribute && (p.getAttribute('aria-label') || p.getAttribute('data-name') || '')).toLowerCase();
+        if (ariaLabel.includes('order book') || ariaLabel.includes('orderbook')) return true;
+        p = p.parentElement;
+      }
+      return false;
+    };
+
     // Strategy 1: Look for container with id="open-orders" (Kraken-specific)
     let container = document.getElementById('open-orders');
-    
+
     // Strategy 2: Look for table with role="table" that contains order data
     if (!container) {
       const tables = Array.from(document.querySelectorAll('[role="table"]'));
       for (const table of tables) {
         const tableText = (table.textContent || '').toLowerCase();
         // Check if this table contains order-related headers or data
-        if ((tableText.includes('limit') || tableText.includes('market')) && 
+        if ((tableText.includes('limit') || tableText.includes('market')) &&
             (tableText.includes('buy') || tableText.includes('sell')) &&
             (tableText.includes('quantity') || tableText.includes('price') || tableText.includes('usd'))) {
+          if (looksLikeOrderBook(table)) continue;
           container = table;
           break;
         }
       }
     }
-    
+
     // Strategy 3: Look for rowgroup that contains order rows
     if (!container) {
       const rowgroups = Array.from(document.querySelectorAll('[role="rowgroup"]'));
       for (const rg of rowgroups) {
         const rgText = (rg.textContent || '').toLowerCase();
-        if ((rgText.includes('limit') || rgText.includes('market')) && 
+        if ((rgText.includes('limit') || rgText.includes('market')) &&
             (rgText.includes('buy') || rgText.includes('sell'))) {
+          if (looksLikeOrderBook(rg)) continue;
           container = rg;
           break;
         }
@@ -825,31 +965,55 @@ async function cancelKrakenOrders(page, closeAtMarket = false) {
       const result = await page.evaluate(() => {
         try {
           console.log('[Kraken] findOrderRows: Starting search...');
+          // Exclude the Margin-page order book (see cancelKrakenOrders Step 2 for details).
+          const looksLikeOrderBook = (el) => {
+            const text = ((el.textContent || '').toLowerCase());
+            if (
+              text.includes('orderbook') ||
+              text.includes('order book') ||
+              text.includes('mid price') ||
+              text.includes('best bid') ||
+              text.includes('best ask') ||
+              text.includes('spread')
+            ) return true;
+            const rowCount = el.querySelectorAll('[role="row"], [role="button"], tr').length;
+            if (rowCount > 30) return true;
+            let p = el.parentElement;
+            for (let i = 0; i < 6 && p; i++) {
+              const ariaLabel = (p.getAttribute && (p.getAttribute('aria-label') || p.getAttribute('data-name') || '')).toLowerCase();
+              if (ariaLabel.includes('order book') || ariaLabel.includes('orderbook')) return true;
+              p = p.parentElement;
+            }
+            return false;
+          };
+
           // Strategy 1: Look for container with id="open-orders" (Kraken-specific)
           let container = document.getElementById('open-orders');
           console.log('[Kraken] findOrderRows: Container by ID:', container ? 'found' : 'not found');
-      
+
       // Strategy 2: Look for table with role="table" that contains order data
       if (!container) {
         const tables = Array.from(document.querySelectorAll('[role="table"]'));
         for (const table of tables) {
           const tableText = (table.textContent || '').toLowerCase();
-          if ((tableText.includes('limit') || tableText.includes('market')) && 
+          if ((tableText.includes('limit') || tableText.includes('market')) &&
               (tableText.includes('buy') || tableText.includes('sell')) &&
               (tableText.includes('quantity') || tableText.includes('price') || tableText.includes('usd'))) {
+            if (looksLikeOrderBook(table)) continue;
             container = table;
             break;
           }
         }
       }
-      
+
       // Strategy 3: Look for rowgroup that contains order rows
       if (!container) {
         const rowgroups = Array.from(document.querySelectorAll('[role="rowgroup"]'));
         for (const rg of rowgroups) {
           const rgText = (rg.textContent || '').toLowerCase();
-          if ((rgText.includes('limit') || rgText.includes('market')) && 
+          if ((rgText.includes('limit') || rgText.includes('market')) &&
               (rgText.includes('buy') || rgText.includes('sell'))) {
+            if (looksLikeOrderBook(rg)) continue;
             container = rg;
             break;
           }
@@ -1004,30 +1168,54 @@ async function cancelKrakenOrders(page, closeAtMarket = false) {
     }
     
     const orderClicked = await page.evaluate((targetIndex) => {
+      // Exclude the Margin-page order book (see cancelKrakenOrders Step 2 for details).
+      const looksLikeOrderBook = (el) => {
+        const text = ((el.textContent || '').toLowerCase());
+        if (
+          text.includes('orderbook') ||
+          text.includes('order book') ||
+          text.includes('mid price') ||
+          text.includes('best bid') ||
+          text.includes('best ask') ||
+          text.includes('spread')
+        ) return true;
+        const rowCount = el.querySelectorAll('[role="row"], [role="button"], tr').length;
+        if (rowCount > 30) return true;
+        let p = el.parentElement;
+        for (let i = 0; i < 6 && p; i++) {
+          const ariaLabel = (p.getAttribute && (p.getAttribute('aria-label') || p.getAttribute('data-name') || '')).toLowerCase();
+          if (ariaLabel.includes('order book') || ariaLabel.includes('orderbook')) return true;
+          p = p.parentElement;
+        }
+        return false;
+      };
+
       // Strategy 1: Look for container with id="open-orders" (Kraken-specific)
       let container = document.getElementById('open-orders');
-      
+
       // Strategy 2: Look for table with role="table" that contains order data
       if (!container) {
         const tables = Array.from(document.querySelectorAll('[role="table"]'));
         for (const table of tables) {
           const tableText = (table.textContent || '').toLowerCase();
-          if ((tableText.includes('limit') || tableText.includes('market')) && 
+          if ((tableText.includes('limit') || tableText.includes('market')) &&
               (tableText.includes('buy') || tableText.includes('sell')) &&
               (tableText.includes('quantity') || tableText.includes('price') || tableText.includes('usd'))) {
+            if (looksLikeOrderBook(table)) continue;
             container = table;
             break;
           }
         }
       }
-      
+
       // Strategy 3: Look for rowgroup that contains order rows
       if (!container) {
         const rowgroups = Array.from(document.querySelectorAll('[role="rowgroup"]'));
         for (const rg of rowgroups) {
           const rgText = (rg.textContent || '').toLowerCase();
-          if ((rgText.includes('limit') || rgText.includes('market')) && 
+          if ((rgText.includes('limit') || rgText.includes('market')) &&
               (rgText.includes('buy') || rgText.includes('sell'))) {
+            if (looksLikeOrderBook(rg)) continue;
             container = rg;
             break;
           }
@@ -1148,34 +1336,53 @@ async function cancelKrakenOrders(page, closeAtMarket = false) {
         await delay(200); // Fallback
       }
     
-    // Step 4: Find and click "Cancel order" button in FIRST modal
+    // Step 4: Find and click "Cancel order" button — SCOPED TO THE OPEN MODAL
+    // so we don't accidentally pick up the main form's "Cancel" button (which
+    // on Kraken Margin sometimes also says "Cancel" on the order form).
     console.log(`[Kraken] Step 4: Looking for "Cancel order" button in first modal...`);
-    let cancelOrderBtn = await findByExactText(page, "Cancel order", ["button", "div", "span"]);
-    
-    if (!cancelOrderBtn) {
-      cancelOrderBtn = await findByText(page, "Cancel order", ["button", "div", "span"]);
-    }
-    
-    if (!cancelOrderBtn) {
-      cancelOrderBtn = await findByExactText(page, "Cancel", ["button", "div", "span"]);
-    }
-    
-    if (cancelOrderBtn) {
-      // Verify it's in a modal
-      const isInModal = await page.evaluate((el) => {
-        let parent = el.parentElement;
-        for (let i = 0; i < 10 && parent; i++) {
-          const className = (typeof parent.className === 'string' ? parent.className : (parent.className?.baseVal || String(parent.className) || '')).toLowerCase();
-          if (parent.tagName === 'DIV' && (parent.getAttribute('role') === 'dialog' || 
-              className.includes('modal') || className.includes('dialog') || 
-              className.includes('overlay'))) {
-            return true;
-          }
-          parent = parent.parentElement;
+    const cancelHandle = await page.evaluateHandle(() => {
+      const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal" i], [class*="Modal" i], [class*="overlay" i]'))
+        .filter((m) => {
+          const s = window.getComputedStyle(m);
+          if (s.display === 'none' || s.visibility === 'hidden') return false;
+          return m.offsetWidth > 0 && m.offsetHeight > 0;
+        });
+      if (modals.length === 0) return null;
+      modals.sort((a, b) => (a.offsetWidth * a.offsetHeight) - (b.offsetWidth * b.offsetHeight));
+
+      for (const modal of modals) {
+        const buttons = Array.from(modal.querySelectorAll('button'))
+          .filter((b) => b.offsetParent && b.offsetWidth > 0 && b.offsetHeight > 0 && !b.disabled && b.getAttribute('aria-disabled') !== 'true');
+        if (buttons.length === 0) continue;
+
+        // 1) Exact "Cancel order" text
+        for (const b of buttons) {
+          const t = (b.textContent || '').trim().toLowerCase();
+          if (t === 'cancel order') return b;
         }
-        return false;
-      }, cancelOrderBtn);
-      
+        // 2) Starts with "Cancel " (e.g. "Cancel order", "Cancel position")
+        for (const b of buttons) {
+          const t = (b.textContent || '').trim().toLowerCase();
+          if (t.startsWith('cancel ')) return b;
+        }
+        // 3) aria-label containing "cancel"
+        for (const b of buttons) {
+          const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+          if (aria.includes('cancel')) return b;
+        }
+        // 4) Just "Cancel" alone (be careful — modal usually has Cancel + confirm action)
+        // Prefer the one that's NOT labeled "dismiss" / "close"
+        for (const b of buttons) {
+          const t = (b.textContent || '').trim().toLowerCase();
+          if (t === 'cancel') return b;
+        }
+      }
+      return null;
+    });
+    const cancelOrderBtn = cancelHandle && cancelHandle.asElement ? cancelHandle.asElement() : null;
+
+    if (cancelOrderBtn) {
+      const isInModal = true; // already scoped above
       if (isInModal) {
         console.log(`[Kraken] ✅ Found "Cancel order" button in first modal, clicking...`);
         await cancelOrderBtn.click();
@@ -1750,36 +1957,54 @@ async function cancelKrakenOrders(page, closeAtMarket = false) {
             await delay(200); // Small delay for modal to be ready
           }
           
-          // Step 7f: Find and click "Close BTC Perp" button
-          console.log(`[Kraken] Looking for "Close BTC Perp" button in modal...`);
-          let closeBtcBtn = await findByExactText(page, "Close BTC", ["button", "div", "span"]);
-          
-          if (!closeBtcBtn) {
-            closeBtcBtn = await findByText(page, "Close BTC", ["button", "div", "span"]);
-          }
-          
-          if (!closeBtcBtn) {
-            // Try variations
-            closeBtcBtn = await findByText(page, "Close", ["button", "div", "span"]);
-          }
-          
-          if (closeBtcBtn) {
-            const isInModal2 = await page.evaluate((el) => {
-              let parent = el.parentElement;
-              for (let j = 0; j < 10 && parent; j++) {
-                const className = (typeof parent.className === 'string' ? parent.className : (parent.className?.baseVal || String(parent.className) || '')).toLowerCase();
-                if (parent.tagName === 'DIV' && (parent.getAttribute('role') === 'dialog' || 
-                    className.includes('modal') || className.includes('dialog') || 
-                    className.includes('overlay'))) {
-                  return true;
+          // Step 7f: Find and click the close confirm button — SCOPED TO THE
+          // OPEN MODAL so we don't accidentally hit the main form's submit
+          // button (which on Margin also says "Close BTC/USD (10x)" when a
+          // position is open).
+          console.log(`[Kraken] Looking for close confirm button inside modal...`);
+          const closeBtcHandle = await page.evaluateHandle(() => {
+            // Find the top-most visible modal/dialog.
+            const modals = Array.from(document.querySelectorAll('[role="dialog"], [class*="modal" i], [class*="Modal" i], [class*="overlay" i]'))
+              .filter((m) => {
+                const s = window.getComputedStyle(m);
+                if (s.display === 'none' || s.visibility === 'hidden') return false;
+                return m.offsetWidth > 0 && m.offsetHeight > 0;
+              });
+            if (modals.length === 0) return null;
+            // Prefer the smallest visible modal (the inner-most one).
+            modals.sort((a, b) => (a.offsetWidth * a.offsetHeight) - (b.offsetWidth * b.offsetHeight));
+
+            for (const modal of modals) {
+              const buttons = Array.from(modal.querySelectorAll('button'))
+                .filter((b) => b.offsetParent && b.offsetWidth > 0 && b.offsetHeight > 0 && !b.disabled && b.getAttribute('aria-disabled') !== 'true');
+              if (buttons.length === 0) continue;
+
+              // 1) aria-label="Submit order" — the real close confirm button
+              for (const b of buttons) {
+                const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+                if (aria.includes('submit order') || aria.includes('close position') || aria.includes('confirm')) {
+                  return b;
                 }
-                parent = parent.parentElement;
               }
-              return false;
-            }, closeBtcBtn);
-            
+              // 2) Text starts with "Close " (e.g. "Close BTC/USD", "Close BTC Perp")
+              for (const b of buttons) {
+                const t = (b.textContent || '').trim().toLowerCase();
+                if (t.startsWith('close ')) return b;
+              }
+              // 3) Bottom-most wide button in the modal (submit is at the bottom)
+              const wide = buttons
+                .filter((b) => b.getBoundingClientRect().width >= 120)
+                .sort((a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top);
+              if (wide.length > 0) return wide[0];
+            }
+            return null;
+          });
+          const closeBtcBtn = closeBtcHandle && closeBtcHandle.asElement ? closeBtcHandle.asElement() : null;
+
+          if (closeBtcBtn) {
+            const isInModal2 = true; // already scoped above
             if (isInModal2) {
-              console.log(`[Kraken] ✅ Found "Close BTC Perp" button, clicking...`);
+              console.log(`[Kraken] ✅ Found close confirm button in modal, clicking...`);
               await closeBtcBtn.click();
               await delay(500); // Reduced from 1000ms
               
@@ -1809,11 +2034,9 @@ async function cancelKrakenOrders(page, closeAtMarket = false) {
                 await page.keyboard.press('Escape');
                 await delay(200);
               }
-            } else {
-              console.log(`[Kraken] ⚠️  Found "Close BTC Perp" button but it's not in a modal`);
             }
           } else {
-            console.log(`[Kraken] ⚠️  Could not find "Close BTC Perp" button`);
+            console.log(`[Kraken] ⚠️  Could not find close confirm button inside the modal`);
             await page.keyboard.press('Escape');
             await delay(200);
           }

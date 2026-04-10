@@ -388,46 +388,361 @@ export async function setLeverageKraken(page, leverage, exchange) {
  * Find confirm button for Kraken
  * Uses standard logic - can be overridden if Kraken has special requirements
  */
-export async function findConfirmButtonKraken(page, side, exchange) {
+export async function findConfirmButtonKraken(page, side, exchange, priceInputHandle = null) {
   let confirmText = side === "buy" ? exchange.selectors.confirmBuy : exchange.selectors.confirmSell;
-  
+
   console.log(`[${exchange.name}] Looking for "${confirmText}" button...`);
-  
+
   let confirmBtn = null;
-  
+
+  // Hard safety guard used by ALL fallback methods. We do NOT filter by
+  // left/right column anymore: on ultrawide viewports (e.g. 2560px) Kraken Pro
+  // places the order form in the LEFT column (x≈100-500), not the right.
+  // The only reliable guards are:
+  //   - y < 100   → top nav / header area
+  //   - width<60  → tiny icon, can't be the wide submit bar
+  //   - anchor/href → navigation link
+  //   - NAV/HEADER/ASIDE/role="navigation" ancestor → top-nav "Buy"/"Sell" link
+  const isButtonInSafeZone = async (btnHandle) => {
+    try {
+      return await page.evaluate((el) => {
+        if (!el) return { ok: false, reason: 'null-handle' };
+        const r = el.getBoundingClientRect();
+        if (r.top < 100) return { ok: false, reason: `top-nav (y=${Math.round(r.top)})`, x: Math.round(r.left), y: Math.round(r.top), text: (el.textContent || '').trim().slice(0, 40) };
+        if (r.width < 60) return { ok: false, reason: `too-narrow (w=${Math.round(r.width)})`, x: Math.round(r.left), y: Math.round(r.top), text: (el.textContent || '').trim().slice(0, 40) };
+        // Also reject anchors / elements with href and nav ancestors
+        if (el.tagName === 'A' || el.getAttribute('href')) return { ok: false, reason: 'anchor-or-href', x: Math.round(r.left), y: Math.round(r.top), text: (el.textContent || '').trim().slice(0, 40) };
+        let q = el.parentElement;
+        for (let i = 0; i < 10 && q; i++) {
+          const tag = q.tagName;
+          if (tag === 'NAV' || tag === 'HEADER' || tag === 'ASIDE') return { ok: false, reason: `inside-${tag}`, x: Math.round(r.left), y: Math.round(r.top), text: (el.textContent || '').trim().slice(0, 40) };
+          if (q.getAttribute && q.getAttribute('role') === 'navigation') return { ok: false, reason: 'role-nav', x: Math.round(r.left), y: Math.round(r.top), text: (el.textContent || '').trim().slice(0, 40) };
+          q = q.parentElement;
+        }
+        return { ok: true, x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height), text: (el.textContent || '').trim().slice(0, 40) };
+      }, btnHandle);
+    } catch {
+      return { ok: false, reason: 'eval-failed' };
+    }
+  };
+
+  // METHOD -1: fastest and most reliable path — the Kraken Pro submit button
+  // carries a literal aria-label="Submit order". Look for that directly.
+  // We also explicitly detect the DISABLED state (e.g. when quantity exceeds
+  // available margin) and surface that as a clear error instead of looking
+  // for some other clickable element.
+  try {
+    const sideWord = side === 'buy' ? 'buy' : 'sell';
+    const lookup = await page.evaluate((wantedSide) => {
+      const candidates = Array.from(document.querySelectorAll('button[aria-label="Submit order"], button[aria-label*="Submit order" i]'));
+      const visible = candidates.filter((b) => b.offsetParent && b.offsetWidth > 0 && b.offsetHeight > 0);
+      if (visible.length === 0) return { state: 'not-found' };
+
+      // Check if ALL visible submit buttons are disabled — that's a hard error
+      // state (insufficient margin, leverage off, etc.), not something we can
+      // fix by clicking elsewhere.
+      const enabled = visible.filter((b) => !b.disabled && b.getAttribute('aria-disabled') !== 'true');
+      if (enabled.length === 0) {
+        const first = visible[0];
+        const r = first.getBoundingClientRect();
+        return {
+          state: 'disabled',
+          text: (first.textContent || '').trim().slice(0, 120),
+          x: Math.round(r.left), y: Math.round(r.top),
+        };
+      }
+
+      // Prefer one whose text starts with the wanted side ("buy "/"sell ")
+      for (const b of enabled) {
+        const txt = (b.textContent || '').trim().toLowerCase();
+        if (txt.startsWith(wantedSide + ' ')) {
+          return { state: 'found-by-side', el: b };
+        }
+      }
+      // When there's a position open, the submit text becomes "Close BTC/USD (10x)"
+      // regardless of side. Match any "close ..." text as well.
+      for (const b of enabled) {
+        const txt = (b.textContent || '').trim().toLowerCase();
+        if (txt.startsWith('close ')) {
+          return { state: 'found-close', el: b };
+        }
+      }
+      // Last resort: if there's only one enabled Submit-order button, use it.
+      if (enabled.length === 1) {
+        return { state: 'found-only', el: enabled[0] };
+      }
+      return { state: 'ambiguous' };
+    }, sideWord);
+
+    if (lookup && lookup.state === 'disabled') {
+      console.log(`[${exchange.name}] ⚠️  Submit button is DISABLED — text="${lookup.text}" at (${lookup.x}, ${lookup.y})`);
+      console.log(`[${exchange.name}]    This usually means the form has a validation error (insufficient margin, quantity exceeds available, etc.).`);
+      console.log(`[${exchange.name}]    Refusing to click — bot will skip this cycle so the caller can re-cleanup.`);
+      throw new Error(`Submit button disabled: ${lookup.text}`);
+    }
+
+    if (lookup && (lookup.state === 'found-by-side' || lookup.state === 'found-close' || lookup.state === 'found-only')) {
+      // Re-grab the element as a JSHandle we can click
+      const ariaHandle = await page.evaluateHandle((wantedSide) => {
+        const candidates = Array.from(document.querySelectorAll('button[aria-label="Submit order"], button[aria-label*="Submit order" i]'));
+        const enabled = candidates.filter((b) => b.offsetParent && b.offsetWidth > 0 && b.offsetHeight > 0 && !b.disabled && b.getAttribute('aria-disabled') !== 'true');
+        for (const b of enabled) {
+          const txt = (b.textContent || '').trim().toLowerCase();
+          if (txt.startsWith(wantedSide + ' ')) return b;
+        }
+        for (const b of enabled) {
+          const txt = (b.textContent || '').trim().toLowerCase();
+          if (txt.startsWith('close ')) return b;
+        }
+        return enabled.length === 1 ? enabled[0] : null;
+      }, sideWord);
+      const ariaEl = ariaHandle && ariaHandle.asElement ? ariaHandle.asElement() : null;
+      if (ariaEl) {
+        const safe = await isButtonInSafeZone(ariaEl);
+        if (safe.ok) {
+          const label = lookup.state === 'found-close' ? `Submit order (close mode)` : `aria-label="Submit order"`;
+          console.log(`[${exchange.name}] ✓ Found submit button via ${label}: "${safe.text}" at (${safe.x}, ${safe.y})`);
+          return { confirmBtn: ariaEl, confirmText };
+        } else {
+          console.log(`[${exchange.name}] ⚠️  aria-label candidate "${safe.text}" at (${safe.x}, ${safe.y}) rejected: ${safe.reason}`);
+        }
+      }
+    }
+  } catch (e) {
+    // Re-throw "disabled" errors so the outer loop skips the cycle instead of
+    // falling through to the fuzzy text fallbacks (which would click garbage).
+    if (e.message && e.message.startsWith('Submit button disabled')) throw e;
+    console.log(`[${exchange.name}] aria-label lookup errored: ${e.message}`);
+  }
+
+  // Method 0: If we have a handle to the price input from pre-fill, find the
+  // order form container by walking up just a few levels (never high enough to
+  // reach the page wrapper), then look for a submit button STRICTLY INSIDE
+  // that container, STRICTLY RIGHT OF the viewport midline, and STRICTLY
+  // BELOW the price input (submit lives at the bottom of the form). The
+  // Kraken Margin page has three traps we must avoid:
+  //   (a) a generic "Buy" element in the top nav (~x=105) — navigates away
+  //   (b) Buy/Sell TAB buttons at the top of the form — same exact text
+  //       "Buy"/"Sell" as the submit but above the price input
+  //   (c) any "Buy crypto" / sidebar link — also navigates away
+  if (priceInputHandle) {
+    try {
+      const scopedBtn = await page.evaluateHandle((startEl, text) => {
+        if (!startEl) return null;
+        const wanted = (text || '').trim().toLowerCase();
+        if (!wanted) return null;
+
+        const priceRect = startEl.getBoundingClientRect();
+        const vw = window.innerWidth || document.documentElement.clientWidth;
+        const vh = window.innerHeight || document.documentElement.clientHeight;
+
+        // Walk up from the price input to find the nearest <form> ancestor
+        // (Kraken Pro wraps the entire order panel in a single <form>), or
+        // failing that, the largest panel that fits within 60% viewport width.
+        // We allow up to 20 levels because on some layouts the form is deeply
+        // nested. We also stop climbing once we hit the top-level wrapper
+        // (width >= 60% of viewport) — anything that wide is the page layout,
+        // not the order form.
+        let container = null;
+        let p = startEl.parentElement;
+        for (let i = 0; i < 20 && p; i++) {
+          // Prefer the <form> tag — it IS the order panel on Kraken Pro.
+          if (p.tagName === 'FORM') {
+            container = p;
+            break;
+          }
+          const r = p.getBoundingClientRect();
+          if (r.width >= vw * 0.6) {
+            break; // hit the page-level wrapper; stop climbing
+          }
+          // Track the largest panel seen so far as a fallback.
+          if (r.width > 0 && r.height > priceRect.height) {
+            if (!container || r.height > container.getBoundingClientRect().height) {
+              container = p;
+            }
+          }
+          p = p.parentElement;
+        }
+        if (!container) container = startEl.parentElement;
+        if (!container) return null;
+
+        const visible = (el) => {
+          if (!el || el.offsetParent === null) return false;
+          if (el.offsetWidth === 0 || el.offsetHeight === 0) return false;
+          if (el.disabled || el.getAttribute('aria-disabled') === 'true') return false;
+          return true;
+        };
+
+        // Extra per-element guards to avoid the nav/tab/link traps listed above
+        const isBadCandidate = (el) => {
+          // Skip anchors or elements with href — they navigate away.
+          if (el.tagName === 'A' || el.getAttribute('href')) return true;
+          // Skip if inside a <nav>, <header>, or role="navigation".
+          let q = el.parentElement;
+          for (let i = 0; i < 10 && q; i++) {
+            const tag = q.tagName;
+            if (tag === 'NAV' || tag === 'HEADER' || tag === 'ASIDE') return true;
+            if (q.getAttribute && q.getAttribute('role') === 'navigation') return true;
+            q = q.parentElement;
+          }
+          // Skip if the text contains words that mean "go somewhere else".
+          const t = (el.textContent || '').trim().toLowerCase();
+          if (t.includes('crypto') || t.includes('deposit') || t.includes('withdraw') || t.includes('sign in') || t.includes('log in')) return true;
+          // The submit button MUST be below the price input (the form renders
+          // tabs above → inputs in the middle → submit at the bottom). This
+          // single positional check kills the Buy/Sell TAB trap at the top of
+          // the form, which shares the exact text "Buy"/"Sell" with submit.
+          const r = el.getBoundingClientRect();
+          if (r.top < priceRect.bottom - 2) return true;
+          // Must be reasonably wide — submit is a full-width bar.
+          if (r.width < 60) return true;
+          return false;
+        };
+
+        const candidates = Array.from(container.querySelectorAll('button, div[role="button"], span[role="button"]'))
+          .filter(visible)
+          .filter((el) => !isBadCandidate(el));
+
+        // Helper to pull text from multiple sources (aria-label, data-testid, title, textContent)
+        const allText = (el) => {
+          const parts = [];
+          const tc = (el.textContent || '').trim();
+          if (tc) parts.push(tc);
+          const al = el.getAttribute && el.getAttribute('aria-label');
+          if (al) parts.push(al);
+          const dt = el.getAttribute && el.getAttribute('data-testid');
+          if (dt) parts.push(dt);
+          const ti = el.getAttribute && el.getAttribute('title');
+          if (ti) parts.push(ti);
+          return parts.join(' | ').toLowerCase();
+        };
+
+        // Among surviving candidates, prefer the one *lowest* on screen
+        // (largest y) — submit lives at the bottom of the form panel.
+        const sorted = candidates
+          .map((el) => ({ el, text: (el.textContent || '').trim(), allText: allText(el), rect: el.getBoundingClientRect() }))
+          .sort((a, b) => b.rect.top - a.rect.top);
+
+        // Stash diagnostic info so the outer Node code can log it on failure
+        window.__KRAKEN_CONFIRM_DIAG__ = sorted.slice(0, 10).map((c) => ({
+          text: c.text.slice(0, 40),
+          aria: (c.el.getAttribute && c.el.getAttribute('aria-label')) || '',
+          testid: (c.el.getAttribute && c.el.getAttribute('data-testid')) || '',
+          x: Math.round(c.rect.left),
+          y: Math.round(c.rect.top),
+          w: Math.round(c.rect.width),
+          h: Math.round(c.rect.height),
+          tag: c.el.tagName,
+        }));
+
+        // 1) exact text match, furthest down
+        for (const c of sorted) {
+          if (c.text.toLowerCase() === wanted) return c.el;
+        }
+        // 2) starts-with match (e.g. "Buy" → "Buy BTC" / "Buy XBT/USD")
+        for (const c of sorted) {
+          const t = c.text.toLowerCase();
+          if (t.startsWith(wanted + ' ') || t === wanted) return c.el;
+        }
+        // 3) contains, constrained: text must be short (< 30 chars) to avoid
+        //    picking up a descriptive paragraph that happens to contain "buy".
+        for (const c of sorted) {
+          const t = c.text.toLowerCase();
+          if (c.text.length < 30 && t.includes(wanted)) return c.el;
+        }
+        // 4) aria-label / data-testid / title contains wanted
+        //    (e.g. aria-label="Place buy order" or data-testid="submit-buy-btn")
+        for (const c of sorted) {
+          if (c.allText.includes(wanted)) return c.el;
+        }
+        // 5) Last resort: the bottom-most wide button in the form panel
+        //    whose text/aria contains "submit order" OR contains the wanted
+        //    side word ("buy"/"sell"). We REJECT any candidate whose text
+        //    looks like an error message (e.g. "Cannot be greater than..."),
+        //    because Kraken disables the submit button and replaces its text
+        //    with the error when quantity/margin validation fails.
+        const errorPhrases = [
+          'cannot', 'invalid', 'insufficient', 'exceeds', 'greater than',
+          'less than', 'below', 'above', 'minimum', 'maximum', 'max.', 'min.',
+          'too large', 'too small', 'not enough', 'error', 'required',
+          'must be', 'out of range'
+        ];
+        const sideWord = wanted.split(' ')[0]; // "buy" or "sell"
+        if (sorted.length > 0 && sorted.length <= 6) {
+          const widest = [...sorted].sort((a, b) => b.rect.width - a.rect.width)[0];
+          if (widest && widest.rect.width >= 120) {
+            const t = widest.text.toLowerCase();
+            const aria = (widest.el.getAttribute('aria-label') || '').toLowerCase();
+            const looksLikeError = errorPhrases.some((p) => t.includes(p));
+            const containsWanted = t.includes(sideWord) || aria.includes('submit order');
+            if (!looksLikeError && containsWanted) {
+              return widest.el;
+            }
+          }
+        }
+        return null;
+      }, priceInputHandle, confirmText);
+
+      const asEl = scopedBtn && scopedBtn.asElement ? scopedBtn.asElement() : null;
+      if (asEl) {
+        const safeCheck = await isButtonInSafeZone(asEl);
+        if (safeCheck.ok) {
+          console.log(`[${exchange.name}] ✓ Found confirm button scoped to order form: "${safeCheck.text}" at (${safeCheck.x}, ${safeCheck.y})`);
+          return { confirmBtn: asEl, confirmText };
+        } else {
+          console.log(`[${exchange.name}] ⚠️  Scoped candidate "${safeCheck.text}" at (${safeCheck.x}, ${safeCheck.y}) rejected: ${safeCheck.reason} — falling back.`);
+        }
+      } else {
+        console.log(`[${exchange.name}] Scoped search in order form container found no match for "${confirmText}", falling back...`);
+        // Dump diagnostic info about the candidates that were considered, so
+        // we can see what the submit button actually looks like on Kraken.
+        try {
+          const diag = await page.evaluate(() => {
+            const d = window.__KRAKEN_CONFIRM_DIAG__ || [];
+            delete window.__KRAKEN_CONFIRM_DIAG__;
+            return d;
+          });
+          if (Array.isArray(diag) && diag.length > 0) {
+            console.log(`[${exchange.name}] [DIAG] Candidates visible in order form panel (bottom-to-top):`);
+            for (const c of diag) {
+              console.log(`   - ${c.tag} text="${c.text}" aria="${c.aria}" testid="${c.testid}" @ (${c.x},${c.y}) ${c.w}x${c.h}`);
+            }
+          }
+        } catch { /* ignore */ }
+      }
+    } catch (e) {
+      console.log(`[${exchange.name}] Scoped confirm-button search errored: ${e.message}`);
+    }
+  }
+
   // Method 1: Try findByExactText first (more specific)
   confirmBtn = await findByExactText(page, confirmText, ["button", "div", "span"]);
-  
+
   if (confirmBtn) {
     const buttonCheck = await page.evaluate((el) => {
       const isVisible = el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
       if (!isVisible) return { isVisible: false };
-      
       const rect = el.getBoundingClientRect();
       const viewportHeight = window.innerHeight;
-      const isInViewport = rect.top >= 0 && 
-                          rect.left >= 0 && 
-                          rect.bottom <= viewportHeight && 
-                          rect.right <= window.innerWidth;
       const isNearFooter = rect.bottom > viewportHeight * 0.8;
-      
-      return {
-        isVisible: true,
-        x: rect.x,
-        y: rect.y,
-        isInViewport,
-        isNearFooter,
-        viewportHeight
-      };
+      return { isVisible: true, x: rect.x, y: rect.y, isNearFooter, viewportHeight };
     }, confirmBtn);
-    
-    if (!buttonCheck) {
+
+    if (!buttonCheck || !buttonCheck.isVisible) {
       console.log(`[${exchange.name}] ⚠️  Found "${confirmText}" button but it's not visible, trying fallback...`);
       confirmBtn = null;
     } else {
-      console.log(`[${exchange.name}] ✓ Found "${confirmText}" button at (${Math.round(buttonCheck.x || 0)}, ${Math.round(buttonCheck.y || 0)})`);
-      if (buttonCheck.isNearFooter) {
-        console.log(`[${exchange.name}] ⚠️  Button is near footer (bottom ${Math.round((buttonCheck.y + 100) / buttonCheck.viewportHeight * 100)}% of viewport), will scroll into view before clicking`);
+      // NEW: run the hard safe-zone guard. If the found element is in the top
+      // nav or the left column, reject it and keep searching.
+      const safe = await isButtonInSafeZone(confirmBtn);
+      if (!safe.ok) {
+        console.log(`[${exchange.name}] ⚠️  Method 1 candidate "${safe.text}" at (${safe.x}, ${safe.y}) rejected: ${safe.reason}`);
+        confirmBtn = null;
+      } else {
+        console.log(`[${exchange.name}] ✓ Found "${confirmText}" button at (${Math.round(buttonCheck.x || 0)}, ${Math.round(buttonCheck.y || 0)})`);
+        if (buttonCheck.isNearFooter) {
+          console.log(`[${exchange.name}] ⚠️  Button is near footer (bottom ${Math.round((buttonCheck.y + 100) / buttonCheck.viewportHeight * 100)}% of viewport), will scroll into view before clicking`);
+        }
       }
     }
   }
@@ -436,38 +751,31 @@ export async function findConfirmButtonKraken(page, side, exchange) {
   if (!confirmBtn) {
     console.log(`[${exchange.name}] Exact text match failed, trying partial match...`);
     confirmBtn = await findByText(page, confirmText, ["button"]);
-    
+
     if (confirmBtn) {
       const buttonCheck = await page.evaluate((el) => {
         const isVisible = el.offsetParent !== null && el.offsetWidth > 0 && el.offsetHeight > 0;
         if (!isVisible) return { isVisible: false };
-        
         const rect = el.getBoundingClientRect();
         const viewportHeight = window.innerHeight;
-        const isInViewport = rect.top >= 0 && 
-                            rect.left >= 0 && 
-                            rect.bottom <= viewportHeight && 
-                            rect.right <= window.innerWidth;
         const isNearFooter = rect.bottom > viewportHeight * 0.8;
-        
-        return {
-          isVisible: true,
-          x: rect.x,
-          y: rect.y,
-          isInViewport,
-          isNearFooter,
-          viewportHeight
-        };
+        return { isVisible: true, x: rect.x, y: rect.y, isNearFooter, viewportHeight };
       }, confirmBtn);
-      
-      if (buttonCheck.isVisible) {
-        console.log(`[${exchange.name}] ✓ Found "${confirmText}" button via partial match at (${Math.round(buttonCheck.x || 0)}, ${Math.round(buttonCheck.y || 0)})`);
-        if (buttonCheck.isNearFooter) {
-          console.log(`[${exchange.name}] ⚠️  Button is near footer (bottom ${Math.round((buttonCheck.y + 100) / buttonCheck.viewportHeight * 100)}% of viewport), will scroll into view before clicking`);
-        }
-      } else {
+
+      if (!buttonCheck.isVisible) {
         console.log(`[${exchange.name}] ⚠️  Found button but it's not visible`);
         confirmBtn = null;
+      } else {
+        const safe = await isButtonInSafeZone(confirmBtn);
+        if (!safe.ok) {
+          console.log(`[${exchange.name}] ⚠️  Method 2 candidate "${safe.text}" at (${safe.x}, ${safe.y}) rejected: ${safe.reason}`);
+          confirmBtn = null;
+        } else {
+          console.log(`[${exchange.name}] ✓ Found "${confirmText}" button via partial match at (${Math.round(buttonCheck.x || 0)}, ${Math.round(buttonCheck.y || 0)})`);
+          if (buttonCheck.isNearFooter) {
+            console.log(`[${exchange.name}] ⚠️  Button is near footer (bottom ${Math.round((buttonCheck.y + 100) / buttonCheck.viewportHeight * 100)}% of viewport), will scroll into view before clicking`);
+          }
+        }
       }
     }
   }
@@ -476,41 +784,61 @@ export async function findConfirmButtonKraken(page, side, exchange) {
   if (!confirmBtn) {
     console.log(`[${exchange.name}] Partial match failed, trying case-insensitive search...`);
     const foundBtn = await page.evaluate((searchText) => {
-      const buttons = Array.from(document.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"]'));
+      const buttons = Array.from(document.querySelectorAll('button, div[role="button"], span[role="button"]'));
       const searchLower = searchText.toLowerCase();
       const viewportHeight = window.innerHeight;
       const viewportWidth = window.innerWidth;
-      
+
       // Score buttons: prefer buttons that are in viewport and not near footer
       const scoredButtons = [];
-      
+
       for (const btn of buttons) {
         const btnText = btn.textContent?.trim() || '';
         const isVisible = btn.offsetParent !== null && btn.offsetWidth > 0 && btn.offsetHeight > 0;
-        const isDisabled = btn.disabled || btn.getAttribute('aria-disabled') === 'true' || 
+        const isDisabled = btn.disabled || btn.getAttribute('aria-disabled') === 'true' ||
                           btn.classList.contains('disabled') || btn.style.pointerEvents === 'none';
-        
-        if (isVisible && !isDisabled && btnText.toLowerCase().includes(searchLower)) {
-          const rect = btn.getBoundingClientRect();
-        
+
+        if (!(isVisible && !isDisabled && btnText.toLowerCase().includes(searchLower))) continue;
+
+        const rect = btn.getBoundingClientRect();
+
+        // HARD FILTER: reject top nav (y<100), left column (cx < 35% vw),
+        // narrow chips (<60px wide), anchors, and nav/header/aside ancestors.
+        // These NEVER contain the Kraken order form submit.
+        const cx = rect.left + rect.width / 2;
+        if (rect.top < 100) continue;
+        if (cx < viewportWidth * 0.35) continue;
+        if (rect.width < 60) continue;
+        if (btn.tagName === 'A' || btn.getAttribute('href')) continue;
+        let q = btn.parentElement;
+        let inNav = false;
+        for (let i = 0; i < 10 && q; i++) {
+          const tag = q.tagName;
+          if (tag === 'NAV' || tag === 'HEADER' || tag === 'ASIDE') { inNav = true; break; }
+          if (q.getAttribute && q.getAttribute('role') === 'navigation') { inNav = true; break; }
+          q = q.parentElement;
+        }
+        if (inNav) continue;
+
+        {
           // Check if button is in viewport
-          const isInViewport = rect.top >= 0 && 
-                              rect.left >= 0 && 
-                              rect.bottom <= viewportHeight && 
+          const isInViewport = rect.top >= 0 &&
+                              rect.left >= 0 &&
+                              rect.bottom <= viewportHeight &&
                               rect.right <= viewportWidth;
-          
+
           // Check if button is near footer (bottom 20% of viewport)
           const isNearFooter = rect.bottom > viewportHeight * 0.8;
-          
+
           // Check if button is covered by another element at its center
           const centerX = rect.left + rect.width / 2;
           const centerY = rect.top + rect.height / 2;
           const elementAtPoint = document.elementFromPoint(centerX, centerY);
-          const isCovered = elementAtPoint && 
-                           !btn.contains(elementAtPoint) && 
+          const isCovered = elementAtPoint &&
+                           !btn.contains(elementAtPoint) &&
                            elementAtPoint !== btn &&
                            !elementAtPoint.closest('button, [role="button"]');
-          
+
           // Calculate score: higher is better
           let score = 0;
           if (isInViewport) score += 100;
@@ -551,9 +879,213 @@ export async function findConfirmButtonKraken(page, side, exchange) {
       console.log(`[${exchange.name}] ✓ Found button via case-insensitive search: "${foundBtn.text}" at (${Math.round(foundBtn.x)}, ${Math.round(foundBtn.y)})`);
       // Try to find it again using Puppeteer
       confirmBtn = await findByText(page, foundBtn.text, ["button"]);
+      // The re-find by text could pick a DIFFERENT element than the one we
+      // scored (e.g. the top-nav "Buy" link with identical text). Verify the
+      // returned handle is still in the safe zone, otherwise drop it.
+      if (confirmBtn) {
+        const safe = await isButtonInSafeZone(confirmBtn);
+        if (!safe.ok) {
+          console.log(`[${exchange.name}] ⚠️  Method 3 re-find returned "${safe.text}" at (${safe.x}, ${safe.y}) rejected: ${safe.reason}`);
+          confirmBtn = null;
+        }
+      }
     }
   }
-  
+
+  // Absolute last resort: scan the whole page for a wide visible button whose
+  // aria-label is "Submit order" or whose text/aria/testid contains the
+  // wanted confirm text. NO left/right column filter (Kraken Pro puts the
+  // order form on the LEFT on ultrawide viewports).
+  if (!confirmBtn) {
+    console.log(`[${exchange.name}] All text-based methods failed, running last-resort full-page submit-bar scan...`);
+    try {
+      const handle = await page.evaluateHandle((wanted) => {
+        const want = (wanted || '').toLowerCase();
+        const buttons = Array.from(document.querySelectorAll('button, div[role="button"], span[role="button"], input[type="submit"]'));
+        const good = [];
+        for (const btn of buttons) {
+          if (!btn.offsetParent || btn.offsetWidth === 0 || btn.offsetHeight === 0) continue;
+          if (btn.disabled || btn.getAttribute('aria-disabled') === 'true') continue;
+          if (btn.tagName === 'A' || btn.getAttribute('href')) continue;
+          const r = btn.getBoundingClientRect();
+          if (r.top < 100) continue;          // kill top nav
+          if (r.width < 100) continue;        // submit is wide
+          // Walk ancestors to exclude nav/header/aside
+          let q = btn.parentElement;
+          let inNav = false;
+          for (let i = 0; i < 10 && q; i++) {
+            const tag = q.tagName;
+            if (tag === 'NAV' || tag === 'HEADER' || tag === 'ASIDE') { inNav = true; break; }
+            if (q.getAttribute && q.getAttribute('role') === 'navigation') { inNav = true; break; }
+            q = q.parentElement;
+          }
+          if (inNav) continue;
+          const txt = (btn.textContent || btn.value || '').trim().toLowerCase();
+          const aria = ((btn.getAttribute && btn.getAttribute('aria-label')) || '').toLowerCase();
+          const testid = ((btn.getAttribute && btn.getAttribute('data-testid')) || '').toLowerCase();
+          const title = ((btn.getAttribute && btn.getAttribute('title')) || '').toLowerCase();
+          const blob = `${txt} ${aria} ${testid} ${title}`;
+          const matches = blob.includes(want) || aria.includes('submit order');
+          if (!matches) continue;
+          // Strong bonus if aria-label is literally "Submit order"
+          const ariaBonus = aria.includes('submit order') ? 1000 : 0;
+          good.push({
+            el: btn,
+            score: ariaBonus + r.width * 2 + r.top + (txt.length < 30 ? 100 : 0),
+          });
+        }
+        good.sort((a, b) => b.score - a.score);
+        return good.length > 0 ? good[0].el : null;
+      }, confirmText);
+      const el = handle && handle.asElement ? handle.asElement() : null;
+      if (el) {
+        const safe = await isButtonInSafeZone(el);
+        if (safe.ok) {
+          console.log(`[${exchange.name}] ✓ Last-resort scan found "${safe.text}" at (${safe.x}, ${safe.y})`);
+          confirmBtn = el;
+        } else {
+          console.log(`[${exchange.name}] ⚠️  Last-resort scan candidate rejected: ${safe.reason}`);
+        }
+      } else {
+        console.log(`[${exchange.name}] ⚠️  Last-resort scan found nothing — running FULL PAGE dump for diagnosis:`);
+        try {
+          const fullDump = await page.evaluate((wanted) => {
+            const vw = window.innerWidth || document.documentElement.clientWidth;
+            const vh = window.innerHeight || document.documentElement.clientHeight;
+            const want = (wanted || '').toLowerCase();
+            const sel = 'button, div[role="button"], span[role="button"], a[role="button"], input[type="submit"], input[type="button"], [data-testid*="submit" i], [data-testid*="place" i], [data-testid*="buy" i], [data-testid*="sell" i]';
+            const all = Array.from(document.querySelectorAll(sel));
+            const rows = [];
+            for (const b of all) {
+              if (!b.offsetParent && b.tagName !== 'BODY') continue;
+              if (b.offsetWidth === 0 || b.offsetHeight === 0) continue;
+              const r = b.getBoundingClientRect();
+              if (r.width === 0 || r.height === 0) continue;
+              if (r.bottom < 0 || r.top > vh) continue;
+              const text = (b.textContent || b.value || '').trim().slice(0, 60);
+              const aria = ((b.getAttribute && b.getAttribute('aria-label')) || '').slice(0, 60);
+              const testid = ((b.getAttribute && b.getAttribute('data-testid')) || '').slice(0, 60);
+              const title = ((b.getAttribute && b.getAttribute('title')) || '').slice(0, 60);
+              const type = (b.getAttribute && b.getAttribute('type')) || '';
+              const role = (b.getAttribute && b.getAttribute('role')) || '';
+              const cls = (b.className || '').toString().slice(0, 80);
+              const blob = `${text} ${aria} ${testid} ${title}`.toLowerCase();
+              const matchesWanted = want && blob.includes(want);
+              const disabled = b.disabled || b.getAttribute('aria-disabled') === 'true';
+              rows.push({
+                tag: b.tagName.toLowerCase(),
+                type, role,
+                x: Math.round(r.x), y: Math.round(r.y),
+                w: Math.round(r.width), h: Math.round(r.height),
+                text, aria, testid, title, cls,
+                disabled,
+                matches: matchesWanted,
+              });
+            }
+            // Prioritize: matches first, then by width desc
+            rows.sort((a, b) => {
+              if (a.matches !== b.matches) return a.matches ? -1 : 1;
+              return b.w - a.w;
+            });
+            return {
+              vw, vh,
+              total: rows.length,
+              rows: rows.slice(0, 40),
+            };
+          }, confirmText);
+          console.log(`[${exchange.name}] FULL DUMP (viewport ${fullDump.vw}x${fullDump.vh}, ${fullDump.total} candidates, showing top 40):`);
+          for (const b of fullDump.rows) {
+            const marker = b.matches ? '⭐' : '  ';
+            console.log(`   ${marker} <${b.tag}${b.type ? ` type="${b.type}"` : ''}${b.role ? ` role="${b.role}"` : ''}> "${b.text}" aria="${b.aria}" testid="${b.testid}" cls="${b.cls}" @ (${b.x},${b.y}) ${b.w}x${b.h}${b.disabled ? ' DISABLED' : ''}`);
+          }
+
+          // Dump ancestor chain from priceInput so we can see the actual order form structure
+          console.log(`[${exchange.name}] Attempting ancestor chain dump from price input...`);
+          const ancestorDump = await page.evaluate(() => {
+            // Find price input - typically a number input in a form panel
+            const inputs = Array.from(document.querySelectorAll('input[type="number"], input[inputmode="decimal"], input[inputmode="numeric"]'));
+            const visibleInputs = inputs.filter((i) => i.offsetParent && i.offsetWidth > 0);
+            if (visibleInputs.length === 0) return { found: false, reason: 'no visible numeric inputs' };
+            // Pick the one most likely to be price (name/placeholder/aria containing "price" or "limit")
+            let priceInput = visibleInputs.find((i) => {
+              const blob = `${i.name || ''} ${i.placeholder || ''} ${i.getAttribute('aria-label') || ''} ${i.getAttribute('data-testid') || ''}`.toLowerCase();
+              return blob.includes('price') || blob.includes('limit');
+            }) || visibleInputs[0];
+            const r = priceInput.getBoundingClientRect();
+            const chain = [];
+            let cur = priceInput;
+            for (let i = 0; i < 15 && cur; i++) {
+              const cr = cur.getBoundingClientRect();
+              chain.push({
+                tag: cur.tagName.toLowerCase(),
+                id: cur.id || '',
+                cls: (cur.className || '').toString().slice(0, 80),
+                testid: (cur.getAttribute && cur.getAttribute('data-testid')) || '',
+                role: (cur.getAttribute && cur.getAttribute('role')) || '',
+                x: Math.round(cr.x), y: Math.round(cr.y),
+                w: Math.round(cr.width), h: Math.round(cr.height),
+              });
+              cur = cur.parentElement;
+            }
+            // Walk up to the nearest <form> ancestor (that's the real order panel).
+            let container = priceInput.parentElement;
+            for (let i = 0; i < 20 && container; i++) {
+              if (container.tagName === 'FORM') break;
+              container = container.parentElement;
+            }
+            const containerButtons = [];
+            if (container) {
+              const btns = Array.from(container.querySelectorAll('button, div[role="button"], input[type="submit"], input[type="button"]'));
+              for (const b of btns) {
+                if (!b.offsetParent || b.offsetWidth === 0 || b.offsetHeight === 0) continue;
+                const br = b.getBoundingClientRect();
+                containerButtons.push({
+                  tag: b.tagName.toLowerCase(),
+                  type: b.getAttribute('type') || '',
+                  text: (b.textContent || b.value || '').trim().slice(0, 60),
+                  aria: (b.getAttribute('aria-label') || '').slice(0, 60),
+                  testid: (b.getAttribute('data-testid') || '').slice(0, 60),
+                  cls: (b.className || '').toString().slice(0, 80),
+                  x: Math.round(br.x), y: Math.round(br.y),
+                  w: Math.round(br.width), h: Math.round(br.height),
+                  disabled: b.disabled || b.getAttribute('aria-disabled') === 'true',
+                });
+              }
+            }
+            return {
+              found: true,
+              priceInput: { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) },
+              chain,
+              containerFound: !!container,
+              containerButtons,
+            };
+          });
+          if (!ancestorDump.found) {
+            console.log(`   (ancestor dump skipped: ${ancestorDump.reason})`);
+          } else {
+            console.log(`   priceInput @ (${ancestorDump.priceInput.x},${ancestorDump.priceInput.y}) ${ancestorDump.priceInput.w}x${ancestorDump.priceInput.h}`);
+            console.log(`   ancestor chain:`);
+            for (const c of ancestorDump.chain) {
+              console.log(`     - <${c.tag}${c.id ? ` id="${c.id}"` : ''}${c.role ? ` role="${c.role}"` : ''}> testid="${c.testid}" cls="${c.cls}" @ (${c.x},${c.y}) ${c.w}x${c.h}`);
+            }
+            if (ancestorDump.containerFound) {
+              console.log(`   buttons inside form container (${ancestorDump.containerButtons.length}):`);
+              for (const b of ancestorDump.containerButtons) {
+                console.log(`     - <${b.tag}${b.type ? ` type="${b.type}"` : ''}> "${b.text}" aria="${b.aria}" testid="${b.testid}" cls="${b.cls}" @ (${b.x},${b.y}) ${b.w}x${b.h}${b.disabled ? ' DISABLED' : ''}`);
+              }
+            } else {
+              console.log(`   (no form container found)`);
+            }
+          }
+        } catch (e) {
+          console.log(`   (full dump errored: ${e.message})`);
+        }
+      }
+    } catch (e) {
+      console.log(`[${exchange.name}] Last-resort scan errored: ${e.message}`);
+    }
+  }
+
   return { confirmBtn, confirmText };
 }
 
@@ -1605,8 +2137,10 @@ export async function executeTradeKraken(
   //   console.log(`[${exchange.name}] Skipping price update - only applies to limit orders with price input`);
   // }
 
-  // Step 6: Find and click Confirm button
-  const { confirmBtn, confirmText } = await findConfirmButtonKraken(page, side, exchange);
+  // Step 6: Find and click Confirm button — pass priceInput so the search is
+  // scoped to the actual order form container (avoids latching onto a generic
+  // "Buy"/"Sell" element in the Kraken Pro top nav on the Margin page).
+  const { confirmBtn, confirmText } = await findConfirmButtonKraken(page, side, exchange, priceInput || sizeInput || null);
 
   if (!confirmBtn) {
     // Enhanced error message with debugging info

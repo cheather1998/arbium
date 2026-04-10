@@ -38,41 +38,48 @@ async function isLoggedIn(page, exchangeConfig = null) {
     // They might not have the same login indicators as Paradex
     if (exchange.name === 'Kraken' || exchange.name === 'GRVT') {
       await delay(2000);
-      const isTradingPage = await page.evaluate(() => {
-        const text = document.body.innerText.toLowerCase();
-        const url = window.location.href.toLowerCase();
+      const diagnostic = await page.evaluate(() => {
+        const url = window.location.href;
+        const urlLower = url.toLowerCase();
 
-        // Check for sign-in page — definitely NOT logged in
-        if (url.includes('sign-in') || url.includes('signin') || url.includes('login')) {
-          return false;
+        // Definitely NOT logged in: still on a sign-in / login / 2FA page
+        if (
+          urlLower.includes('sign-in') ||
+          urlLower.includes('signin') ||
+          urlLower.includes('/login') ||
+          urlLower.includes('2fa')
+        ) {
+          return { loggedIn: false, reason: 'url-is-signin', url };
         }
 
-        // For Kraken: must have portfolio/balance indicators (only visible when logged in)
-        const hasAccountInfo =
-          text.includes('available balance') ||
-          text.includes('portfolio value') ||
-          text.includes('total value') ||
-          text.includes('order form') ||
-          text.includes('open orders') ||
-          text.includes('open positions');
-
-        // Check for actual Buy/Sell trading buttons (not just text mentions)
-        const hasTradingButtons = Array.from(document.querySelectorAll('button')).some(
-          btn => {
-            const btnText = btn.textContent?.trim().toLowerCase();
-            return btnText === 'buy' || btnText === 'sell' || btnText === 'long' || btnText === 'short';
+        // Kraken redirects unauthenticated users to www.kraken.com/sign-in,
+        // so BEING on any pro.kraken.com/app/<anything> subpath (home, trade,
+        // portfolio, etc.) means the user is authenticated. Same for GRVT —
+        // the bot navigates directly to /exchange/... which requires auth.
+        const onKrakenAuthedPage =
+          urlLower.includes('pro.kraken.com/app/') ||
+          urlLower.includes('www.kraken.com/u/');
+        const onGrvtTradingPage =
+          urlLower.includes('grvt.io/exchange/') ||
+          urlLower.includes('grvt.io/trade');
+        if (onKrakenAuthedPage || onGrvtTradingPage) {
+          // Extra sanity check: make sure the page actually rendered real
+          // content, not just a loading spinner.
+          const textLen = (document.body.innerText || '').length;
+          if (textLen >= 200) {
+            return { loggedIn: true, reason: 'on-authed-url', url, textLen };
           }
-        );
+          return { loggedIn: false, reason: 'page-not-loaded', url, textLen };
+        }
 
-        // Must have BOTH account info AND trading buttons to be considered logged in
-        return hasAccountInfo && hasTradingButtons;
+        return { loggedIn: false, reason: 'unknown-url', url };
       });
-      
-      if (isTradingPage) {
-        console.log(`[${exchange.name}] Trading interface detected - appears to be logged in`);
+
+      if (diagnostic.loggedIn) {
+        console.log(`[${exchange.name}] Trading interface detected (${diagnostic.reason}) - appears to be logged in`);
         return true;
       } else {
-        console.log(`[${exchange.name}] Trading interface not detected - may need login`);
+        console.log(`[${exchange.name}] Trading interface not detected (${diagnostic.reason}) url=${diagnostic.url}`);
         return false;
       }
     }
