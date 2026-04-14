@@ -1,6 +1,6 @@
 import dotenv from 'dotenv';
 import { chooseTradingMode, delay } from '../utils/helpers.js';
-import { closeAllPositionsOnShutdown, automatedTradingLoop, automatedTradingLoop3Exchanges, automatedTradingLoop2Exchanges, testSingleExchangeTrading, automatedTradingLoopKrakenOnly } from '../core/loop.js';
+import { closeAllPositionsOnShutdown, automatedTradingLoop, automatedTradingLoop3Exchanges, automatedTradingLoop2Exchanges, testSingleExchangeTrading, automatedTradingLoopKrakenOnly, forceCloseKrakenPositions } from '../core/loop.js';
 import { launchAccount } from '../core/launch.js';
 import EXCHANGE_CONFIGS from '../config/exchanges.js';
 import { ACCOUNTS } from '../config/accounts.js';
@@ -59,17 +59,23 @@ async function main() {
 
       console.log(`\n✅ Kraken is ready! Starting ${modeLabel}...\n`);
 
-      // Setup graceful shutdown
+      // Setup shutdown handler (for Force Close button and Ctrl+C)
       const shutdownHandler = async () => {
         if (isShuttingDown) return;
         isShuttingDown = true;
         console.log(`\n\nShutting down ${modeLabel}...`);
+
+        // Force Close or Ctrl+C → market-close positions via Kraken order form
         try {
-          await closeAllPositionsOnShutdown([result]);
-        } catch (e) {}
+          await forceCloseKrakenPositions(result.page, exchangeConfig, krakenAccount.email);
+        } catch (e) {
+          console.log(`⚠️  Force close error: ${e.message}`);
+        }
+
         if (result.browser) {
           try { await result.browser.close(); } catch (e) {}
         }
+        if (process.send) process.send({ type: 'stopped' });
         process.exit(0);
       };
 
@@ -78,7 +84,14 @@ async function main() {
 
       // Start continuous trading loop
       await automatedTradingLoopKrakenOnly(result, exchangeConfig);
-      return;
+
+      // If we reach here, the loop exited naturally (graceful stop after cycle)
+      console.log(`\n✅ Graceful stop — cycle completed. Cleaning up...`);
+      if (result.browser) {
+        try { await result.browser.close(); } catch (e) {}
+      }
+      if (process.send) process.send({ type: 'stopped' });
+      process.exit(0);
     }
 
     // Handle test modes (3a, 3b, 3c) - Single exchange testing

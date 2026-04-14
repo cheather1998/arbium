@@ -15,8 +15,8 @@ dotenv.config({ path: process.env.DOTENV_CONFIG_PATH || ".env" });
 
 // Trading configuration from environment variables
 const TRADE_CONFIG = {
-  buyQty: parseFloat(process.env.BUY_QTY) || 0.0005,
-  sellQty: parseFloat(process.env.SELL_QTY) || 0.0005,
+  buyQty: parseFloat(process.env.BUY_QTY) || 0.00001,
+  sellQty: parseFloat(process.env.SELL_QTY) || 0.00001,
   waitTime: parseInt(process.env.TRADE_TIME) || 60000,
   leverage: parseInt(process.env.LEVERAGE) || 20,
   stopLoss: parseFloat(process.env.STOP_LOSS) || null,
@@ -50,9 +50,9 @@ async function waitForPriceThreshold(exchangeAccounts, threshold, cycleCount) {
   let attemptCount = 0;
   const maxAttempts = 1000; // Prevent infinite loop (safety limit)
   
-  while (!isShuttingDown && attemptCount < maxAttempts) {
+  while (!isShuttingDown && !global.__STOP_AFTER_CYCLE__ && attemptCount < maxAttempts) {
     attemptCount++;
-    
+
     const priceComparison = await comparePricesFromExchanges(exchangeAccounts);
     
     if (!priceComparison.success || priceComparison.successfulPrices.length < 2) {
@@ -236,11 +236,11 @@ async function waitForClosingThreshold(exchangeAccounts, threshold, cycleCount) 
   const startTime = Date.now();
   const maxWaitTime = 15 * 60 * 1000; // 15 minutes in milliseconds
   let attemptCount = 0;
-  
-  while (!isShuttingDown) {
+
+  while (!isShuttingDown && !global.__STOP_AFTER_CYCLE__) {
     attemptCount++;
     const elapsedTime = Date.now() - startTime;
-    
+
     // Check if 15 minutes have passed
     if (elapsedTime >= maxWaitTime) {
       console.log(`\n⏰ [CYCLE ${cycleCount}] 15 minutes elapsed. Force closing positions regardless of threshold.`);
@@ -308,8 +308,8 @@ async function waitForClosingSpreadThreshold(exchangeAccounts, openingThreshold,
   // Calculate closing threshold: difference between opening threshold and closing spread
   // This can be negative, which is allowed
   const closingThreshold = openingThreshold - closingSpread;
-  
-  while (!isShuttingDown) {
+
+  while (!isShuttingDown && !global.__STOP_AFTER_CYCLE__) {
     attemptCount++;
     const elapsedTime = Date.now() - startTime;
     
@@ -530,8 +530,8 @@ async function automatedTradingLoop(account1Result, account2Result) {
     let extendedExchangeJustCompletedPostTrade = false;
     // Track if initial cleanup was done (to skip cleanup on first cycle)
     let initialCleanupDone = true; // Set to true since cleanup was just done before leverage
-  
-    while (!isShuttingDown) {
+
+    while (!isShuttingDown && !global.__STOP_AFTER_CYCLE__) {
       cycleCount++;
       console.log(
         `\n>>> CYCLE ${cycleCount} - ${new Date().toLocaleTimeString()}`
@@ -1136,11 +1136,11 @@ async function automatedTradingLoop3Exchanges(krakenAccount, grvtAccount, extend
   console.log(`\n🚀 Starting trading cycle loop...`);
   console.log(`   Loop will run continuously until Ctrl+C is pressed.`);
   console.log(`   First cycle will start immediately.\n`);
-  
-  while (!isShuttingDown) {
+
+  while (!isShuttingDown && !global.__STOP_AFTER_CYCLE__) {
     cycleCount++;
     console.log(`\n>>> CYCLE ${cycleCount} - ${new Date().toLocaleTimeString()}`);
-    
+
     try {
       // Step 0: Price Comparison with Threshold Check (first step of each cycle)
       console.log(`\n[CYCLE ${cycleCount}] Step 1: Comparing prices from all exchanges...`);
@@ -1476,8 +1476,8 @@ async function automatedTradingLoop2Exchanges(account1, account2) {
   console.log(`\n🚀 Starting trading cycle loop...`);
   console.log(`   Loop will run continuously until Ctrl+C is pressed.`);
   console.log(`   First cycle will start immediately.\n`);
-  
-  while (!isShuttingDown) {
+
+  while (!isShuttingDown && !global.__STOP_AFTER_CYCLE__) {
     cycleCount++;
     console.log(`\n>>> CYCLE ${cycleCount} - ${new Date().toLocaleTimeString()}`);
     
@@ -2768,7 +2768,7 @@ async function automatedTradingLoopKrakenOnly(accountResult, exchangeConfig) {
   }
   await delay(1000);
 
-  while (!isShuttingDown) {
+  while (!isShuttingDown && !global.__STOP_AFTER_CYCLE__) {
     cycleCount++;
 
     console.log(`\n>>> CYCLE ${cycleCount} — ${new Date().toLocaleTimeString()}`);
@@ -2889,12 +2889,50 @@ async function automatedTradingLoopKrakenOnly(accountResult, exchangeConfig) {
       }
 
       if (openResult.success) {
-        console.log(`[CYCLE ${cycleCount}] ✅ [Kraken] ${openSide.toUpperCase()} Order confirmed`);
+        console.log(`[CYCLE ${cycleCount}] ✅ [Kraken] ${openSide.toUpperCase()} Order submitted`);
       } else {
         console.log(`[CYCLE ${cycleCount}] ✗ ${openSide.toUpperCase()} order failed: ${openResult.error || 'unknown'}`);
         console.log(`[CYCLE ${cycleCount}] ⏳ Waiting 10s before next cycle...`);
         await delay(10000);
         continue;
+      }
+
+      // ── Step 4b: Wait for open order to fill (limit orders may not fill immediately) ──
+      // Poll every 5s for up to 30s. If the position hasn't opened, cancel the
+      // unfilled order so funds are freed, then skip to the next cycle.
+      {
+        const openFillTimeout = 30000;
+        const openFillStart = Date.now();
+        let positionOpened = false;
+
+        console.log(`[CYCLE ${cycleCount}] Step 4b: Waiting up to 30s for open order to fill...`);
+        while (Date.now() - openFillStart < openFillTimeout && !isShuttingDown) {
+          await delay(5000);
+          try {
+            const posStatus = await checkKrakenOpenPositions(page);
+            if (posStatus.hasPositions && posStatus.count > 0) {
+              positionOpened = true;
+              console.log(`[CYCLE ${cycleCount}] ✅ Position opened (${Math.round((Date.now() - openFillStart) / 1000)}s)`);
+              break;
+            }
+            const elapsed = Math.round((Date.now() - openFillStart) / 1000);
+            console.log(`[CYCLE ${cycleCount}] ⏳ Open order pending... ${elapsed}s / 30s`);
+          } catch (_) { /* ignore check errors, keep waiting */ }
+        }
+
+        if (!positionOpened && !isShuttingDown) {
+          console.log(`[CYCLE ${cycleCount}] ⚠️  Open order not filled within 30s — cancelling and skipping cycle`);
+          try {
+            await cancelKrakenOrders(page);
+            console.log(`[CYCLE ${cycleCount}] ✅ Unfilled open order cancelled`);
+          } catch (e) {
+            console.log(`[CYCLE ${cycleCount}] ⚠️  Cancel error: ${e.message}`);
+          }
+          await delay(2000);
+          continue;
+        }
+
+        if (isShuttingDown) break;
       }
 
       // ── Step 5: Hold position with periodic price logging ──
@@ -2925,27 +2963,26 @@ async function automatedTradingLoopKrakenOnly(accountResult, exchangeConfig) {
 
       if (isShuttingDown) break;
 
-      // ── Step 6: Close position with opposite MARKET order ──
-      // We use MARKET (not limit) for closing so the position always fills
-      // immediately, regardless of price movement during the hold. Limit
-      // closes would leave an unfilled order if the price moved away,
-      // causing positions to accumulate across cycles.
+      // ── Step 6: Close position — LIMIT first, then MARKET fallback ──
+      // Try a limit order at the current market price first (better fill
+      // price, no slippage). Wait up to 30 seconds for it to fill.
+      // If unfilled after the timeout → cancel the limit → place a market
+      // order to guarantee the position is closed before the next cycle.
       await ensureTradingPage();
-      console.log(`[CYCLE ${cycleCount}] Step 6: Closing position with ${closeSide.toUpperCase()} MARKET order...`);
 
-      // Log the current market price for reference only — market order does
-      // not need a price input.
+      let closePrice = null;
       try {
-        const refPrice = await getCurrentMarketPrice(page, exchange);
-        if (refPrice) {
-          console.log(`[CYCLE ${cycleCount}] Reference price at close: $${refPrice.toLocaleString()}`);
+        closePrice = await getCurrentMarketPrice(page, exchange);
+        if (closePrice) {
+          console.log(`[CYCLE ${cycleCount}] Close price: $${closePrice.toLocaleString()}`);
         }
       } catch (_) { /* ignore */ }
 
-      // Pre-fill the form with MARKET order type + quantity
+      // --- 6a: Place LIMIT close order ---
+      console.log(`[CYCLE ${cycleCount}] Step 6a: Closing with ${closeSide.toUpperCase()} LIMIT order...`);
       let closePrefillData = {};
       try {
-        const closePrefill = await prefillFormKraken(page, { orderType: 'market', qty: closeQty }, exchange);
+        const closePrefill = await prefillFormKraken(page, { orderType: 'limit', qty: closeQty }, exchange);
         if (closePrefill.success) {
           closePrefillData = closePrefill;
         }
@@ -2953,42 +2990,243 @@ async function automatedTradingLoopKrakenOnly(accountResult, exchangeConfig) {
 
       let closeResult;
       try {
-        if (closePrefillData.success) {
+        if (closePrefillData.success && closePrice) {
           closeResult = await fillPriceSideAndSubmitKraken(
-            page, null,
-            { side: closeSide, orderType: 'market' },
+            page, closePrice,
+            { side: closeSide, orderType: 'limit' },
             exchange, Date.now(), cycleCount, closeSide.toUpperCase(), email, closePrefillData
           );
         } else {
           closeResult = await executeTrade(page, {
             side: closeSide,
-            orderType: 'market',
+            orderType: 'limit',
             qty: closeQty,
           }, exchange);
         }
       } catch (err) {
-        console.log(`[CYCLE ${cycleCount}] ✗ ${closeSide.toUpperCase()} close error: ${err.message}`);
+        console.log(`[CYCLE ${cycleCount}] ✗ ${closeSide.toUpperCase()} LIMIT close error: ${err.message}`);
         closeResult = { success: false, error: err.message };
       }
 
       if (closeResult.success) {
-        console.log(`[CYCLE ${cycleCount}] ✅ [Kraken] ${closeSide.toUpperCase()} Order confirmed — position closed`);
+        console.log(`[CYCLE ${cycleCount}] ✅ LIMIT close order submitted — waiting up to 300s for fill...`);
       } else {
-        console.log(`[CYCLE ${cycleCount}] ⚠️  ${closeSide.toUpperCase()} close failed: ${closeResult.error || 'unknown'}`);
-        // Fallback: force-close via cancelKrakenOrders (which also closes positions)
-        console.log(`[CYCLE ${cycleCount}] 🔄 Fallback: force-closing via cancelKrakenOrders...`);
-        try {
-          await cancelKrakenOrders(page, true);
-          console.log(`[CYCLE ${cycleCount}] ✅ Force-close completed`);
-        } catch (err2) {
-          console.log(`[CYCLE ${cycleCount}] ✗ Force-close error: ${err2.message}`);
-          // Last resort: closeAllPositions
+        console.log(`[CYCLE ${cycleCount}] ⚠️  LIMIT close failed: ${closeResult.error || 'unknown'}`);
+      }
+
+      // --- 6b: Wait up to 300s for the limit order to fill ---
+      // Check every 10s if the position has been closed. Use limit as long
+      // as possible to avoid slippage; only fall back to market after 300s.
+      const limitTimeout = 300000;
+      let positionClosed = false;
+      if (closeResult.success) {
+        const limitStart = Date.now();
+        while (Date.now() - limitStart < limitTimeout && !isShuttingDown && !global.__STOP_AFTER_CYCLE__) {
+          await delay(10000);
           try {
-            await closeAllPositions(page, 100, exchange);
-            console.log(`[CYCLE ${cycleCount}] ✅ closeAllPositions completed`);
-          } catch (err3) {
-            console.log(`[CYCLE ${cycleCount}] ✗ closeAllPositions error: ${err3.message}`);
+            const posStatus = await checkKrakenOpenPositions(page);
+            if (!posStatus.hasPositions || posStatus.count === 0) {
+              positionClosed = true;
+              console.log(`[CYCLE ${cycleCount}] ✅ Position closed by LIMIT order (${Math.round((Date.now() - limitStart) / 1000)}s)`);
+              break;
+            }
+            const elapsed = Math.round((Date.now() - limitStart) / 1000);
+            const remainSec = Math.round((limitTimeout - (Date.now() - limitStart)) / 1000);
+            console.log(`[CYCLE ${cycleCount}] ⏳ Limit close pending... ${elapsed}s / 300s — market fallback in ${remainSec}s (${posStatus.count} position(s) remain)`);
+          } catch (_) { /* ignore check errors, keep waiting */ }
+        }
+      }
+
+      // --- 6c: If limit didn't fill within 300s → cancel it → MARKET close ---
+      if (!positionClosed && !isShuttingDown) {
+        console.log(`[CYCLE ${cycleCount}] Step 6c: Limit close did not fill within 300s — switching to MARKET...`);
+
+        // Cancel the unfilled limit order first (free up margin)
+        try {
+          await cancelKrakenOrders(page);
+          console.log(`[CYCLE ${cycleCount}] ✅ Unfilled limit order cancelled`);
+        } catch (e) {
+          console.log(`[CYCLE ${cycleCount}] ⚠️  Cancel error: ${e.message}`);
+        }
+        await delay(1000);
+
+        // Place MARKET close order
+        console.log(`[CYCLE ${cycleCount}] Placing ${closeSide.toUpperCase()} MARKET close order...`);
+        let mktPrefillData = {};
+        try {
+          const mktPrefill = await prefillFormKraken(page, { orderType: 'market', qty: closeQty }, exchange);
+          if (mktPrefill.success) {
+            mktPrefillData = mktPrefill;
           }
+        } catch (_) { /* ignore */ }
+
+        let mktResult;
+        try {
+          if (mktPrefillData.success) {
+            mktResult = await fillPriceSideAndSubmitKraken(
+              page, null,
+              { side: closeSide, orderType: 'market' },
+              exchange, Date.now(), cycleCount, closeSide.toUpperCase(), email, mktPrefillData
+            );
+          } else {
+            mktResult = await executeTrade(page, {
+              side: closeSide,
+              orderType: 'market',
+              qty: closeQty,
+            }, exchange);
+          }
+        } catch (err) {
+          console.log(`[CYCLE ${cycleCount}] ✗ MARKET close error: ${err.message}`);
+          mktResult = { success: false, error: err.message };
+        }
+
+        if (mktResult && mktResult.success) {
+          console.log(`[CYCLE ${cycleCount}] ✅ [Kraken] Position MARKET-closed`);
+          positionClosed = true;
+        } else {
+          console.log(`[CYCLE ${cycleCount}] ⚠️  MARKET close also failed: ${(mktResult && mktResult.error) || 'unknown'}`);
+          // Last resort fallback
+          console.log(`[CYCLE ${cycleCount}] 🔄 Fallback: force-closing via cancelKrakenOrders...`);
+          try {
+            await cancelKrakenOrders(page, true);
+            console.log(`[CYCLE ${cycleCount}] ✅ Force-close completed`);
+          } catch (err2) {
+            console.log(`[CYCLE ${cycleCount}] ✗ Force-close error: ${err2.message}`);
+            try {
+              await closeAllPositions(page, 100, exchange);
+              console.log(`[CYCLE ${cycleCount}] ✅ closeAllPositions completed`);
+            } catch (err3) {
+              console.log(`[CYCLE ${cycleCount}] ✗ closeAllPositions error: ${err3.message}`);
+            }
+          }
+        }
+      }
+
+      // ── Step 6.5: Verify clean state — no leftover orders or positions ──
+      // Even if the close "succeeded" from the UI's perspective, the limit
+      // order may still be sitting unfilled, or the position may remain open.
+      // We verify by reading the Positions and Orders tabs. If anything is
+      // left, we force-cancel orders and market-close positions before the
+      // next cycle — this prevents funds from being tied up and qty errors.
+      // Applies to BOTH Kraken Future and Kraken Margin.
+      if (!isShuttingDown) {
+        console.log(`[CYCLE ${cycleCount}] Step 6.5: Verifying clean state...`);
+        await delay(1500); // wait for Kraken's backend to settle
+
+        // 1) Check open positions
+        let posCheck;
+        try {
+          posCheck = await checkKrakenOpenPositions(page);
+        } catch (e) {
+          console.log(`[CYCLE ${cycleCount}] ⚠️  Position check error: ${e.message}`);
+          posCheck = { hasPositions: false, count: 0 };
+        }
+
+        // 2) Check open orders via Orders tab
+        let openOrderCount = 0;
+        try {
+          openOrderCount = await page.evaluate(() => {
+            // Find the Orders tab container — look for Open orders / Orders tab
+            const tabs = Array.from(document.querySelectorAll('[data-layout-path]'));
+            let ordersContainer = null;
+            for (const tab of tabs) {
+              const content = tab.querySelector('.flexlayout__tab_button_content');
+              if (content) {
+                const t = (content.textContent || '').toLowerCase();
+                if (t.includes('order') && !t.includes('closed') && !t.includes('form')) {
+                  ordersContainer = tab;
+                  break;
+                }
+              }
+            }
+            if (!ordersContainer) return 0;
+            // Count visible order rows (role="button" with order data)
+            const rows = Array.from(document.querySelectorAll('[role="button"]'));
+            let count = 0;
+            for (const row of rows) {
+              if (row.offsetWidth === 0 || row.offsetHeight === 0) continue;
+              const txt = (row.textContent || '').toLowerCase();
+              const hasOrderType = txt.includes('limit') || txt.includes('market');
+              const hasSide = (txt.includes('buy') || txt.includes('sell')) && !txt.includes('side');
+              const isActive = !txt.includes('canceled') && !txt.includes('filled');
+              if (hasOrderType && hasSide && isActive && /\d{4,}/.test(txt)) count++;
+            }
+            return count;
+          });
+        } catch (_) { /* ignore */ }
+
+        const hasResidual = (posCheck.hasPositions && posCheck.count > 0) || openOrderCount > 0;
+
+        if (hasResidual) {
+          console.log(`[CYCLE ${cycleCount}] ⚠️  Residual detected! Positions: ${posCheck.count || 0}, Open orders: ${openOrderCount}`);
+          console.log(`[CYCLE ${cycleCount}] 🧹 Force-cleaning before next cycle...`);
+
+          // Step A: Cancel all open orders first (frees margin)
+          try {
+            await cancelKrakenOrders(page);
+            console.log(`[CYCLE ${cycleCount}] ✅ Orders cancelled`);
+          } catch (e) {
+            console.log(`[CYCLE ${cycleCount}] ⚠️  Order cancel error: ${e.message}`);
+          }
+          await delay(1000);
+
+          // Step B: If positions remain, market-close them via the order form
+          if (posCheck.hasPositions && posCheck.count > 0) {
+            console.log(`[CYCLE ${cycleCount}] 🔄 Market-closing ${posCheck.count} residual position(s)...`);
+            // Determine the side needed to close: if position is Long → sell, Short → buy
+            const closeSideForResidual = (posCheck.longCount > 0) ? 'sell' : 'buy';
+
+            try {
+              // Pre-fill MARKET order
+              const mktPrefill = await prefillFormKraken(page, { orderType: 'market', qty: closeQty }, exchange);
+              if (mktPrefill.success) {
+                const mktResult = await fillPriceSideAndSubmitKraken(
+                  page, null,
+                  { side: closeSideForResidual, orderType: 'market' },
+                  exchange, Date.now(), cycleCount, closeSideForResidual.toUpperCase(), email, mktPrefill
+                );
+                if (mktResult.success) {
+                  console.log(`[CYCLE ${cycleCount}] ✅ Residual position market-closed`);
+                } else {
+                  console.log(`[CYCLE ${cycleCount}] ⚠️  Market close attempt failed: ${mktResult.error || 'unknown'}`);
+                }
+              } else {
+                // Fallback to executeTrade
+                const mktResult = await executeTrade(page, {
+                  side: closeSideForResidual,
+                  orderType: 'market',
+                  qty: closeQty,
+                }, exchange);
+                if (mktResult.success) {
+                  console.log(`[CYCLE ${cycleCount}] ✅ Residual position market-closed (fallback)`);
+                } else {
+                  console.log(`[CYCLE ${cycleCount}] ⚠️  Market close fallback failed: ${mktResult.error || 'unknown'}`);
+                }
+              }
+            } catch (e) {
+              console.log(`[CYCLE ${cycleCount}] ⚠️  Residual market-close error: ${e.message}`);
+              // Last resort: modal-based close
+              try {
+                await cancelKrakenOrders(page, true);
+                console.log(`[CYCLE ${cycleCount}] ✅ Modal force-close completed`);
+              } catch (e2) {
+                console.log(`[CYCLE ${cycleCount}] ✗ Modal force-close also failed: ${e2.message}`);
+              }
+            }
+            await delay(1500);
+
+            // Verify again
+            try {
+              const recheck = await checkKrakenOpenPositions(page);
+              if (recheck.hasPositions && recheck.count > 0) {
+                console.log(`[CYCLE ${cycleCount}] ⚠️  Still ${recheck.count} position(s) after market-close — will retry next cycle`);
+              } else {
+                console.log(`[CYCLE ${cycleCount}] ✅ All positions cleared`);
+              }
+            } catch (_) { /* ignore */ }
+          }
+        } else {
+          console.log(`[CYCLE ${cycleCount}] ✅ Clean state verified — no residual orders or positions`);
         }
       }
 
@@ -3011,7 +3249,96 @@ async function automatedTradingLoopKrakenOnly(accountResult, exchangeConfig) {
     }
   }
 
-  console.log(`\n🛑 Kraken-Only trading loop stopped (shutdown signal received).`);
+  if (global.__STOP_AFTER_CYCLE__) {
+    console.log(`\n🛑 Kraken-Only trading loop stopped (graceful stop — cycle completed).`);
+  } else {
+    console.log(`\n🛑 Kraken-Only trading loop stopped (shutdown signal received).`);
+  }
 }
 
-export { automatedTradingLoop, automatedTradingLoop3Exchanges, automatedTradingLoop2Exchanges, testSingleExchangeTrading, automatedTradingLoopKrakenOnly, closeAllPositionsOnShutdown };
+/**
+ * Force-close all Kraken positions using MARKET orders.
+ * Used by:
+ *   – Shutdown handler (SIGINT / Force Close button)
+ *   – GRVT mode uses the generic closeAllPositionsOnShutdown instead
+ *
+ * Flow: cancel open orders → detect open positions → market-close them
+ */
+async function forceCloseKrakenPositions(page, exchange, email) {
+  console.log(`\n🔴 [Force Close] Cancelling open orders...`);
+  try {
+    await cancelKrakenOrders(page);
+    console.log(`[Force Close] ✅ Orders cancelled`);
+  } catch (e) {
+    console.log(`[Force Close] ⚠️  Cancel orders error: ${e.message}`);
+  }
+  await delay(1500);
+
+  let posCheck;
+  try {
+    posCheck = await checkKrakenOpenPositions(page);
+  } catch (e) {
+    console.log(`[Force Close] ⚠️  Position check error: ${e.message}`);
+    posCheck = { hasPositions: false, count: 0 };
+  }
+
+  if (!posCheck.hasPositions || posCheck.count === 0) {
+    console.log(`[Force Close] ✅ No open positions — nothing to close.`);
+    return;
+  }
+
+  console.log(`[Force Close] 🔄 Market-closing ${posCheck.count} position(s)...`);
+  const closeSide = (posCheck.longCount > 0) ? 'sell' : 'buy';
+  const closeQty = TRADE_CONFIG.buyQty; // use configured qty
+
+  try {
+    const { prefillFormKraken, fillPriceSideAndSubmitKraken } = await import('../trading/prefillForm.js');
+    const mktPrefill = await prefillFormKraken(page, { orderType: 'market', qty: closeQty }, exchange);
+    if (mktPrefill.success) {
+      const mktResult = await fillPriceSideAndSubmitKraken(
+        page, null,
+        { side: closeSide, orderType: 'market' },
+        exchange, Date.now(), 0, closeSide.toUpperCase(), email || 'unknown', mktPrefill
+      );
+      if (mktResult.success) {
+        console.log(`[Force Close] ✅ Position market-closed`);
+      } else {
+        console.log(`[Force Close] ⚠️  Market close failed: ${mktResult.error || 'unknown'}`);
+      }
+    } else {
+      // Fallback: executeTrade
+      const mktResult = await executeTrade(page, {
+        side: closeSide,
+        orderType: 'market',
+        qty: closeQty,
+      }, exchange);
+      if (mktResult.success) {
+        console.log(`[Force Close] ✅ Position market-closed (fallback)`);
+      } else {
+        console.log(`[Force Close] ⚠️  Market close fallback failed: ${mktResult.error || 'unknown'}`);
+      }
+    }
+  } catch (e) {
+    console.log(`[Force Close] ⚠️  Market close error: ${e.message}`);
+    // Last resort: modal-based close
+    try {
+      await cancelKrakenOrders(page, true);
+      console.log(`[Force Close] ✅ Modal force-close completed`);
+    } catch (e2) {
+      console.log(`[Force Close] ✗ Modal force-close also failed: ${e2.message}`);
+    }
+  }
+
+  // Verify
+  await delay(1500);
+  try {
+    const recheck = await checkKrakenOpenPositions(page);
+    if (recheck.hasPositions && recheck.count > 0) {
+      console.log(`[Force Close] ⚠️  Still ${recheck.count} position(s) remaining — manual action may be needed`);
+    } else {
+      console.log(`[Force Close] ✅ All positions cleared`);
+    }
+  } catch (_) { /* ignore */ }
+}
+
+export { automatedTradingLoop, automatedTradingLoop3Exchanges, automatedTradingLoop2Exchanges, testSingleExchangeTrading, automatedTradingLoopKrakenOnly, closeAllPositionsOnShutdown, forceCloseKrakenPositions };

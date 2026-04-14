@@ -48,8 +48,16 @@ export function computeRequiredBalance({ qtyBtc, btcPrice, leverage, isMargin = 
     return { notionalUsd: 0, recommendedUsd: 0, minBalanceUsd: 0 };
   }
 
-  // notional × max(1, 3/lev)
-  const multiplier = Math.max(1, 3 / lev);
+  // For margin mode the leveraged position value is notional × leverage.
+  // We recommend having at least the full position value in the account so
+  // the user can comfortably cover initial margin + maintenance + adverse
+  // price swings across multiple cycles.
+  //
+  // For futures / non-margin, we keep the original rule:
+  //   notional × max(1, 3/lev)
+  const multiplier = isMargin
+    ? lev                     // full position value (e.g. 10x → 10 × notional)
+    : Math.max(1, 3 / lev);
   const recommendedUsd = notionalUsd * multiplier;
 
   // Round up to the nearest $10 for a clean display.

@@ -175,7 +175,7 @@ function parseLogsForMetrics(logs) {
   return { cycle, krakenTrades, grvtTrades, krakenPrice, grvtPrice, priceDiff, botState, botMessage, latency, openSide, entryPrice };
 }
 
-export default function Dashboard({ status, botRunning, logs, onStart, onStop, config, tradingMode, onTradingModeChange, liveBtcPrice }) {
+export default function Dashboard({ status, botRunning, logs, onStart, onStop, onStopGraceful, onStopForceClose, config, tradingMode, onTradingModeChange, liveBtcPrice }) {
   const isKrakenSolo = tradingMode === 'kraken-future' || tradingMode === 'kraken-margin';
   const api = window.electronAPI;
   const [refreshKey, setRefreshKey] = useState(0);
@@ -201,6 +201,10 @@ export default function Dashboard({ status, botRunning, logs, onStart, onStop, c
 
   const [showConfirm, setShowConfirm] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  // Graceful-stop popup state: true while waiting for cycle to complete
+  const [stoppingGraceful, setStoppingGraceful] = useState(false);
+  // Auto-close the stopping popup when bot actually stops
+  useEffect(() => { if (!botRunning) setStoppingGraceful(false); }, [botRunning]);
   // User must explicitly confirm they have enough balance before starting.
   // Reset every time the modal opens so the user actively re-checks each run.
   const [balanceConfirmed, setBalanceConfirmed] = useState(false);
@@ -322,6 +326,24 @@ export default function Dashboard({ status, botRunning, logs, onStart, onStop, c
   const formatPrice = (price) => {
     if (!price) return '—';
     return `$${Number(price).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  };
+
+  // Stop button handler — behaviour depends on trading mode
+  const handleStopClick = () => {
+    if (isKrakenSolo) {
+      // Kraken solo: graceful stop (wait for cycle) + show popup
+      setStoppingGraceful(true);
+      onStopGraceful();
+    } else {
+      // Kraken+GRVT: close positions immediately (old Ctrl+C logic)
+      onStopForceClose();
+    }
+  };
+
+  // Force-close from popup (Kraken solo only)
+  const handleForceCloseClick = () => {
+    setStoppingGraceful(false);
+    onStopForceClose();
   };
 
   return (
@@ -478,7 +500,7 @@ export default function Dashboard({ status, botRunning, logs, onStart, onStop, c
       <div className="dash-actions">
         {botRunning ? (
           <div className="dash-actions-row">
-            <button className="btn btn-danger dash-action-btn" onClick={onStop}>
+            <button className="btn btn-danger dash-action-btn" onClick={handleStopClick}>
               Stop Bot
             </button>
             {isError && recentErrors.length > 0 && (
@@ -586,6 +608,25 @@ export default function Dashboard({ status, botRunning, logs, onStart, onStop, c
           </p>
         </div>
       </div>
+
+      {/* Graceful-stop popup — shown while waiting for the current cycle to finish */}
+      {stoppingGraceful && (
+        <div className="modal-overlay">
+          <div className="confirm-modal stopping-modal">
+            <div className="stopping-dots">
+              <span /><span /><span />
+            </div>
+            <h2 className="stopping-title">Bot will stop after this cycle</h2>
+            <p className="stopping-subtitle">It usually takes 30–300s to complete.</p>
+            <button
+              className="btn btn-force-close-subtle"
+              onClick={handleForceCloseClick}
+            >
+              Immediately close all positions
+            </button>
+          </div>
+        </div>
+      )}
 
     </div>
   );

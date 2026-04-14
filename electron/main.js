@@ -55,7 +55,7 @@ function ensureDataFiles() {
     }
     if (!copied) {
       // Write minimal default .env — ACCOUNT_EMAILS not required, bot uses defaults
-      const defaultEnv = `BUY_QTY=0.0001\nSELL_QTY=0.0001\nLEVERAGE=10\nOPENING_THRESHOLD=7\nCLOSING_THRESHOLD=5\nCLOSING_SPREAD=10\n`;
+      const defaultEnv = `BUY_QTY=0.00001\nSELL_QTY=0.00001\nLEVERAGE=10\nOPENING_THRESHOLD=7\nCLOSING_THRESHOLD=5\nCLOSING_SPREAD=10\n`;
       fs.writeFileSync(userEnv, defaultEnv);
       console.log('[Data] Wrote default .env to', userEnv);
     }
@@ -145,20 +145,60 @@ function startBot(mode, config) {
   sendToUI('bot:started', { mode });
 }
 
-function stopBot() {
-  if (botProcess) {
+function stopBot(mode = 'immediate') {
+  if (!botProcess) return;
+
+  // Clear any previous kill timers so they don't interfere
+  if (stopBot._killTimer) { clearTimeout(stopBot._killTimer); stopBot._killTimer = null; }
+  if (stopBot._chromeTimer) { clearTimeout(stopBot._chromeTimer); stopBot._chromeTimer = null; }
+
+  if (mode === 'graceful') {
+    // ── Stop After Cycle: let current cycle finish, then exit ──
+    botProcess.send({ type: 'stop-graceful' });
+    sendToUI('bot:log', { type: 'warn', message: '⏳ Waiting for current cycle to finish before stopping...' });
+    // Allow up to 6 minutes for a cycle to complete (hold time can be 5 min + close time)
+    stopBot._killTimer = setTimeout(() => {
+      if (botProcess) {
+        try { botProcess.kill('SIGKILL'); } catch {}
+        botProcess = null;
+        sendToUI('bot:stopped', {});
+      }
+    }, 360000);
+    stopBot._chromeTimer = setTimeout(() => {
+      try {
+        const { execSync } = require('child_process');
+        execSync('pkill -f "puppeteer-chrome-profile" 2>/dev/null || true');
+      } catch {}
+    }, 361000);
+  } else if (mode === 'force-close') {
+    // ── Force Close: market-close all positions, then exit ──
+    botProcess.send({ type: 'stop-force-close' });
+    sendToUI('bot:log', { type: 'warn', message: '🔴 Force-closing all positions with MARKET orders...' });
+    // Allow 60s for position closing + browser cleanup
+    stopBot._killTimer = setTimeout(() => {
+      if (botProcess) {
+        try { botProcess.kill('SIGKILL'); } catch {}
+        botProcess = null;
+        sendToUI('bot:stopped', {});
+      }
+    }, 60000);
+    stopBot._chromeTimer = setTimeout(() => {
+      try {
+        const { execSync } = require('child_process');
+        execSync('pkill -f "puppeteer-chrome-profile" 2>/dev/null || true');
+      } catch {}
+    }, 61000);
+  } else {
+    // ── Immediate stop (default): skip position closing ──
     botProcess.send({ type: 'stop' });
-    // Force kill after 10 seconds if not stopped gracefully
-    // (browsers need time to close — GRVT is especially slow)
-    setTimeout(() => {
+    stopBot._killTimer = setTimeout(() => {
       if (botProcess) {
         try { botProcess.kill('SIGKILL'); } catch {}
         botProcess = null;
         sendToUI('bot:stopped', {});
       }
     }, 10000);
-    // Also kill all Chrome processes spawned by Puppeteer
-    setTimeout(() => {
+    stopBot._chromeTimer = setTimeout(() => {
       try {
         const { execSync } = require('child_process');
         execSync('pkill -f "puppeteer-chrome-profile" 2>/dev/null || true');
@@ -436,7 +476,17 @@ ipcMain.handle('bot:start', (_event, { mode, config }) => {
 });
 
 ipcMain.handle('bot:stop', () => {
-  stopBot();
+  stopBot('immediate');
+  return { success: true };
+});
+
+ipcMain.handle('bot:stop-graceful', () => {
+  stopBot('graceful');
+  return { success: true };
+});
+
+ipcMain.handle('bot:stop-force-close', () => {
+  stopBot('force-close');
   return { success: true };
 });
 

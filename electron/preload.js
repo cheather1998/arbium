@@ -4,6 +4,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Bot control
   startBot: (mode, config) => ipcRenderer.invoke('bot:start', { mode, config }),
   stopBot: () => ipcRenderer.invoke('bot:stop'),
+  stopBotGraceful: () => ipcRenderer.invoke('bot:stop-graceful'),
+  stopBotForceClose: () => ipcRenderer.invoke('bot:stop-force-close'),
   isBotRunning: () => ipcRenderer.invoke('bot:isRunning'),
 
   // Bot events

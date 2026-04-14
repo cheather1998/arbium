@@ -223,6 +223,24 @@ export default function App() {
     }
   };
 
+  const handleStopGraceful = async () => {
+    addLog({ type: 'warn', message: '⏳ Stopping after current cycle completes...' });
+    if (api) {
+      await api.stopBotGraceful();
+    } else {
+      setBotRunning(false);
+    }
+  };
+
+  const handleStopForceClose = async () => {
+    addLog({ type: 'warn', message: '🔴 Force-closing all positions and stopping...' });
+    if (api) {
+      await api.stopBotForceClose();
+    } else {
+      setBotRunning(false);
+    }
+  };
+
   const handleSwitchAccount = () => {
     if (botRunning) {
       addLog({ type: 'warn', message: 'Stop the bot before switching accounts.' });
@@ -315,6 +333,8 @@ export default function App() {
             logs={logs}
             onStart={handleStart}
             onStop={handleStop}
+            onStopGraceful={handleStopGraceful}
+            onStopForceClose={handleStopForceClose}
             config={config}
             tradingMode={tradingModeKey}
             onTradingModeChange={handleTradingModeChange}

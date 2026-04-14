@@ -2,8 +2,8 @@ import { useState, useEffect } from 'react';
 import { computeRequiredBalance } from '../lib/requiredBalance';
 
 const QTY_FIELDS = [
-  { key: 'BUY_QTY', label: 'Buy Quantity (BTC)', step: '0.0001', placeholder: '0.001' },
-  { key: 'SELL_QTY', label: 'Sell Quantity (BTC)', step: '0.0001', placeholder: '0.001' },
+  { key: 'BUY_QTY', label: 'Buy Quantity (BTC)', step: '0.00001', placeholder: '0.00001' },
+  { key: 'SELL_QTY', label: 'Sell Quantity (BTC)', step: '0.00001', placeholder: '0.00001' },
 ];
 
 const LEVERAGE_STEPS_DEFAULT = [1, 5, 10, 20, 30, 40, 50];
@@ -159,11 +159,9 @@ export default function ConfigPanel({ config, onSave, disabled, onSwitchAccount,
       <div className="config-divider" />
 
       {/* Leverage */}
-      <div className="config-section-title">Leverage</div>
-
       <div className="config-group">
         <label className="config-label" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <span>Multiplier</span>
+          <span>Leverage</span>
           <span style={{ color: isMargin ? 'var(--yellow)' : leverageColor, fontWeight: 700, fontSize: 16, fontFamily: "'SF Mono', 'Fira Code', monospace" }}>
             {isMargin ? `${MARGIN_FIXED_LEVERAGE}x` : `${leverage}x`}
           </span>
@@ -187,6 +185,7 @@ export default function ConfigPanel({ config, onSave, disabled, onSwitchAccount,
                 className="leverage-slider"
                 style={{
                   background: `linear-gradient(to right, ${leverageColor} ${fillPercent}%, var(--border) ${fillPercent}%)`,
+                  '--slider-color': leverageColor,
                 }}
               />
               <div className="leverage-labels">

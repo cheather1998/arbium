@@ -56,18 +56,40 @@ process.on('message', async (msg) => {
       console.error(err.stack);
     }
   } else if (msg.type === 'stop') {
-    console.log('[BOT-PROCESS] Received stop command. Shutting down...');
-    // Set global flag so shutdown handler skips position closing
+    // ── Immediate stop: skip position closing ──
+    console.log('[BOT-PROCESS] Received IMMEDIATE stop command. Shutting down...');
     global.__FORCE_STOP__ = true;
-    // Trigger SIGINT handler for graceful shutdown
     process.emit('SIGINT');
-    // Give browsers more time to close (shutdown handler needs time)
     setTimeout(() => {
-      if (process.send) {
-        process.send({ type: 'stopped' });
-      }
+      if (process.send) process.send({ type: 'stopped' });
       process.exit(0);
     }, 8000);
+
+  } else if (msg.type === 'stop-graceful') {
+    // ── Graceful stop: let current cycle finish, then exit ──
+    console.log('[BOT-PROCESS] Received GRACEFUL stop command. Will stop after current cycle...');
+    global.__STOP_AFTER_CYCLE__ = true;
+    // Don't emit SIGINT — let the loop finish naturally.
+    // The loop checks __STOP_AFTER_CYCLE__ at cycle boundaries.
+    // After the loop function returns, main.js will clean up and exit.
+    // Safety timeout: 6 minutes (longest cycle ≈ 5 min hold + close time)
+    setTimeout(() => {
+      console.log('[BOT-PROCESS] Graceful stop timeout reached — forcing exit.');
+      if (process.send) process.send({ type: 'stopped' });
+      process.exit(0);
+    }, 350000);
+
+  } else if (msg.type === 'stop-force-close') {
+    // ── Force close: market-close all positions, then exit ──
+    console.log('[BOT-PROCESS] Received FORCE-CLOSE stop command. Closing all positions...');
+    global.__FORCE_CLOSE__ = true;
+    // Emit SIGINT so the shutdown handler runs and closes positions
+    process.emit('SIGINT');
+    // Allow 55s for position closing + browser cleanup
+    setTimeout(() => {
+      if (process.send) process.send({ type: 'stopped' });
+      process.exit(0);
+    }, 55000);
   }
 });
 

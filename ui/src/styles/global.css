@@ -25,8 +25,8 @@
   --green-bg: rgba(108, 255, 166, 0.1);
   --red: #FE6F6F;
   --red-bg: rgba(254, 111, 111, 0.1);
-  --yellow: #d29922;
-  --yellow-bg: rgba(210, 153, 34, 0.1);
+  --yellow: #f0c060;
+  --yellow-bg: rgba(240, 192, 96, 0.1);
   --radius: 10px;
   --radius-lg: 12px;
   --radius-sm: 6px;
@@ -155,17 +155,27 @@ h1, h2, h3 {
   letter-spacing: -0.01em;
 }
 
-.btn:hover { background: var(--bg-hover); }
+.btn:hover:not(.btn-primary):not(.btn-danger):not(.btn-secondary):not(.btn-force-close-subtle) { background: var(--bg-hover); }
 .btn:active { transform: scale(0.98); }
 
-/* Main button — gradient */
+/* Main button — animated gradient (matches onboarding ready-btn) */
 .btn-primary {
-  background: var(--accent-gradient);
+  background: linear-gradient(135deg, #289EFF, #5DD4A8, #82FF15, #289EFF);
+  background-size: 300% 300%;
+  animation: btn-gradient-shift 8s ease infinite;
   border: none;
-  color: #242222;
+  color: #1a1a1a;
   font-weight: 600;
+  transition: transform 0.2s ease, filter 0.2s ease;
 }
-.btn-primary:hover { opacity: 0.9; background: var(--accent-gradient); }
+.btn-primary:hover { transform: translateY(-1px); filter: brightness(1.05); }
+.btn-primary:active { transform: translateY(0px); }
+
+@keyframes btn-gradient-shift {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
 
 /* Secondary button — white */
 .btn-secondary {
@@ -732,6 +742,65 @@ h1, h2, h3 {
   flex: 1;
 }
 
+/* Stopping modal — centered popup while waiting for cycle to complete */
+.stopping-modal {
+  text-align: center;
+  max-width: 360px;
+  padding: 32px 28px 24px;
+}
+
+.stopping-title {
+  font-size: 17px;
+  font-weight: 600;
+  margin: 0 0 6px;
+  color: var(--text-primary);
+}
+
+.stopping-subtitle {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin: 0 0 24px;
+}
+
+/* Pulsing dots indicator */
+.stopping-dots {
+  display: flex;
+  gap: 6px;
+  justify-content: center;
+  margin-bottom: 20px;
+}
+.stopping-dots span {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-secondary);
+  animation: stopping-pulse 1.4s ease-in-out infinite;
+}
+.stopping-dots span:nth-child(2) { animation-delay: 0.2s; }
+.stopping-dots span:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes stopping-pulse {
+  0%, 80%, 100% { opacity: 0.25; transform: scale(0.8); }
+  40% { opacity: 1; transform: scale(1); }
+}
+
+/* Force-close button — low-profile: grey bg, red text */
+.btn-force-close-subtle {
+  width: 100%;
+  padding: 12px 16px;
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+  color: var(--red);
+  font-size: 14px;
+  font-weight: 600;
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.btn-force-close-subtle:hover {
+  background: var(--border);
+}
+
 .dash-restart-btn {
   flex: 1;
   padding: 10px 16px;
@@ -903,23 +972,23 @@ h1, h2, h3 {
   color: var(--accent);
 }
 
-/* Range slider thumb */
+/* Range slider thumb — inherits bar color via custom property */
 input[type="range"]::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
   width: 18px;
   height: 18px;
   border-radius: 50%;
-  background: var(--accent-gradient);
+  background: var(--slider-color, var(--accent));
   border: 2px solid var(--bg-primary);
   cursor: pointer;
-  box-shadow: 0 0 6px rgba(40, 158, 255, 0.4);
+  box-shadow: 0 0 6px rgba(0, 0, 0, 0.3);
   transition: transform 0.15s ease, box-shadow 0.15s ease;
 }
 
 input[type="range"]::-webkit-slider-thumb:hover {
   transform: scale(1.2);
-  box-shadow: 0 0 10px rgba(40, 158, 255, 0.6);
+  box-shadow: 0 0 10px rgba(0, 0, 0, 0.4);
 }
 
 input[type="range"]::-webkit-slider-thumb:active {

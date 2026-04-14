@@ -149,10 +149,11 @@ export async function prefillFormKraken(page, { orderType, qty }, exchange) {
     }
   }
   
-  return { 
-    success: true, 
-    sizeInput, 
-    priceInput 
+  return {
+    success: true,
+    sizeInput,
+    priceInput,
+    qty: String(qty),  // preserve target qty for re-fill after side switch
   };
 }
 
@@ -173,7 +174,24 @@ export async function fillPriceSideAndSubmitKraken(page, price, { side, orderTyp
   await selectBuyOrSell(page, side, exchange);
   await delay(300);
   
-  // 1.5. Check if TP/SL inputs were cleared after side selection, and refill if needed
+  // 1.5a. Kraken Margin resets the quantity field when the Buy/Sell tab is
+  // switched. Re-check the qty input and refill if it was cleared or changed.
+  if (prefillData && prefillData.sizeInput) {
+    try {
+      const { enterSize } = await import('./executeBase.js');
+      const currentQty = await page.evaluate((el) => el.value || '', prefillData.sizeInput);
+      const targetQty = String(prefillData.qty || process.env.BUY_QTY || process.env.SELL_QTY || '');
+      if (targetQty && currentQty !== targetQty) {
+        console.log(`[${exchange.name}] [QUICK-FILL] Step 1.5a: Quantity was reset after side selection ("${currentQty}" → "${targetQty}"), re-filling...`);
+        await enterSize(page, prefillData.sizeInput, targetQty, exchange);
+        await delay(200);
+      }
+    } catch (e) {
+      console.log(`[${exchange.name}] [QUICK-FILL] ⚠️  Quantity re-check error: ${e.message}`);
+    }
+  }
+
+  // 1.5b. Check if TP/SL inputs were cleared after side selection, and refill if needed
   if (orderType === "limit") {
     console.log(`[${exchange.name}] [QUICK-FILL] Step 1.5: Checking if TP/SL inputs were cleared after side selection...`);
     const takeProfitValue = process.env.TAKE_PROFIT || '';
